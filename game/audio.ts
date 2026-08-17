@@ -159,6 +159,84 @@ export class GameAudio {
   }
 
   /**
+   * High voltage chain lightning electric spark crackle
+   */
+  playChainLightning() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.1, 4200, 6.0, 0.35);
+    this.triggerTone(now, 1850, 420, 0.08, 0.28, "sawtooth");
+    this.triggerTone(now + 0.02, 2400, 310, 0.09, 0.22, "square");
+  }
+
+  /**
+   * Massive boss ground slam earthquake impact
+   */
+  playGroundSlam() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 70, 18, 0.6, 0.95, "sawtooth");
+    this.triggerNoiseTransient(now, 0.35, 450, 0.9, 0.7);
+    this.triggerTone(now, 180, 24, 0.45, 0.5, "triangle");
+  }
+
+  /**
+   * Stylized perk draft reward selection fanfare
+   */
+  playPerkSelect() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
+    notes.forEach((freq, index) => {
+      this.triggerTone(now + index * 0.045, freq, freq * 1.05, 0.16, 0.24, "triangle");
+      this.triggerTone(now + index * 0.045, freq * 2, freq * 2.05, 0.12, 0.12, "sine");
+    });
+  }
+
+  /**
+   * Volatile Boomer caustic chemical detonation
+   */
+  playBoomerDetonation() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 110, 25, 0.42, 0.85, "triangle");
+    this.triggerNoiseTransient(now, 0.38, 900, 1.4, 0.75);
+    this.triggerTone(now, 340, 60, 0.28, 0.45, "sawtooth");
+  }
+
+  /**
+   * Boss phase transition alarm stinger
+   */
+  playBossPhaseShift() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerTone(now, 440, 220, 0.25, 0.4, "sawtooth");
+    this.triggerTone(now + 0.15, 660, 330, 0.35, 0.45, "sawtooth");
+    this.triggerBassPunch(now, 140, 30, 0.5, 0.7, "sawtooth");
+  }
+
+  /**
+   * Crystalline frost freeze crackle sound
+   */
+  playFreeze() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.14, 3800, 4.5, 0.35);
+    this.triggerTone(now, 1800, 2900, 0.15, 0.25, "sine");
+    this.triggerTone(now + 0.04, 3200, 4400, 0.14, 0.2, "triangle");
+  }
+
+  /**
+   * Energy shield shatter crackle
+   */
+  playShieldBreak() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.12, 3800, 5.0, 0.4);
+    this.triggerTone(now, 1400, 300, 0.14, 0.3, "square");
+  }
+
+  /**
    * Legacy tone method for fallback
    */
   tone(frequency: number, duration = 0.05, volume = 0.08, type: OscillatorType = "square") {

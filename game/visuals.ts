@@ -26,6 +26,8 @@ export interface CharacterRig {
   actions?: Partial<Record<CharacterMotion, THREE.AnimationAction>>;
   activeMotion?: CharacterMotion;
   hitShell?: THREE.Mesh;
+  frostShell?: THREE.Mesh;
+  burnShell?: THREE.Mesh;
   glowSac?: THREE.Mesh;
   bossCore?: THREE.Mesh;
   phase: number;
@@ -855,7 +857,16 @@ export class VisualFactory {
   }
 
   createEnemy(type: EnemyId, definition: EnemyDefinition): CharacterRig {
-    const scale = type === "juggernaut" ? 1.85 : type === "brute" ? 1.42 : type === "runner" ? 0.92 : 1.08;
+    const scale =
+      type === "juggernaut"
+        ? 1.85
+        : type === "brute"
+          ? 1.42
+          : type === "boomer"
+            ? 1.28
+            : type === "runner"
+              ? 0.92
+              : 1.08;
     const rig = this.createEmptyRig(scale);
 
     if (type === "juggernaut") {
@@ -876,7 +887,15 @@ export class VisualFactory {
     return rig;
   }
 
-  animateCharacter(rig: CharacterRig, dt: number, speed: number, attacking: boolean, hit: number) {
+  animateCharacter(
+    rig: CharacterRig,
+    dt: number,
+    speed: number,
+    attacking: boolean,
+    hit: number,
+    isChilled = false,
+    isBurning = false,
+  ) {
     const requested: CharacterMotion = speed > 5.4 ? "run" : speed > 0.08 ? "walk" : "idle";
     const nextAction = rig.actions?.[requested] ?? rig.actions?.idle;
     if (nextAction && rig.activeMotion !== requested) {
@@ -889,7 +908,8 @@ export class VisualFactory {
 
     if (nextAction && requested !== "idle" && speed > 0.1) {
       const baseSpeed = requested === "run" ? 6.2 : 3.2;
-      const dynamicScale = Math.min(2.0, Math.max(0.6, (speed / baseSpeed) * (requested === "run" ? 1.2 : 1.0)));
+      const chillFactor = isChilled ? 0.45 : 1.0;
+      const dynamicScale = Math.min(2.0, Math.max(0.25, (speed / baseSpeed) * (requested === "run" ? 1.2 : 1.0) * chillFactor));
       nextAction.setEffectiveTimeScale(dynamicScale);
     }
 
@@ -909,6 +929,16 @@ export class VisualFactory {
     }
 
     if (rig.hitShell) rig.hitShell.visible = hit > 0;
+
+    if (rig.frostShell) {
+      rig.frostShell.visible = isChilled;
+      if (isChilled) rig.frostShell.rotation.y += dt * 2.2;
+    }
+
+    if (rig.burnShell) {
+      rig.burnShell.visible = isBurning;
+      if (isBurning) rig.burnShell.rotation.y -= dt * 3.5;
+    }
 
     rig.phase += dt * 3.5;
     if (rig.glowSac && rig.glowSac.material instanceof THREE.MeshStandardMaterial) {
@@ -1095,6 +1125,10 @@ export class VisualFactory {
         model.scale.x *= 1.25;
         model.scale.z *= 1.15;
       }
+      if (kind === "boomer") {
+        model.scale.x *= 1.28;
+        model.scale.z *= 1.25;
+      }
       if (kind === "juggernaut") {
         model.scale.x *= 1.35;
         model.scale.z *= 1.25;
@@ -1144,6 +1178,10 @@ export class VisualFactory {
         const sac = model.getObjectByName("spitter-acid-sac") as THREE.Mesh | undefined;
         if (sac) rig.glowSac = sac;
       }
+      if (kind === "boomer") {
+        const sac = model.getObjectByName("boomer-belly-sac") as THREE.Mesh | undefined;
+        if (sac) rig.glowSac = sac;
+      }
       if (kind === "juggernaut") {
         const core = model.getObjectByName("juggernaut-boss-core") as THREE.Mesh | undefined;
         if (core) rig.bossCore = core;
@@ -1171,6 +1209,24 @@ export class VisualFactory {
       hitShell.visible = false;
       rig.root.add(hitShell);
       rig.hitShell = hitShell;
+
+      const frostShell = mesh(
+        new THREE.CapsuleGeometry(0.42 * rig.scale, 1.02 * rig.scale, 6, 8),
+        new THREE.MeshBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.42, depthWrite: false, wireframe: true }),
+      );
+      frostShell.position.y = 0.82 * rig.scale;
+      frostShell.visible = false;
+      rig.root.add(frostShell);
+      rig.frostShell = frostShell;
+
+      const burnShell = mesh(
+        new THREE.CapsuleGeometry(0.42 * rig.scale, 1.02 * rig.scale, 6, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.42, depthWrite: false, wireframe: true }),
+      );
+      burnShell.position.y = 0.82 * rig.scale;
+      burnShell.visible = false;
+      rig.root.add(burnShell);
+      rig.burnShell = burnShell;
     });
   }
 
@@ -1342,18 +1398,27 @@ export class VisualFactory {
     const skinTone =
       kind === "spitter"
         ? 0x39ff14
-        : kind === "juggernaut"
-          ? 0x5a1818
-          : kind === "brute"
-            ? 0xd0d5c0
-            : kind === "runner"
-              ? 0x8a5438
-              : 0x6e836b;
+        : kind === "boomer"
+          ? 0x42964e
+          : kind === "juggernaut"
+            ? 0x5a1818
+            : kind === "brute"
+              ? 0xd0d5c0
+              : kind === "runner"
+                ? 0x8a5438
+                : 0x6e836b;
 
     const zombieSkinMat = new THREE.MeshToonMaterial({
       color: skinTone,
-      emissive: kind === "spitter" ? 0x22c55e : kind === "juggernaut" ? 0x330808 : 0x081008,
-      emissiveIntensity: kind === "spitter" ? 1.4 : 0.2,
+      emissive:
+        kind === "spitter"
+          ? 0x22c55e
+          : kind === "boomer"
+            ? 0x1f9435
+            : kind === "juggernaut"
+              ? 0x330808
+              : 0x081008,
+      emissiveIntensity: kind === "spitter" ? 1.4 : kind === "boomer" ? 0.9 : 0.2,
       gradientMap: this.toonRamp,
     });
 
@@ -1362,9 +1427,11 @@ export class VisualFactory {
         ? 0x991b1b
         : kind === "spitter"
           ? 0x1f2937
-          : kind === "brute"
-            ? 0x374151
-            : clothingColor || 0xdcd6cd;
+          : kind === "boomer"
+            ? 0x423528
+            : kind === "brute"
+              ? 0x374151
+              : clothingColor || 0xdcd6cd;
 
     const shirtMat = new THREE.MeshToonMaterial({ color: shirtColor, gradientMap: this.toonRamp });
     const jeansMat = new THREE.MeshToonMaterial({ color: 0x243342, gradientMap: this.toonRamp });
@@ -1408,11 +1475,32 @@ export class VisualFactory {
     const spine1 = findBone(template, "mixamorig:Spine1", "mixamorigSpine1", "Spine1");
     if (spine1) {
       const midShirt = createInkOutlinedMesh(
-        new RoundedBoxGeometry(kind === "brute" ? 52 : 33, 22, 22, 2, 3),
+        new RoundedBoxGeometry(kind === "brute" ? 52 : kind === "boomer" ? 44 : 33, 22, 22, 2, 3),
         shirtMat,
         0.04,
       );
       midShirt.position.set(0, 6, 0);
+
+      if (kind === "boomer") {
+        const bellyMat = new THREE.MeshStandardMaterial({
+          color: 0x39ff14,
+          emissive: 0x22b82f,
+          emissiveIntensity: 2.2,
+          roughness: 0.25,
+        });
+        const belly = createInkOutlinedMesh(new THREE.SphereGeometry(22, 14, 10), bellyMat, 0.05);
+        belly.name = "boomer-belly-sac";
+        belly.scale.set(1.35, 1.2, 1.45);
+        belly.position.set(0, 4, 14);
+        for (let p = 0; p < 6; p += 1) {
+          const pAngle = (p * Math.PI) / 3;
+          const pustule = mesh(new THREE.SphereGeometry(4.2, 6, 6), bellyMat);
+          pustule.position.set(Math.cos(pAngle) * 14, Math.sin(pAngle) * 10 + 2, 16);
+          belly.add(pustule);
+        }
+        spine1.add(belly);
+      }
+
       spine1.add(midShirt);
     }
 
@@ -1466,7 +1554,16 @@ export class VisualFactory {
       jaw.rotation.x = kind === "runner" ? 0.38 : 0.24;
 
       // Sunken glowing eye sockets
-      const eyeColor = kind === "spitter" ? 0x39ff14 : kind === "runner" ? 0xffaa00 : kind === "juggernaut" ? 0xff0055 : 0xffee55;
+      const eyeColor =
+        kind === "spitter"
+          ? 0x39ff14
+          : kind === "boomer"
+            ? 0x76ff03
+            : kind === "runner"
+              ? 0xffaa00
+              : kind === "juggernaut"
+                ? 0xff0055
+                : 0xffee55;
       const eyeMat = new THREE.MeshBasicMaterial({ color: eyeColor });
       for (const ex of [-4.2, 4.2]) {
         const eye = mesh(new THREE.SphereGeometry(2.2, 6, 6), eyeMat);
@@ -2163,5 +2260,108 @@ export class VisualFactory {
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(12, 1.4);
     return texture;
+  }
+
+  createChainLightningMesh(points: THREE.Vector3[], color = 0x00f5d4): THREE.LineSegments {
+    const vertices: number[] = [];
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const mid = p1.clone().lerp(p2, 0.5);
+      mid.x += THREE.MathUtils.randFloatSpread(0.45);
+      mid.y += THREE.MathUtils.randFloat(0.1, 0.45);
+      mid.z += THREE.MathUtils.randFloatSpread(0.45);
+
+      vertices.push(p1.x, p1.y, p1.z, mid.x, mid.y, mid.z);
+      vertices.push(mid.x, mid.y, mid.z, p2.x, p2.y, p2.z);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+    const material = new THREE.LineBasicMaterial({
+      color,
+      linewidth: 3,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const line = new THREE.LineSegments(geometry, material);
+    line.name = "chain-lightning";
+    return line;
+  }
+
+  createShockwaveMesh(radius: number, color = 0xff0055): THREE.Group {
+    const group = new THREE.Group();
+    const ringMat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const ring = mesh(new THREE.RingGeometry(Math.max(0.05, radius * 0.88), radius, 36), ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+
+    const inkBorder = mesh(
+      new THREE.RingGeometry(Math.max(0.05, radius * 0.98), radius * 1.05, 36),
+      new THREE.MeshBasicMaterial({ color: 0x0a0505, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    inkBorder.rotation.x = -Math.PI / 2;
+    inkBorder.position.y = 0.048;
+
+    group.add(ring, inkBorder);
+    return group;
+  }
+
+  createEliteShieldMesh(radius = 1.15): THREE.Mesh {
+    const geo = new THREE.SphereGeometry(radius, 16, 12);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x00f5d4,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.65,
+      depthWrite: false,
+    });
+    const shield = new THREE.Mesh(geo, mat);
+    shield.name = "elite-shield";
+    shield.position.y = radius * 0.75;
+    return shield;
+  }
+
+  createTelegraphLine(length: number, width = 1.4): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(width, length);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xff0033,
+      transparent: true,
+      opacity: 0.38,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const plane = new THREE.Mesh(geo, mat);
+    plane.rotation.x = -Math.PI / 2;
+    plane.position.y = 0.042;
+    plane.name = "telegraph-line";
+    return plane;
+  }
+
+  createTelegraphCircle(radius = 4.5): THREE.Group {
+    const group = new THREE.Group();
+    const fill = mesh(
+      new THREE.CircleGeometry(radius, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff0044, transparent: true, opacity: 0.24, depthWrite: false }),
+    );
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.y = 0.04;
+
+    const border = mesh(
+      new THREE.RingGeometry(radius * 0.94, radius, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff0044, transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    border.rotation.x = -Math.PI / 2;
+    border.position.y = 0.042;
+
+    group.add(fill, border);
+    group.name = "telegraph-circle";
+    return group;
   }
 }

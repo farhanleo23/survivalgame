@@ -4,12 +4,14 @@ import { ENEMIES, getWeaponStats, PICKUPS, WAVES, WEAPONS } from "./config";
 import { GameAudio } from "./audio";
 import { VisualFactory, type CharacterRig } from "./visuals";
 import type {
+  EliteAffix,
   EnemyDefinition,
   EnemyId,
   HudState,
   PerkId,
   PickupId,
   ProfileV1,
+  SynergyCardId,
   WeaponId,
   WeaponInstance,
 } from "./types";
@@ -36,6 +38,16 @@ interface EnemyEntity {
   chargeRemaining: number;
   hitFlash: number;
   knockback: THREE.Vector3;
+  affix?: EliteAffix;
+  isElite?: boolean;
+  shieldHp?: number;
+  shieldMesh?: THREE.Mesh;
+  burningTimer?: number;
+  chilledTimer?: number;
+  bossPhase?: number;
+  bossAttackState?: "idle" | "telegraph_charge" | "charging" | "telegraph_slam" | "slamming";
+  bossStateTimer?: number;
+  bossTelegraphMesh?: THREE.Object3D;
 }
 
 interface ProjectileEntity {
@@ -46,6 +58,11 @@ interface ProjectileEntity {
   knockback: number;
   life: number;
   enemy: boolean;
+  pierceCount?: number;
+  maxPierces?: number;
+  bouncesRemaining?: number;
+  hitEnemies?: Set<EnemyEntity>;
+  isShrapnel?: boolean;
 }
 
 interface PickupEntity {
@@ -150,6 +167,9 @@ export class GameEngine {
   private pickups: PickupEntity[] = [];
   private barrels: BarrelEntity[] = [];
   private effects: EffectEntity[] = [];
+  private activeSynergies = new Map<SynergyCardId, number>();
+  private bulletCount = 0;
+  private acidTrailTimer = 0;
   private obstacles: Obstacle[] = [];
   private weaponStates = new Map<WeaponId, WeaponInstance>();
   private loadout: WeaponId[];
@@ -232,6 +252,9 @@ export class GameEngine {
 
   start(wave = 1) {
     this.wave = wave;
+    if (wave === 1) {
+      this.activeSynergies.clear();
+    }
     this.audio.configure(this.profile.settings);
     this.audio.start();
     this.paused = false;
@@ -239,6 +262,24 @@ export class GameEngine {
     this.timer.reset();
     this.scheduleFrame();
     void this.visuals.ready();
+  }
+
+  addSynergy(id: SynergyCardId) {
+    const current = this.activeSynergies.get(id) ?? 0;
+    this.activeSynergies.set(id, current + 1);
+    this.audio.playPerkSelect();
+    this.announcement = `SYNERGY ACQUIRED: ${id.replace(/_/g, " ").toUpperCase()}`;
+    this.announcementTimer = 2.4;
+    this.emitHud(true);
+  }
+
+  getSynergies(): Partial<Record<SynergyCardId, number>> {
+    return Object.fromEntries(this.activeSynergies);
+  }
+
+  resetSynergies() {
+    this.activeSynergies.clear();
+    this.emitHud(true);
   }
 
   pause() {
@@ -373,17 +414,17 @@ export class GameEngine {
     this.visuals.addSetDressing(this.scene);
     this.scene.add(this.playerKeyLight, this.playerRimLight);
 
-    // Edge architecture creates 2.5D depth without obstructing the central combat lanes.
-    this.addObstacle(-15.7, 11.4, 4.2, 3.2, 0x252924);
-    this.addObstacle(15.2, -11.8, 4.6, 3.0, 0x28302d);
-    this.addObstacle(-15.6, -12.7, 3.2, 2.7, 0x202b2c);
-    this.addObstacle(15.8, 12.8, 3.0, 2.6, 0x302a24);
-    this.addBarricade(-10.8, 14.8, 4.2, 0.45, 0.14);
-    this.addBarricade(10.7, -14.7, 4.0, 0.45, -0.18);
+    // Edge architecture creates 2.5D depth without obstructing combat lanes or creating corner traps.
+    this.addObstacle(-12.8, 8.8, 3.4, 2.4, 0x252924);
+    this.addObstacle(12.8, -8.8, 3.4, 2.4, 0x28302d);
+    this.addObstacle(-12.8, -9.2, 2.8, 2.4, 0x202b2c);
+    this.addObstacle(12.8, 9.2, 2.8, 2.4, 0x302a24);
+    this.addBarricade(-7.5, 12.0, 3.6, 0.45, 0.14);
+    this.addBarricade(7.5, -12.0, 3.6, 0.45, -0.18);
 
-    this.addFloodlight(-16.2, -15.5, 0xff8a36);
-    this.addFloodlight(15.6, 14.9, 0x47c9d3);
-    this.addFloodlight(-15.7, 15.2, 0x45bd9a);
+    this.addFloodlight(-15.2, -14.5, 0xff8a36);
+    this.addFloodlight(14.6, 13.9, 0x47c9d3);
+    this.addFloodlight(-14.7, 14.2, 0x45bd9a);
 
     for (const [x, z, color] of [
       [-10, -8, 0xff7a24],
@@ -594,37 +635,78 @@ export class GameEngine {
     const definition = ENEMIES[type];
     const candidate = new THREE.Vector3();
     let valid = false;
-    for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
       const edge = Math.floor(Math.random() * 4);
-      const span = THREE.MathUtils.randFloat(-17, 17);
-      if (edge === 0) candidate.set(span, 0, -17.5);
-      else if (edge === 1) candidate.set(span, 0, 17.5);
-      else if (edge === 2) candidate.set(-17.5, 0, span);
-      else candidate.set(17.5, 0, span);
+      // Spawn along open arena corridors, keeping 3.5m clearance away from extreme corner pockets
+      const span = THREE.MathUtils.randFloat(-13.5, 13.5);
+      if (edge === 0) candidate.set(span, 0, -16.0);
+      else if (edge === 1) candidate.set(span, 0, 16.0);
+      else if (edge === 2) candidate.set(-16.0, 0, span);
+      else candidate.set(16.0, 0, span);
 
       if (candidate.distanceTo(this.playerMesh.position) < 5.5) continue;
-      if (this.pointInsideObstacle(candidate.x, candidate.z)) continue;
+      if (this.pointInsideObstacle(candidate.x, candidate.z, definition.radius + 0.8)) continue;
       valid = true;
       break;
     }
-    if (!valid) candidate.set(16, 0, 16);
+    if (!valid) candidate.set(12, 0, 12);
+
+    const isElite = this.wave >= 4 && type !== "juggernaut" && Math.random() < 0.22;
+    let affix: EliteAffix | undefined;
+    let shieldMesh: THREE.Mesh | undefined;
+    let shieldHp: number | undefined;
 
     const rig = this.visuals.createEnemy(type, definition);
     const mesh = rig.root;
     mesh.position.copy(candidate);
+
+    if (isElite) {
+      const affixes: EliteAffix[] = ["shielded", "frenzy", "toxic"];
+      affix = affixes[Math.floor(Math.random() * affixes.length)];
+      if (affix === "shielded") {
+        shieldHp = 90;
+        shieldMesh = this.visuals.createEliteShieldMesh(definition.radius * 1.3);
+        mesh.add(shieldMesh);
+      }
+    }
+
     this.scene.add(mesh);
+
+    // Wave 5 vs Wave 10 boss health scaling
+    let health = definition.health;
+    if (type === "juggernaut") {
+      if (this.wave <= 5) {
+        health = 680; // Wave 5 Prototype Juggernaut (Mk-I)
+        this.announcement = "⚠️ PROTOTYPE JUGGERNAUT DETECTED!";
+        this.announcementTimer = 3.5;
+        this.audio.playBossPhaseShift();
+      } else {
+        health = 1850; // Wave 10 Titan Dreadnought Prime
+        this.announcement = "🔥 TITAN DREADNOUGHT PRIME HAS ARRIVED!";
+        this.announcementTimer = 4.0;
+        this.audio.playBossPhaseShift();
+      }
+    } else if (isElite) {
+      health = Math.round(definition.health * 1.4);
+    }
+
     this.enemies.push({
       type,
       definition,
       mesh,
       rig,
-      health: definition.health,
-      maxHealth: definition.health,
+      health,
+      maxHealth: health,
       attackCooldown: Math.random() * 0.5,
       specialCooldown: 2 + Math.random() * 2,
       chargeRemaining: 0,
       hitFlash: 0,
       knockback: new THREE.Vector3(),
+      affix,
+      isElite,
+      shieldHp,
+      shieldMesh,
+      bossPhase: type === "juggernaut" ? 1 : undefined,
     });
   }
 
@@ -688,7 +770,14 @@ export class GameEngine {
       return;
     }
     state.magazine -= 1;
-    state.cooldown = 1 / stats.fireRate;
+
+    this.bulletCount += 1;
+
+    // Adrenaline Surge synergy: +40% fire rate when below 45% HP
+    const isAdrenaline =
+      this.activeSynergies.has("adrenaline_surge") && this.playerHealth / this.maxHealth <= 0.45;
+    const fireRateMult = isAdrenaline ? 1.4 : 1.0;
+    state.cooldown = 1 / (stats.fireRate * fireRateMult);
 
     // Multi-layered audio gunshot
     this.audio.playShoot(id);
@@ -708,18 +797,37 @@ export class GameEngine {
 
     const baseKnockback = id === "shotgun" ? 14 : id === "rifle" ? 9 : id === "pistol" ? 5.5 : 3.2;
 
+    // High Caliber & Synergy modifiers
+    const highCaliberRank = this.activeSynergies.get("high_caliber") ?? 0;
+    const damageMult = 1 + 0.25 * highCaliberRank;
+    const bulletScale = 1 + 0.25 * highCaliberRank;
+    const knockbackMult = 1 + 0.5 * highCaliberRank;
+
+    const piercingRank = this.activeSynergies.get("piercing") ?? 0;
+    const ricochetRank = this.activeSynergies.get("ricochet") ?? 0;
+
+    // Dynamic Element Bullet Tint
+    let bulletColor = stats.color;
+    if (this.activeSynergies.has("cryo_frost")) {
+      bulletColor = 0x00f0ff; // Bright icy frost cyan
+    } else if (this.activeSynergies.has("incendiary")) {
+      bulletColor = 0xff3d00; // Blazing flame orange
+    } else if (this.activeSynergies.has("tesla_arcs")) {
+      bulletColor = 0x00f5d4; // Electric lightning cyan
+    }
+
     for (let pellet = 0; pellet < stats.pellets; pellet += 1) {
       const angle = Math.atan2(this.aim.z, this.aim.x) + THREE.MathUtils.randFloatSpread(stats.spread * 2);
       const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
 
-      const tracerLen = id === "rifle" ? 1.2 : id === "shotgun" ? 0.45 : 0.75;
+      const tracerLen = (id === "rifle" ? 1.2 : id === "shotgun" ? 0.45 : 0.75) * bulletScale;
       const tracerGeo = new THREE.CylinderGeometry(
-        id === "shotgun" ? 0.04 : id === "rifle" ? 0.045 : 0.028,
-        id === "shotgun" ? 0.06 : id === "rifle" ? 0.055 : 0.038,
+        (id === "shotgun" ? 0.04 : id === "rifle" ? 0.045 : 0.028) * bulletScale,
+        (id === "shotgun" ? 0.06 : id === "rifle" ? 0.055 : 0.038) * bulletScale,
         tracerLen,
         8,
       );
-      const tracerMat = new THREE.MeshBasicMaterial({ color: stats.color, transparent: true, opacity: 0.95 });
+      const tracerMat = new THREE.MeshBasicMaterial({ color: bulletColor, transparent: true, opacity: 0.95 });
       const bullet = new THREE.Mesh(tracerGeo, tracerMat);
       bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
       bullet.position.copy(origin);
@@ -728,14 +836,18 @@ export class GameEngine {
         mesh: bullet,
         velocity: direction.clone().multiplyScalar(id === "shotgun" ? 34 : id === "rifle" ? 45 : 38),
         direction: direction.clone(),
-        damage: stats.damage,
-        knockback: baseKnockback,
+        damage: stats.damage * damageMult,
+        knockback: baseKnockback * knockbackMult,
         life: 1.35,
         enemy: false,
+        maxPierces: piercingRank,
+        pierceCount: 0,
+        bouncesRemaining: ricochetRank,
+        hitEnemies: new Set(),
       });
     }
 
-    const flash = this.visuals.createMuzzleFlashMesh(stats.color);
+    const flash = this.visuals.createMuzzleFlashMesh(bulletColor);
     flash.position.copy(origin).addScaledVector(this.aim, 0.22);
     flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.aim);
     this.scene.add(flash);
@@ -755,7 +867,10 @@ export class GameEngine {
     if (!state) return;
     const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
     if (state.reloading > 0 || state.magazine >= stats.magazine || state.reserve <= 0) return;
-    state.reloading = stats.reload;
+    const isAdrenaline =
+      this.activeSynergies.has("adrenaline_surge") && this.playerHealth / this.maxHealth <= 0.45;
+    const reloadMult = isAdrenaline ? 0.7 : 1.0;
+    state.reloading = stats.reload * reloadMult;
     this.audio.playReload();
   }
 
@@ -996,12 +1111,67 @@ export class GameEngine {
       else grid.set(key, [enemy]);
     }
 
-    for (let index = 0; index < this.enemies.length; index += 1) {
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
       const enemy = this.enemies[index];
+
+      // Burning Damage-over-time
+      if (enemy.burningTimer && enemy.burningTimer > 0) {
+        enemy.burningTimer -= dt;
+        enemy.health -= 22 * dt;
+        enemy.hitFlash = Math.max(enemy.hitFlash, 0.06);
+        if (enemy.health <= 0) {
+          this.killEnemy(index);
+          continue;
+        }
+      }
+
+      // Cryo Chilled timer
+      if (enemy.chilledTimer && enemy.chilledTimer > 0) {
+        enemy.chilledTimer -= dt;
+      }
+
+      // Toxic Elite slime dropping
+      if (enemy.affix === "toxic" && Math.random() < 0.035) {
+        this.visuals.addAcidDecal(this.scene, enemy.mesh.position, 0.55);
+      }
+
       enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
       enemy.specialCooldown = Math.max(0, enemy.specialCooldown - dt);
       enemy.chargeRemaining = Math.max(0, enemy.chargeRemaining - dt);
       enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
+
+      // Juggernaut Multi-Phase Transition & Logic
+      if (enemy.type === "juggernaut") {
+        const hpRatio = enemy.health / enemy.maxHealth;
+        if (this.wave <= 5) {
+          // Wave 5 Prototype Juggernaut: 2 Phases
+          if (hpRatio <= 0.5 && (enemy.bossPhase ?? 1) < 2) {
+            enemy.bossPhase = 2;
+            this.audio.playBossPhaseShift();
+            this.announcement = "⚠️ PROTOTYPE JUGGERNAUT PHASE 2: GROUND SLAM!";
+            this.announcementTimer = 3.2;
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! 💥", "comic-slam");
+            for (let r = 0; r < 2; r += 1) this.spawnEnemy("runner");
+          }
+        } else {
+          // Wave 10 Titan Dreadnought Prime: 3 Phases
+          if (hpRatio <= 0.33 && (enemy.bossPhase ?? 1) < 3) {
+            enemy.bossPhase = 3;
+            this.audio.playBossPhaseShift();
+            this.announcement = "🔥 TITAN ENRAGED: BERSERK STRIKES!";
+            this.announcementTimer = 3.5;
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "BERSERK! 😡", "comic-rage");
+            for (let r = 0; r < 4; r += 1) this.spawnEnemy("runner");
+          } else if (hpRatio <= 0.66 && hpRatio > 0.33 && (enemy.bossPhase ?? 1) < 2) {
+            enemy.bossPhase = 2;
+            this.audio.playBossPhaseShift();
+            this.announcement = "⚠️ TITAN PHASE 2: GROUND SLAM & SHOCKWAVES!";
+            this.announcementTimer = 3.2;
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! 💥", "comic-slam");
+            for (let r = 0; r < 3; r += 1) this.spawnEnemy("runner");
+          }
+        }
+      }
 
       // Apply and decay physical bullet knockback
       if (enemy.knockback.lengthSq() > 0.001) {
@@ -1026,19 +1196,44 @@ export class GameEngine {
           enemy.attackCooldown = enemy.definition.attackCooldown;
         }
       } else {
-        if (enemy.type === "juggernaut" && enemy.specialCooldown <= 0 && distance > 4) {
-          enemy.chargeRemaining = 1.1;
-          enemy.specialCooldown = 5.6;
-          this.announcement = "⚠️ Juggernaut charge incoming!";
-          this.announcementTimer = 1.25;
+        if (enemy.type === "juggernaut") {
+          const phase = enemy.bossPhase ?? 1;
+          if (phase === 2 && enemy.specialCooldown <= 0 && distance < 8.2) {
+            enemy.specialCooldown = 5.2;
+            const shock = this.visuals.createShockwaveMesh(6.2, 0xff0044);
+            shock.position.copy(enemy.mesh.position);
+            this.scene.add(shock);
+            this.effects.push({ mesh: shock, life: 0.5, maxLife: 0.5 });
+            this.audio.playGroundSlam();
+            this.cameraShake = Math.max(this.cameraShake, 0.75);
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.2), "GROUND SLAM! 💥", "comic-slam");
+            if (distance < 6.2 && this.dashRemaining <= 0) {
+              this.damagePlayer(36);
+            }
+          } else if (phase !== 2 && enemy.specialCooldown <= 0 && distance > 4.2) {
+            enemy.chargeRemaining = phase === 3 ? 1.4 : 1.1;
+            enemy.specialCooldown = phase === 3 ? 3.6 : 5.4;
+            this.announcement = phase === 3 ? "🔥 RELENTLESS BERSERK CHARGE!" : "⚠️ Juggernaut charge incoming!";
+            this.announcementTimer = 1.3;
+            if (phase === 3) {
+              this.visuals.addAcidDecal(this.scene, enemy.mesh.position, 0.8);
+            }
+          }
         }
+
         if (distance <= enemy.definition.attackRange) {
           if (enemy.attackCooldown <= 0) {
             this.damagePlayer(enemy.definition.damage);
             enemy.attackCooldown = enemy.definition.attackCooldown;
           }
         } else {
-          const speed = enemy.definition.speed * (enemy.chargeRemaining > 0 ? 3.4 : 1);
+          const isChilled = (enemy.chilledTimer ?? 0) > 0;
+          const isBurning = (enemy.burningTimer ?? 0) > 0;
+          const frenzyMult = enemy.affix === "frenzy" ? 1.4 : 1.0;
+          const chilledMult = isChilled ? 0.5 : 1.0; // 50% slow when chilled!
+          const chargeMult = enemy.chargeRemaining > 0 ? (enemy.bossPhase === 3 ? 3.8 : 3.3) : 1;
+          const speed = enemy.definition.speed * frenzyMult * chilledMult * chargeMult;
+
           let separationX = 0;
           let separationZ = 0;
           const cellX = Math.floor(enemy.mesh.position.x / CROWD_CELL_SIZE);
@@ -1062,8 +1257,40 @@ export class GameEngine {
               }
             }
           }
-          let directionX = towardX + separationX * 0.78;
-          let directionZ = towardZ + separationZ * 0.78;
+
+          // Obstacle avoidance steering
+          let obstacleAvoidX = 0;
+          let obstacleAvoidZ = 0;
+          for (const obstacle of this.obstacles) {
+            const odx = enemy.mesh.position.x - obstacle.x;
+            const odz = enemy.mesh.position.z - obstacle.z;
+            const distSq = odx * odx + odz * odz;
+            const detectRadius = (obstacle.radius ?? Math.max(obstacle.hx, obstacle.hz)) + enemy.definition.radius + 1.4;
+            if (distSq < detectRadius * detectRadius && distSq > 0.001) {
+              const d = Math.sqrt(distSq);
+              const push = (detectRadius - d) / detectRadius;
+              obstacleAvoidX += (odx / d) * push * 1.6;
+              obstacleAvoidZ += (odz / d) * push * 1.6;
+            }
+          }
+
+          // Corner unclamping / arena center attraction if close to arena corners
+          let cornerNudgeX = 0;
+          let cornerNudgeZ = 0;
+          const absX = Math.abs(enemy.mesh.position.x);
+          const absZ = Math.abs(enemy.mesh.position.z);
+          if (absX > 14.5 && absZ > 14.5) {
+            const centerDist = Math.hypot(enemy.mesh.position.x, enemy.mesh.position.z) || 1;
+            cornerNudgeX = (-enemy.mesh.position.x / centerDist) * 1.2;
+            cornerNudgeZ = (-enemy.mesh.position.z / centerDist) * 1.2;
+          } else if (absX > 16.2) {
+            cornerNudgeX = -Math.sign(enemy.mesh.position.x) * 0.9;
+          } else if (absZ > 16.2) {
+            cornerNudgeZ = -Math.sign(enemy.mesh.position.z) * 0.9;
+          }
+
+          let directionX = towardX + separationX * 0.78 + obstacleAvoidX * 0.85 + cornerNudgeX;
+          let directionZ = towardZ + separationZ * 0.78 + obstacleAvoidZ * 0.85 + cornerNudgeZ;
           const directionLength = Math.hypot(directionX, directionZ) || 1;
           directionX /= directionLength;
           directionZ /= directionLength;
@@ -1080,6 +1307,8 @@ export class GameEngine {
         }
       }
 
+      const isChilled = (enemy.chilledTimer ?? 0) > 0;
+      const isBurning = (enemy.burningTimer ?? 0) > 0;
       const targetFacing = Math.atan2(facingX, facingZ);
       const facingDelta = Math.atan2(
         Math.sin(targetFacing - enemy.mesh.rotation.y),
@@ -1093,6 +1322,8 @@ export class GameEngine {
         distance > enemy.definition.attackRange ? enemy.definition.speed * (enemy.chargeRemaining > 0 ? 2.2 : 1) : 0,
         distance <= enemy.definition.attackRange,
         enemy.hitFlash,
+        isChilled,
+        isBurning,
       );
     }
   }
@@ -1122,6 +1353,35 @@ export class GameEngine {
     this.audio.tone(155, 0.16, 0.04, "sine");
   }
 
+  private explodeBoomer(enemy: EnemyEntity) {
+    const position = enemy.mesh.position.clone();
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      const other = this.enemies[index];
+      if (other === enemy) continue;
+      const distance = other.mesh.position.distanceTo(position);
+      if (distance < 5.8) {
+        const pushDir = other.mesh.position.clone().sub(position).setY(0).normalize();
+        this.damageEnemy(other, 180 * (1 - distance / 7.0), 16, pushDir, index);
+      }
+    }
+    if (this.playerMesh.position.distanceTo(position) < 5.8) {
+      this.damagePlayer(28);
+    }
+
+    const blast = new THREE.Mesh(
+      new THREE.SphereGeometry(1.6, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.78, wireframe: true }),
+    );
+    blast.position.copy(position).setY(1.0);
+    this.scene.add(blast);
+    this.effects.push({ mesh: blast, life: 0.45, maxLife: 0.45 });
+
+    this.visuals.addAcidDecal(this.scene, position, 1.6);
+    this.cameraShake = Math.max(this.cameraShake, 0.75);
+    this.audio.playBoomerDetonation();
+    this.spawnFloatingText(position.clone().setY(1.6), "BOOM! 💥", "comic-boom");
+  }
+
   private updateProjectiles(dt: number) {
     for (let index = this.projectiles.length - 1; index >= 0; index -= 1) {
       const projectile = this.projectiles[index];
@@ -1133,6 +1393,28 @@ export class GameEngine {
         continue;
       }
       if (this.pointInsideObstacle(projectile.mesh.position.x, projectile.mesh.position.z)) {
+        if (projectile.bouncesRemaining && projectile.bouncesRemaining > 0) {
+          projectile.bouncesRemaining -= 1;
+          projectile.velocity.x *= -1;
+          projectile.velocity.z *= -1;
+          // Steer towards nearest enemy if available
+          let closestDist = 12.0;
+          let closestEnemy: EnemyEntity | null = null;
+          for (const enemy of this.enemies) {
+            const d = enemy.mesh.position.distanceTo(projectile.mesh.position);
+            if (d < closestDist) {
+              closestDist = d;
+              closestEnemy = enemy;
+            }
+          }
+          if (closestEnemy) {
+            const steer = closestEnemy.mesh.position.clone().sub(projectile.mesh.position).setY(0).normalize();
+            projectile.velocity.copy(steer.multiplyScalar(38));
+            projectile.direction.copy(steer);
+          }
+          this.audio.tone(420, 0.03, 0.04, "triangle");
+          continue;
+        }
         this.removeProjectile(index);
         continue;
       }
@@ -1157,13 +1439,21 @@ export class GameEngine {
       let hit = false;
       for (let enemyIndex = this.enemies.length - 1; enemyIndex >= 0; enemyIndex -= 1) {
         const enemy = this.enemies[enemyIndex];
+        if (projectile.hitEnemies?.has(enemy)) continue;
         const dx = projectile.mesh.position.x - enemy.mesh.position.x;
         const dz = projectile.mesh.position.z - enemy.mesh.position.z;
         if (dx * dx + dz * dz <= (enemy.definition.radius + 0.2) ** 2) {
+          if (!projectile.hitEnemies) projectile.hitEnemies = new Set();
+          projectile.hitEnemies.add(enemy);
+
           this.damageEnemy(enemy, projectile.damage, projectile.knockback, projectile.direction, enemyIndex);
-          this.removeProjectile(index);
-          hit = true;
-          break;
+          projectile.pierceCount = (projectile.pierceCount ?? 0) + 1;
+
+          if (projectile.pierceCount > (projectile.maxPierces ?? 0)) {
+            this.removeProjectile(index);
+            hit = true;
+            break;
+          }
         }
       }
       if (hit) continue;
@@ -1177,18 +1467,135 @@ export class GameEngine {
     bulletDir: THREE.Vector3,
     index: number,
   ) {
-    const isCrit = Math.random() < 0.2;
-    const finalDamage = isCrit ? Math.round(damage * 1.5) : damage;
+    // Frontal Armor check on Juggernaut Phase 1
+    if (enemy.type === "juggernaut" && (enemy.bossPhase ?? 1) === 1) {
+      const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), enemy.mesh.rotation.y);
+      if (bulletDir.dot(forward) < -0.28) {
+        damage = Math.max(1, Math.round(damage * 0.45));
+        this.spawnFloatingText(enemy.mesh.position.clone().setY(2.2), "ARMORED! 🛡️", "damage");
+        this.audio.tone(160, 0.04, 0.06, "square");
+      }
+    }
+
+    // Elite Shield check
+    if (enemy.shieldHp && enemy.shieldHp > 0) {
+      enemy.shieldHp -= damage;
+      enemy.hitFlash = 0.08;
+      if (enemy.shieldHp <= 0) {
+        enemy.shieldHp = 0;
+        if (enemy.shieldMesh) {
+          enemy.mesh.remove(enemy.shieldMesh);
+          this.visuals.disposeObject(enemy.shieldMesh);
+          enemy.shieldMesh = undefined;
+        }
+        this.audio.playShieldBreak();
+        this.spawnFloatingText(enemy.mesh.position.clone().setY(1.6), "SHIELD BROKEN!", "comic-shield");
+      } else {
+        this.spawnFloatingText(enemy.mesh.position.clone().setY(1.4), `${damage} 🛡️`, "ammo");
+      }
+      this.audio.playHit(false);
+      return;
+    }
+
+    const isChilled = (enemy.chilledTimer ?? 0) > 0;
+    const critChance = 0.2 + (isChilled ? 0.15 : 0);
+    const isCrit = Math.random() < critChance;
+    const finalDamage = isCrit ? Math.round(damage * 1.55) : Math.round(damage);
 
     enemy.health -= finalDamage;
     enemy.hitFlash = 0.12;
 
+    const hitPos = enemy.mesh.position.clone().setY(1.05 * enemy.rig.scale);
+
+    // Status synergies
+    if (this.activeSynergies.has("incendiary")) {
+      const wasBurning = (enemy.burningTimer ?? 0) > 0;
+      enemy.burningTimer = 3.8;
+      if (!wasBurning || isCrit) {
+        this.spawnFloatingText(hitPos.clone().add(new THREE.Vector3(0, 0.3, 0)), "IGNITE! 🔥", "comic-boom");
+      }
+    }
+    if (this.activeSynergies.has("cryo_frost")) {
+      const wasChilled = (enemy.chilledTimer ?? 0) > 0;
+      enemy.chilledTimer = 4.2;
+      if (!wasChilled || isCrit) {
+        this.spawnFloatingText(hitPos.clone().add(new THREE.Vector3(0, 0.3, 0)), "FREEZE! ❄️", "comic-zap");
+        this.audio.playFreeze();
+      }
+    }
+
+    // Vampiric Leech heal on crit
+    if (this.activeSynergies.has("vampiric_leech") && isCrit) {
+      const heal = 4 * (this.activeSynergies.get("vampiric_leech") ?? 1);
+      this.playerHealth = Math.min(this.maxHealth, this.playerHealth + heal);
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `+${heal} HP 🩸`, "comic-leech");
+    }
+
+    // Phantom Reflex reset on elite/boss hit
+    if (this.activeSynergies.has("phantom_reflex") && (enemy.isElite || enemy.type === "juggernaut")) {
+      this.dashCooldown = Math.max(0, this.dashCooldown - 0.7);
+    }
+
+    // Tesla Arcs Chain Lightning
+    if (this.activeSynergies.has("tesla_arcs") && (isCrit || this.bulletCount % 4 === 0)) {
+      const teslaRank = this.activeSynergies.get("tesla_arcs") ?? 1;
+      const zapDamage = 35 * teslaRank;
+      const nearby = this.enemies
+        .filter((e) => e !== enemy && e.mesh.position.distanceTo(enemy.mesh.position) < 7.2)
+        .slice(0, 3);
+      if (nearby.length > 0) {
+        const points = [hitPos];
+        for (const target of nearby) {
+          points.push(target.mesh.position.clone().setY(1.0));
+          target.health -= zapDamage;
+          target.hitFlash = 0.12;
+          this.spawnFloatingText(target.mesh.position.clone().setY(1.3), `${zapDamage} ⚡`, "comic-zap");
+        }
+        const lightning = this.visuals.createChainLightningMesh(points);
+        this.scene.add(lightning);
+        this.effects.push({ mesh: lightning, life: 0.14, maxLife: 0.14 });
+        this.audio.playChainLightning();
+        this.spawnFloatingText(hitPos, "ZAP! ⚡", "comic-zap");
+      }
+    }
+
+    // Shrapnel burst on crit
+    if (this.activeSynergies.has("shrapnel") && isCrit) {
+      const shrapnelRank = this.activeSynergies.get("shrapnel") ?? 1;
+      for (let s = 0; s < 4; s += 1) {
+        const sAngle = Math.random() * Math.PI * 2;
+        const sDir = new THREE.Vector3(Math.cos(sAngle), 0, Math.sin(sAngle));
+        const needleGeo = new THREE.CylinderGeometry(0.02, 0.035, 0.35, 6);
+        const needleMat = new THREE.MeshBasicMaterial({ color: 0xffe600 });
+        const needle = new THREE.Mesh(needleGeo, needleMat);
+        needle.position.copy(enemy.mesh.position).setY(1.0);
+        needle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sDir);
+        this.scene.add(needle);
+        this.projectiles.push({
+          mesh: needle,
+          velocity: sDir.clone().multiplyScalar(28),
+          direction: sDir,
+          damage: Math.round(damage * 0.4 * shrapnelRank),
+          knockback: 3,
+          life: 0.45,
+          enemy: false,
+          isShrapnel: true,
+          maxPierces: 0,
+          pierceCount: 0,
+        });
+      }
+    }
+
     // Impart physical bullet knockback
-    const effectiveKnockback = enemy.type === "juggernaut" ? knockbackForce * 0.15 : enemy.type === "brute" ? knockbackForce * 0.45 : knockbackForce;
+    const effectiveKnockback =
+      enemy.type === "juggernaut"
+        ? knockbackForce * 0.15
+        : enemy.type === "brute"
+          ? knockbackForce * 0.45
+          : knockbackForce;
     enemy.knockback.addScaledVector(bulletDir, effectiveKnockback);
 
-    const hitPos = enemy.mesh.position.clone().setY(1.05 * enemy.rig.scale);
-    this.createDirectionalHitBurst(hitPos, bulletDir, enemy.type === "spitter");
+    this.createDirectionalHitBurst(hitPos, bulletDir, enemy.type === "spitter" || enemy.type === "boomer");
 
     // Tactile micro hit-stop on crits or heavy kills
     if (isCrit || finalDamage >= 60) {
@@ -1209,7 +1616,9 @@ export class GameEngine {
     this.scene.remove(enemy.mesh);
     this.enemies.splice(index, 1);
 
-    if (enemy.type === "spitter") {
+    if (enemy.type === "boomer") {
+      this.explodeBoomer(enemy);
+    } else if (enemy.type === "spitter") {
       this.visuals.addAcidDecal(this.scene, position, 1.1);
     } else {
       this.visuals.addBloodDecal(
@@ -1217,6 +1626,17 @@ export class GameEngine {
         position,
         enemy.type === "juggernaut" ? 1.8 : enemy.type === "brute" ? 1.3 : 0.85,
       );
+    }
+
+    // Burning enemy death flame burst
+    if (enemy.burningTimer && enemy.burningTimer > 0) {
+      for (let i = this.enemies.length - 1; i >= 0; i -= 1) {
+        const other = this.enemies[i];
+        if (other.mesh.position.distanceTo(position) < 3.2) {
+          other.health -= 35;
+          other.burningTimer = 2.5;
+        }
+      }
     }
 
     this.comboCount += 1;
@@ -1375,7 +1795,20 @@ export class GameEngine {
   private spawnFloatingText(
     worldPos: THREE.Vector3,
     text: string,
-    type: "damage" | "crit" | "coin" | "health" | "ammo" | "player-damage" | "combo",
+    type:
+      | "damage"
+      | "crit"
+      | "coin"
+      | "health"
+      | "ammo"
+      | "player-damage"
+      | "combo"
+      | "comic-zap"
+      | "comic-boom"
+      | "comic-slam"
+      | "comic-shield"
+      | "comic-leech"
+      | "comic-rage",
   ) {
     if (typeof window === "undefined") return;
     const projected = worldPos.clone().project(this.camera);
@@ -1394,7 +1827,7 @@ export class GameEngine {
     this.floatingLayer.appendChild(span);
     setTimeout(() => {
       span.remove();
-    }, 650);
+    }, 680);
   }
 
   private activeAmmoTotal() {
@@ -1404,8 +1837,7 @@ export class GameEngine {
   }
 
   private resolveEnemyPosition(position: THREE.Vector3, radius: number) {
-    position.x = THREE.MathUtils.clamp(position.x, -ARENA_LIMIT, ARENA_LIMIT);
-    position.z = THREE.MathUtils.clamp(position.z, -ARENA_LIMIT, ARENA_LIMIT);
+    const boundary = ARENA_LIMIT - radius - 0.25;
     for (const obstacle of this.obstacles) {
       if (obstacle.radius) {
         const dx = position.x - obstacle.x;
@@ -1418,23 +1850,40 @@ export class GameEngine {
           position.z = obstacle.z + (dz / dist) * minDist;
         }
       } else {
-        const dx = position.x - obstacle.x;
-        const dz = position.z - obstacle.z;
-        const overlapX = obstacle.hx + radius - Math.abs(dx);
-        const overlapZ = obstacle.hz + radius - Math.abs(dz);
-        if (overlapX > 0 && overlapZ > 0) {
-          if (overlapX < overlapZ) position.x += Math.sign(dx || 1) * overlapX;
-          else position.z += Math.sign(dz || 1) * overlapZ;
+        // Continuous smooth rounded AABB capsule sliding
+        const clampedX = THREE.MathUtils.clamp(position.x, obstacle.x - obstacle.hx, obstacle.x + obstacle.hx);
+        const clampedZ = THREE.MathUtils.clamp(position.z, obstacle.z - obstacle.hz, obstacle.z + obstacle.hz);
+        const dx = position.x - clampedX;
+        const dz = position.z - clampedZ;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < radius * radius) {
+          const dist = Math.sqrt(distSq) || 0.001;
+          const nx = dx / dist;
+          const nz = dz / dist;
+          position.x = clampedX + nx * radius;
+          position.z = clampedZ + nz * radius;
         }
       }
     }
+    // Hard clamp within playable arena perimeter to prevent corner wedging
+    position.x = THREE.MathUtils.clamp(position.x, -boundary, boundary);
+    position.z = THREE.MathUtils.clamp(position.z, -boundary, boundary);
     return position;
   }
 
-  private pointInsideObstacle(x: number, z: number) {
-    return this.obstacles.some(
-      (obstacle) => Math.abs(x - obstacle.x) <= obstacle.hx && Math.abs(z - obstacle.z) <= obstacle.hz,
-    );
+  private pointInsideObstacle(x: number, z: number, padding = 0) {
+    return this.obstacles.some((obstacle) => {
+      if (obstacle.radius) {
+        const dx = x - obstacle.x;
+        const dz = z - obstacle.z;
+        const r = obstacle.radius + padding;
+        return dx * dx + dz * dz <= r * r;
+      }
+      return (
+        Math.abs(x - obstacle.x) <= obstacle.hx + padding &&
+        Math.abs(z - obstacle.z) <= obstacle.hz + padding
+      );
+    });
   }
 
   private removeProjectile(index: number) {
@@ -1451,6 +1900,12 @@ export class GameEngine {
     const id = this.getActiveWeaponId();
     const state = this.weaponStates.get(id);
     const boss = this.enemies.find((enemy) => enemy.type === "juggernaut");
+    const bossName = boss
+      ? this.wave <= 5
+        ? "PROTOTYPE TITAN // MK-I"
+        : "TITAN DREADNOUGHT // PRIME"
+      : undefined;
+    const bossMaxPhases = boss ? (this.wave <= 5 ? 2 : 3) : undefined;
     this.callbacks.onHud({
       health: this.playerHealth,
       maxHealth: this.maxHealth,
@@ -1464,6 +1919,10 @@ export class GameEngine {
       dash: 1 - Math.min(1, this.dashCooldown / 2.8),
       bossHealth: boss?.health,
       bossMaxHealth: boss?.maxHealth,
+      bossPhase: boss?.bossPhase ?? (boss ? 1 : undefined),
+      bossMaxPhases,
+      bossName,
+      activeSynergies: Object.fromEntries(this.activeSynergies),
       announcement: this.announcementTimer > 0 ? this.announcement : undefined,
       comboCount: this.comboCount,
       comboTimer: this.comboTimer,

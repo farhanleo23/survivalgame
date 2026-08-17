@@ -4,6 +4,8 @@ import type {
   PerkId,
   PickupDefinition,
   PickupId,
+  SynergyCardDefinition,
+  SynergyCardId,
   WaveDefinition,
   WeaponDefinition,
   WeaponId,
@@ -37,7 +39,8 @@ export const ENEMIES: Record<EnemyId, EnemyDefinition> = {
   runner: { id: "runner", name: "Runner", health: 38, speed: 4.2, damage: 7, attackRange: 1.1, attackCooldown: 0.65, reward: 15, radius: 0.46, color: 0xd7a66c },
   spitter: { id: "spitter", name: "Spitter", health: 70, speed: 1.65, damage: 12, attackRange: 9, attackCooldown: 2.4, reward: 22, radius: 0.58, color: 0x8bef67 },
   brute: { id: "brute", name: "Brute", health: 230, speed: 1.35, damage: 20, attackRange: 1.5, attackCooldown: 1.4, reward: 38, radius: 0.9, color: 0x995b4a },
-  juggernaut: { id: "juggernaut", name: "Juggernaut", health: 1300, speed: 1.25, damage: 28, attackRange: 2.05, attackCooldown: 1.5, reward: 250, radius: 1.45, color: 0xd94b38 },
+  boomer: { id: "boomer", name: "Volatile Boomer", health: 85, speed: 1.85, damage: 30, attackRange: 1.8, attackCooldown: 1.0, reward: 32, radius: 0.82, color: 0x48c774 },
+  juggernaut: { id: "juggernaut", name: "Titan Juggernaut", health: 1450, speed: 1.3, damage: 32, attackRange: 2.1, attackCooldown: 1.5, reward: 300, radius: 1.55, color: 0xd94b38 },
 };
 
 export const PICKUPS: Record<PickupId, PickupDefinition> = {
@@ -46,17 +49,130 @@ export const PICKUPS: Record<PickupId, PickupDefinition> = {
   health: { id: "health", label: "Trauma kit", color: 0xff5f66 },
 };
 
+export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
+  piercing: {
+    id: "piercing",
+    name: "AP Tungsten Rounds",
+    rarity: "common",
+    description: "Bullets punch through targets (+1 enemy pierce per stack).",
+    flavorText: "Laser-straight lines through packed hordes.",
+    icon: "🏹",
+    maxStacks: 3,
+  },
+  ricochet: {
+    id: "ricochet",
+    name: "Kinetic Deflector",
+    rarity: "rare",
+    description: "Bullets ricochet off obstacles towards nearby enemies (+1 bounce per stack).",
+    flavorText: "Turn depot barricades into bank-shot death traps.",
+    icon: "⚡",
+    maxStacks: 2,
+  },
+  shrapnel: {
+    id: "shrapnel",
+    name: "Hollow-Point Shrapnel",
+    rarity: "rare",
+    description: "Critical hits shatter targets, spraying 4 needle shards into surrounding foes.",
+    flavorText: "Micro-explosive core fracturing upon high-velocity impact.",
+    icon: "💥",
+    maxStacks: 2,
+  },
+  high_caliber: {
+    id: "high_caliber",
+    name: "Magnum Overpressure",
+    rarity: "common",
+    description: "+25% bullet damage, +20% size, and heavy concussive knockback.",
+    flavorText: "Packed with enough powder to flip a charging brute.",
+    icon: "🎯",
+    maxStacks: 3,
+  },
+  tesla_arcs: {
+    id: "tesla_arcs",
+    name: "Tesla Discharge",
+    rarity: "epic",
+    description: "Every 4th bullet or critical hit unleashes chain lightning zapping up to 3 enemies.",
+    flavorText: "Capacitor coils wired straight to the firing pin.",
+    icon: "⚡",
+    maxStacks: 3,
+  },
+  incendiary: {
+    id: "incendiary",
+    name: "Dragon's Breath",
+    rarity: "rare",
+    description: "Bullets ignite enemies for 3s burn damage. Burning foes burst into flame on death.",
+    flavorText: "White phosphorus paste engineered for bio-containment.",
+    icon: "🔥",
+    maxStacks: 2,
+  },
+  cryo_frost: {
+    id: "cryo_frost",
+    name: "Cryo Core",
+    rarity: "common",
+    description: "Bullets chill targets, slowing movement by 35% and granting +15% critical vulnerability.",
+    flavorText: "Sub-zero flash-freezing halts charging runners in their tracks.",
+    icon: "❄️",
+    maxStacks: 2,
+  },
+  acid_dash: {
+    id: "acid_dash",
+    name: "Caustic Jet",
+    rarity: "rare",
+    description: "Dashing spews a caustic chemical slime path dealing 45 acid damage/sec to pursuers.",
+    flavorText: "Never evade without leaving a lethal wake.",
+    icon: "🧪",
+    maxStacks: 2,
+  },
+  kinetic_impact: {
+    id: "kinetic_impact",
+    name: "Seismic Surge",
+    rarity: "epic",
+    description: "Dash release triggers an inked 360° comic blast, dealing 85 damage and staggering crowds.",
+    flavorText: "Instantaneous pressure wave clears immediate personal space.",
+    icon: "💫",
+    maxStacks: 2,
+  },
+  phantom_reflex: {
+    id: "phantom_reflex",
+    name: "Phantom Reflex",
+    rarity: "common",
+    description: "Dash cooldown reduced by 30%. Hitting an elite or boss immediately restores 50% dash.",
+    flavorText: "Blink through hostile swarms without breaking your stride.",
+    icon: "👟",
+    maxStacks: 3,
+  },
+  vampiric_leech: {
+    id: "vampiric_leech",
+    name: "Vampiric Leech",
+    rarity: "epic",
+    description: "Critical hits and multi-kill combos siphon life, instantly restoring +4 HP.",
+    flavorText: "Sub-dermal bio-siphons convert carnage into raw survival.",
+    icon: "🩸",
+    maxStacks: 2,
+  },
+  adrenaline_surge: {
+    id: "adrenaline_surge",
+    name: "Adrenaline Surge",
+    rarity: "common",
+    description: "When below 45% HP, gain +40% fire rate, +30% reload speed, and +15% movement speed.",
+    flavorText: "Redline your vitals when cornered against the wall.",
+    icon: "⚡",
+    maxStacks: 2,
+  },
+};
+
+export const SYNERGY_CARD_IDS = Object.keys(SYNERGY_CARDS) as SynergyCardId[];
+
 export const WAVES: WaveDefinition[] = [
   { wave: 1, label: "First contact", enemies: { shambler: 6 }, spawnInterval: 0.82 },
   { wave: 2, label: "Perimeter breach", enemies: { shambler: 10 }, spawnInterval: 0.76 },
   { wave: 3, label: "They can run", enemies: { shambler: 8, runner: 4 }, spawnInterval: 0.7 },
-  { wave: 4, label: "Hazardous exposure", enemies: { shambler: 8, runner: 5, spitter: 2 }, spawnInterval: 0.66 },
-  { wave: 5, label: "Heavy footsteps", enemies: { shambler: 10, runner: 5, spitter: 2, brute: 1 }, spawnInterval: 0.62 },
-  { wave: 6, label: "No clean exits", enemies: { shambler: 12, runner: 7, spitter: 3, brute: 2 }, spawnInterval: 0.58 },
-  { wave: 7, label: "The depot stirs", enemies: { shambler: 14, runner: 8, spitter: 4, brute: 2 }, spawnInterval: 0.54 },
-  { wave: 8, label: "Containment failed", enemies: { shambler: 15, runner: 10, spitter: 5, brute: 3 }, spawnInterval: 0.5 },
-  { wave: 9, label: "Last stand", enemies: { shambler: 17, runner: 12, spitter: 6, brute: 4 }, spawnInterval: 0.46 },
-  { wave: 10, label: "Juggernaut", enemies: { shambler: 8, runner: 5, spitter: 3, brute: 2, juggernaut: 1 }, spawnInterval: 0.58 },
+  { wave: 4, label: "Hazardous exposure", enemies: { shambler: 7, runner: 4, spitter: 2, boomer: 2 }, spawnInterval: 0.66 },
+  { wave: 5, label: "Prototype Titan Emerges", enemies: { shambler: 6, runner: 4, spitter: 2, boomer: 1, juggernaut: 1 }, spawnInterval: 0.68 },
+  { wave: 6, label: "No clean exits", enemies: { shambler: 9, runner: 6, spitter: 3, brute: 1, boomer: 2 }, spawnInterval: 0.58 },
+  { wave: 7, label: "The depot stirs", enemies: { shambler: 11, runner: 7, spitter: 3, brute: 2, boomer: 3 }, spawnInterval: 0.54 },
+  { wave: 8, label: "Containment failed", enemies: { shambler: 13, runner: 8, spitter: 4, brute: 2, boomer: 4 }, spawnInterval: 0.5 },
+  { wave: 9, label: "Last stand", enemies: { shambler: 14, runner: 9, spitter: 5, brute: 3, boomer: 4 }, spawnInterval: 0.46 },
+  { wave: 10, label: "Titan Dreadnought Prime", enemies: { shambler: 8, runner: 6, spitter: 3, brute: 2, boomer: 2, juggernaut: 1 }, spawnInterval: 0.58 },
 ];
 
 export const PERKS: Record<PerkId, { name: string; description: string; baseCost: number }> = {
@@ -89,3 +205,18 @@ export function getWeaponUpgradeCost(id: WeaponId, currentRank: number) {
 export function getPerkUpgradeCost(id: PerkId, currentRank: number) {
   return PERKS[id].baseCost + currentRank * 85;
 }
+
+export function getRandomPerkDraft(
+  activeCards: Partial<Record<SynergyCardId, number>>,
+  count = 3,
+): SynergyCardDefinition[] {
+  const available = SYNERGY_CARD_IDS.filter((id) => {
+    const current = activeCards[id] ?? 0;
+    return current < SYNERGY_CARDS[id].maxStacks;
+  });
+
+  // Shuffle available cards with weighted rarity
+  const weighted = [...available].sort(() => Math.random() - 0.5);
+  return weighted.slice(0, count).map((id) => SYNERGY_CARDS[id]);
+}
+

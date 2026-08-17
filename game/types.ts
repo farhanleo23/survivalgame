@@ -4,13 +4,42 @@ export type GameScreen =
   | "playing"
   | "paused"
   | "armory"
+  | "draft"
   | "dead"
   | "victory";
 
 export type WeaponId = "pistol" | "smg" | "shotgun" | "rifle";
-export type EnemyId = "shambler" | "runner" | "spitter" | "brute" | "juggernaut";
+export type EnemyId = "shambler" | "runner" | "spitter" | "brute" | "juggernaut" | "boomer";
 export type PickupId = "coin" | "ammo" | "health";
 export type PerkId = "vitality" | "mobility" | "magnet";
+
+export type SynergyCardId =
+  | "piercing"
+  | "ricochet"
+  | "shrapnel"
+  | "high_caliber"
+  | "tesla_arcs"
+  | "incendiary"
+  | "cryo_frost"
+  | "acid_dash"
+  | "kinetic_impact"
+  | "phantom_reflex"
+  | "vampiric_leech"
+  | "adrenaline_surge";
+
+export type CardRarity = "common" | "rare" | "epic";
+
+export interface SynergyCardDefinition {
+  id: SynergyCardId;
+  name: string;
+  rarity: CardRarity;
+  description: string;
+  flavorText: string;
+  icon: string;
+  maxStacks: number;
+}
+
+export type EliteAffix = "shielded" | "frenzy" | "toxic";
 
 export interface WeaponDefinition {
   id: WeaponId;
@@ -110,6 +139,10 @@ export interface HudState {
   dash: number;
   bossHealth?: number;
   bossMaxHealth?: number;
+  bossPhase?: number;
+  bossMaxPhases?: number;
+  bossName?: string;
+  bossSpecialAlert?: string;
   announcement?: string;
   comboCount?: number;
   comboTimer?: number;
@@ -118,5 +151,7 @@ export interface HudState {
   missionTime?: number;
   playerPos?: { x: number; z: number; rotation: number };
   minimapEnemies?: Array<{ x: number; z: number; type: EnemyId }>;
+  activeSynergies?: Partial<Record<SynergyCardId, number>>;
 }
+
 

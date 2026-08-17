@@ -4,16 +4,18 @@ import { useCallback, useEffect, useId, useRef, useState, type PointerEvent } fr
 import type { GameEngine as GameEngineType } from "@/game/GameEngine";
 import {
   getPerkUpgradeCost,
+  getRandomPerkDraft,
   getWeaponStats,
   getWeaponUpgradeCost,
   PERKS,
   PERK_IDS,
+  SYNERGY_CARDS,
   WEAPONS,
   WEAPON_IDS,
 } from "@/game/config";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
 import { createDefaultProfile, loadProfile, saveProfile } from "@/game/profile";
-import type { GameScreen, HudState, PerkId, ProfileV1, WeaponId } from "@/game/types";
+import type { GameScreen, HudState, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
 
 const initialHud: HudState = {
   health: 100,
@@ -28,6 +30,7 @@ const initialHud: HudState = {
   dash: 1,
   comboCount: 0,
   comboTimer: 0,
+  activeSynergies: {},
 };
 
 type EngineStatus = "idle" | "loading" | "ready" | "error";
@@ -39,6 +42,7 @@ export function Deadwave() {
   const [hydrated, setHydrated] = useState(false);
   const [notice, setNotice] = useState("");
   const [runToken, setRunToken] = useState(0);
+  const [draftCards, setDraftCards] = useState<SynergyCardDefinition[]>([]);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("idle");
   const stageRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngineType | null>(null);
@@ -73,7 +77,15 @@ export function Deadwave() {
           onHud: setHud,
           onCoins: (amount) => commitProfile((current) => ({ ...current, coins: current.coins + amount })),
           onWaveChange: (wave) => commitProfile((current) => ({ ...current, highestWave: Math.max(current.highestWave, wave) })),
-          onWaveComplete: () => setScreen("armory"),
+          onWaveComplete: () => {
+            const nextCards = getRandomPerkDraft(engineRef.current?.getSynergies() ?? {}, 3);
+            if (nextCards.length > 0) {
+              setDraftCards(nextCards);
+              setScreen("draft");
+            } else {
+              setScreen("armory");
+            }
+          },
           onDeath: () => setScreen("dead"),
           onVictory: () => {
             commitProfile((current) => ({
@@ -113,7 +125,7 @@ export function Deadwave() {
 
   useEffect(() => () => engineRef.current?.destroy(), []);
 
-  const gameVisible = ["playing", "paused", "armory", "dead", "victory"].includes(screen);
+  const gameVisible = ["playing", "paused", "armory", "draft", "dead", "victory"].includes(screen);
   const healthPercent = Math.max(0, Math.min(100, (hud.health / hud.maxHealth) * 100));
 
   const startNewRun = () => {
@@ -193,6 +205,12 @@ export function Deadwave() {
     }
     commitProfile((current) => ({ ...current, coins: current.coins - 20 }));
     setNotice("All equipped weapons refilled.");
+  };
+
+  const selectPerkCard = (cardId: SynergyCardId) => {
+    engineRef.current?.addSynergy(cardId);
+    setDraftCards([]);
+    setScreen("armory");
   };
 
   const continueWave = () => {
@@ -300,6 +318,14 @@ export function Deadwave() {
             <button className="text-action danger-action" onClick={returnToLobby}>Abandon Run</button>
           </div>
         </Modal>
+      )}
+
+      {screen === "draft" && (
+        <DraftModal
+          cards={draftCards}
+          activeSynergies={hud.activeSynergies ?? {}}
+          onSelect={selectPerkCard}
+        />
       )}
 
       {screen === "armory" && (
@@ -644,6 +670,26 @@ function Hud({
           </div>
         </div>
 
+        {/* Active Roguelite Synergies Tray */}
+        {hud.activeSynergies && Object.keys(hud.activeSynergies).length > 0 && (
+          <div className="hud-synergy-tray" aria-label="Active Battlefield Synergies">
+            {Object.entries(hud.activeSynergies).map(([id, stack]) => {
+              const card = SYNERGY_CARDS[id as SynergyCardId];
+              if (!card || stack <= 0) return null;
+              return (
+                <div
+                  key={id}
+                  className={`hud-synergy-badge rarity-${card.rarity}`}
+                  title={`${card.name} (Rank ${stack}/${card.maxStacks}): ${card.description}`}
+                >
+                  <span className="hud-synergy-icon">{card.icon}</span>
+                  <span className="hud-synergy-rank">x{stack}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Isometric Angled Radar Mini-Map */}
         <div className="isometric-minimap" aria-hidden="true">
           <div className="minimap-grid-lines" />
@@ -750,20 +796,94 @@ function Hud({
         </div>
       )}
 
-      {/* Boss Health Bar for Wave 10 */}
-      {hud.bossHealth !== undefined && hud.bossMaxHealth !== undefined && (
-        <div className="boss-hud">
+      {/* Multi-Phase Boss Health Bar for Wave 5 & Wave 10 */}
+      {hud.bossHealth !== undefined && hud.bossMaxHealth !== undefined && hud.bossHealth > 0 && (
+        <div className={`boss-hud phase-${hud.bossPhase ?? 1} ${hud.bossPhase === 3 ? "is-enraged" : ""}`}>
           <div className="boss-title">
-            <span>⚠️ JUGGERNAUT DREADNOUGHT</span>
+            <div className="boss-nameplate">
+              <span>⚠️ {hud.bossName ?? "TITAN-01 // JUGGERNAUT"}</span>
+              <span className={`boss-phase-badge ${hud.bossPhase === 3 ? "berserk" : ""}`}>
+                {hud.bossMaxPhases === 2
+                  ? hud.bossPhase === 2
+                    ? "💥 PHASE 2: ENRAGED SLAM"
+                    : "🛡️ PHASE 1: ARMORED"
+                  : hud.bossPhase === 3
+                    ? "🔥 PHASE 3: BERSERK"
+                    : hud.bossPhase === 2
+                      ? "⚡ PHASE 2: SHOCKWAVE"
+                      : "🛡️ PHASE 1: ARMORED"}
+              </span>
+            </div>
             <strong>{Math.ceil(hud.bossHealth)} / {hud.bossMaxHealth}</strong>
           </div>
           <div className="boss-track">
+            {hud.bossMaxPhases === 2 ? (
+              <div className="boss-phase-divider divider-mid" style={{ left: "50%" }} />
+            ) : (
+              <>
+                <div className="boss-phase-divider divider-1" style={{ left: "33.3%" }} />
+                <div className="boss-phase-divider divider-2" style={{ left: "66.6%" }} />
+              </>
+            )}
             <i style={{ width: `${Math.max(0, (hud.bossHealth / hud.bossMaxHealth) * 100)}%` }} />
           </div>
         </div>
       )}
 
       <div className="crosshair" aria-hidden="true"><span /><span /></div>
+    </div>
+  );
+}
+
+function DraftModal({
+  cards,
+  activeSynergies,
+  onSelect,
+}: {
+  cards: SynergyCardDefinition[];
+  activeSynergies: Partial<Record<SynergyCardId, number>>;
+  onSelect: (id: SynergyCardId) => void;
+}) {
+  return (
+    <div className="draft-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="draft-heading">
+      <div className="draft-modal-panel">
+        <header className="draft-modal-header">
+          <div className="draft-eyebrow">WAVE SURVIVED // COMBAT REQUISITION</div>
+          <h2 id="draft-heading">CHOOSE A BATTLEFIELD SYNERGY</h2>
+          <p>Select 1 tactical module to augment your weaponry and survivability for this run.</p>
+        </header>
+
+        <div className="draft-cards-row">
+          {cards.map((card) => {
+            const currentStack = activeSynergies[card.id] ?? 0;
+            const nextStack = currentStack + 1;
+            return (
+              <button
+                key={card.id}
+                type="button"
+                className={`draft-perk-card rarity-${card.rarity}`}
+                onClick={() => onSelect(card.id)}
+              >
+                <div className="card-top-bar">
+                  <span className={`card-rarity-badge rarity-${card.rarity}`}>{card.rarity.toUpperCase()}</span>
+                  <span className="card-stack-badge">
+                    RANK {nextStack}/{card.maxStacks}
+                  </span>
+                </div>
+                <div className="card-icon-frame">
+                  <span className="card-emoji">{card.icon}</span>
+                </div>
+                <h3 className="card-title">{card.name}</h3>
+                <p className="card-description">{card.description}</p>
+                <blockquote className="card-flavor">&ldquo;{card.flavorText}&rdquo;</blockquote>
+                <div className="card-select-cta">
+                  <span>EQUIP MODULE →</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

@@ -602,6 +602,7 @@ export class VisualFactory {
       runner: 0x9a755d,
       spitter: 0x688c52,
       brute: 0x6f665f,
+      boomer: 0x42964e,
       juggernaut: 0x6d3a35,
     };
     template.traverse((object) => {
