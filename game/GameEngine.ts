@@ -385,15 +385,15 @@ export class GameEngine {
   }
 
   private setupScene() {
-    // Dark teal atmosphere with warm industrial pools of light.
-    this.scene.background = new THREE.Color(0x081718);
-    this.scene.fog = new THREE.FogExp2(0x0d2525, 0.0135);
+    // Clean, high-contrast tactical atmosphere with crisp directional lighting
+    this.scene.background = new THREE.Color(0x0e131b);
+    this.scene.fog = new THREE.FogExp2(0x0e131b, 0.01);
 
-    const ambient = new THREE.HemisphereLight(0x84b8b5, 0x1b0e0a, 1.05);
+    const ambient = new THREE.HemisphereLight(0x8cb0d8, 0x182028, 1.25);
     this.scene.add(ambient);
 
-    const key = new THREE.DirectionalLight(0xffc47d, 2.4);
-    key.position.set(-13, 22, -8);
+    const key = new THREE.DirectionalLight(0xfff8ee, 2.2);
+    key.position.set(-14, 26, -10);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
     key.shadow.camera.left = -24;
@@ -405,9 +405,13 @@ export class GameEngine {
     key.shadow.radius = 3;
     this.scene.add(key);
 
-    const coolFill = new THREE.DirectionalLight(0x49c2c8, 1.38);
-    coolFill.position.set(14, 10, 16);
+    const coolFill = new THREE.DirectionalLight(0x00e5ff, 1.15);
+    coolFill.position.set(14, 12, 16);
     this.scene.add(coolFill);
+
+    const rimLight = new THREE.DirectionalLight(0xff9900, 0.85);
+    rimLight.position.set(0, 15, -20);
+    this.scene.add(rimLight);
 
     this.scene.add(this.visuals.createGround());
     this.visuals.addPerimeter(this.scene);
@@ -782,14 +786,14 @@ export class GameEngine {
     // Multi-layered audio gunshot
     this.audio.playShoot(id);
 
-    // Visible weapon model recoil kickback
-    const recoilWeight = id === "shotgun" ? 1.6 : id === "rifle" ? 1.25 : id === "pistol" ? 0.9 : 0.65;
+    // Subtle, clean weapon model recoil kickback
+    const recoilWeight = id === "shotgun" ? 0.35 : id === "rifle" ? 0.2 : id === "pistol" ? 0.12 : 0.08;
     if (this.playerRig) {
       this.visuals.applyWeaponRecoil(this.playerRig, recoilWeight);
     }
 
-    // Directional camera recoil kickback
-    this.cameraRecoil.addScaledVector(this.aim, -0.15 * recoilWeight);
+    // Gentle camera recoil
+    this.cameraRecoil.addScaledVector(this.aim, -0.025 * recoilWeight);
 
     const origin = this.playerRig
       ? this.playerRig.muzzle.getWorldPosition(new THREE.Vector3())
@@ -820,10 +824,10 @@ export class GameEngine {
       const angle = Math.atan2(this.aim.z, this.aim.x) + THREE.MathUtils.randFloatSpread(stats.spread * 2);
       const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
 
-      const tracerLen = (id === "rifle" ? 1.2 : id === "shotgun" ? 0.45 : 0.75) * bulletScale;
+      const tracerLen = (id === "rifle" ? 1.0 : id === "shotgun" ? 0.4 : 0.65) * bulletScale;
       const tracerGeo = new THREE.CylinderGeometry(
-        (id === "shotgun" ? 0.04 : id === "rifle" ? 0.045 : 0.028) * bulletScale,
-        (id === "shotgun" ? 0.06 : id === "rifle" ? 0.055 : 0.038) * bulletScale,
+        (id === "shotgun" ? 0.035 : id === "rifle" ? 0.038 : 0.024) * bulletScale,
+        (id === "shotgun" ? 0.05 : id === "rifle" ? 0.048 : 0.032) * bulletScale,
         tracerLen,
         8,
       );
@@ -848,12 +852,13 @@ export class GameEngine {
     }
 
     const flash = this.visuals.createMuzzleFlashMesh(bulletColor);
-    flash.position.copy(origin).addScaledVector(this.aim, 0.22);
+    flash.position.copy(origin).addScaledVector(this.aim, 0.14);
     flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.aim);
     this.scene.add(flash);
-    this.effects.push({ mesh: flash, life: 0.05, maxLife: 0.05 });
+    this.effects.push({ mesh: flash, life: 0.032, maxLife: 0.032 });
 
-    this.cameraShake = Math.max(this.cameraShake, id === "shotgun" ? 0.28 : id === "rifle" ? 0.16 : 0.07);
+    // Smooth subtle camera feedback
+    this.cameraShake = Math.max(this.cameraShake, id === "shotgun" ? 0.06 : id === "rifle" ? 0.03 : 0.012);
     if (state.magazine === 0 && state.reserve > 0) this.reloadWeapon(id);
   }
 
@@ -1641,14 +1646,24 @@ export class GameEngine {
 
     this.comboCount += 1;
     this.comboTimer = 2.8;
+
+    // Spider-Verse Pop-Art Comic Sound Word Bubbles on Kill
+    const comicKillWords = ["BAM! 💥", "POW! 💥", "KRAAKOOM! ⚡", "SMASH! 💫", "K.O.! 🥊", "WHAM! 💫"];
+    if (enemy.isElite || enemy.type === "juggernaut" || Math.random() < 0.32) {
+      const word = enemy.type === "juggernaut"
+        ? "KRAAKOOM! 💥"
+        : comicKillWords[Math.floor(Math.random() * comicKillWords.length)];
+      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.4, 0)), word, "comic-boom");
+    }
+
     if (this.comboCount === 3) {
-      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.5, 0)), "3x COMBO!", "combo");
+      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), "3x COMBO!", "combo");
     } else if (this.comboCount === 5) {
-      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.5, 0)), "5x MULTI-KILL!", "combo");
+      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), "5x MULTI-KILL!", "combo");
     } else if (this.comboCount === 8) {
-      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.5, 0)), "8x RAMPAGE!", "combo");
+      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), "8x RAMPAGE!", "combo");
     } else if (this.comboCount >= 10 && this.comboCount % 5 === 0) {
-      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.5, 0)), `${this.comboCount}x UNSTOPPABLE!`, "combo");
+      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), `${this.comboCount}x UNSTOPPABLE!`, "combo");
     }
 
     this.createPickup("coin", position, enemy.definition.reward);
@@ -1808,7 +1823,9 @@ export class GameEngine {
       | "comic-slam"
       | "comic-shield"
       | "comic-leech"
-      | "comic-rage",
+      | "comic-rage"
+      | "comic-freeze"
+      | "comic-speed",
   ) {
     if (typeof window === "undefined") return;
     const projected = worldPos.clone().project(this.camera);
@@ -2177,6 +2194,13 @@ export class GameEngine {
     this.dashCooldown = 2.8;
     this.cameraShake = Math.max(this.cameraShake, 0.18);
     this.audio.playDash();
+
+    // Spider-Verse Dynamic Comic Radial Speed-Lines on Dash
+    const speedLines = this.visuals.createRadialSpeedLinesMesh(0x00f0ff);
+    speedLines.position.copy(this.playerMesh.position);
+    this.scene.add(speedLines);
+    this.effects.push({ mesh: speedLines, life: 0.28, maxLife: 0.28 });
+    this.spawnFloatingText(this.playerMesh.position.clone().setY(1.4), "SWOOSH! 💨", "comic-speed");
   }
 
   private onFocusLost = () => {

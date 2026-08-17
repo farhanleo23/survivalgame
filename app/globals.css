@@ -1892,57 +1892,82 @@ button:focus-visible {
   font-size: 18px;
 }
 .floating-popup--combo {
-  color: #ff0055;
-  font-size: 22px;
-  text-shadow: 0 0 18px #ff0055, 0 3px 0 #000000;
-  transform: translate(-50%, -50%) rotate(4deg);
+  color: #ffe600;
+  font-size: 26px;
+  font-weight: 900;
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 3px 3px 0 #ff0055, -2px -2px 0 #00f5d4, 0 0 20px #ffe600;
+  transform: translate(-50%, -50%) rotate(4deg) scale(1.1);
+  animation: float-up 0.9s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 .floating-popup--comic-zap {
   color: #00f5d4;
-  font-size: 20px;
-  font-weight: 900;
-  text-shadow: 0 0 16px #00f5d4, 0 2px 0 #000000;
-  transform: translate(-50%, -50%) rotate(-5deg);
-}
-.floating-popup--comic-boom {
-  color: #39ff14;
   font-size: 24px;
   font-weight: 900;
-  text-shadow: 0 0 20px #39ff14, 0 3px 0 #000000;
-  transform: translate(-50%, -50%) scale(1.15) rotate(3deg);
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 3px 3px 0 #ff0055, -2px -2px 0 #ffe600, 0 0 16px #00f5d4;
+  transform: translate(-50%, -50%) rotate(-6deg) scale(1.15);
+  animation: float-up 0.8s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+}
+.floating-popup--comic-boom {
+  color: #ffe600;
+  font-size: 28px;
+  font-weight: 900;
+  -webkit-text-stroke: 2px #05080c;
+  text-shadow: 4px 4px 0 #ff0055, -3px -3px 0 #00f5d4, 0 0 24px #ff3d00;
+  transform: translate(-50%, -50%) scale(1.25) rotate(3deg);
+  animation: float-up 0.85s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 .floating-popup--comic-slam {
   color: #ff0055;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 900;
-  text-shadow: 0 0 18px #ff0055, 0 3px 0 #000000;
-  transform: translate(-50%, -50%) rotate(-2deg);
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 3px 3px 0 #ffe600, -2px -2px 0 #00f5d4, 0 0 20px #ff0055;
+  transform: translate(-50%, -50%) rotate(-3deg) scale(1.15);
+  animation: float-up 0.8s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 .floating-popup--comic-shield {
   color: #00f5d4;
-  font-size: 19px;
+  font-size: 22px;
   font-weight: 900;
-  text-shadow: 0 0 14px #00f5d4, 0 2px 0 #000000;
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 2px 2px 0 #ff0055, 0 0 16px #00f5d4;
+  animation: float-up 0.8s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 .floating-popup--comic-leech {
   color: #ff0055;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 900;
-  text-shadow: 0 0 14px #ff0055, 0 2px 0 #000000;
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 2px 2px 0 #ffe600, 0 0 14px #ff0055;
+  animation: float-up 0.8s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 .floating-popup--comic-rage {
   color: #ff0055;
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 900;
-  text-shadow: 0 0 22px #ff0055, 0 3px 0 #000000;
-  animation: float-up 0.8s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+  -webkit-text-stroke: 2px #05080c;
+  text-shadow: 4px 4px 0 #ffe600, -3px -3px 0 #00f5d4, 0 0 26px #ff0055;
+  animation: float-up 0.9s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 .floating-popup--comic-freeze {
   color: #00f0ff;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 900;
-  text-shadow: 0 0 18px #00f0ff, 0 2px 0 #000000;
-  transform: translate(-50%, -50%) rotate(2deg);
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 3px 3px 0 #ff0055, -2px -2px 0 #ffe600, 0 0 20px #00f0ff;
+  transform: translate(-50%, -50%) rotate(3deg) scale(1.15);
+  animation: float-up 0.85s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+}
+.floating-popup--comic-speed {
+  color: #00f5d4;
+  font-size: 24px;
+  font-weight: 900;
+  -webkit-text-stroke: 1.5px #05080c;
+  text-shadow: 3px 3px 0 #ff0055, -2px -2px 0 #ffffff, 0 0 18px #00f5d4;
+  transform: translate(-50%, -50%) rotate(-4deg) scale(1.1);
+  animation: float-up 0.75s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
 }
 
 /* 3-Card Roguelite Synergy Draft Modal */

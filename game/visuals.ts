@@ -30,6 +30,13 @@ export interface CharacterRig {
   burnShell?: THREE.Mesh;
   glowSac?: THREE.Mesh;
   bossCore?: THREE.Mesh;
+  rightArmBone?: THREE.Object3D;
+  rightForeArmBone?: THREE.Object3D;
+  rightHandBone?: THREE.Object3D;
+  leftArmBone?: THREE.Object3D;
+  leftForeArmBone?: THREE.Object3D;
+  spineBone?: THREE.Object3D;
+  kind?: "player" | EnemyId;
   phase: number;
   scale: number;
   disposed: boolean;
@@ -58,18 +65,19 @@ const mesh = (geometry: THREE.BufferGeometry, material: THREE.Material) => new T
 
 const createToonGradientMap = (): THREE.CanvasTexture => {
   const canvas = document.createElement("canvas");
-  canvas.width = 4;
+  canvas.width = 16;
   canvas.height = 1;
   const ctx = canvas.getContext("2d");
   if (ctx) {
-    ctx.fillStyle = "#333333";
-    ctx.fillRect(0, 0, 1, 1);
-    ctx.fillStyle = "#777777";
-    ctx.fillRect(1, 0, 1, 1);
-    ctx.fillStyle = "#bbbbbb";
-    ctx.fillRect(2, 0, 1, 1);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(3, 0, 1, 1);
+    // Stepped Spider-Verse comic toon ramp with deep ink shadows and crisp highlight thresholds
+    ctx.fillStyle = "#0c1017"; // Ink shadow
+    ctx.fillRect(0, 0, 4, 1);
+    ctx.fillStyle = "#2d3748"; // Halftone midtone
+    ctx.fillRect(4, 0, 4, 1);
+    ctx.fillStyle = "#a0aec0"; // Bright midtone
+    ctx.fillRect(8, 0, 4, 1);
+    ctx.fillStyle = "#ffffff"; // Specular highlight
+    ctx.fillRect(12, 0, 4, 1);
   }
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.NearestFilter;
@@ -80,8 +88,8 @@ const createToonGradientMap = (): THREE.CanvasTexture => {
 const createInkOutlinedMesh = (
   geometry: THREE.BufferGeometry,
   material: THREE.Material,
-  outlineThickness = 0.04,
-  outlineColor = 0x090c0e,
+  outlineThickness = 0.055,
+  outlineColor = 0x05080c,
 ): THREE.Group => {
   const group = new THREE.Group();
   group.name = "custom-outlined-mesh";
@@ -239,25 +247,11 @@ export class VisualFactory {
     this.groundMaterial = new THREE.MeshStandardMaterial({
       map: this.groundTileTexture,
       bumpMap: this.groundTileTexture,
-      bumpScale: 0.045,
-      roughness: 0.88,
-      metalness: 0.12,
-      color: 0xb7c0bc,
+      bumpScale: 0.035,
+      roughness: 0.75,
+      metalness: 0.22,
+      color: 0xffffff,
     });
-
-    new THREE.TextureLoader().load(
-      "/textures/depot-floor-comic-v2.png",
-      (texture) => {
-        if (this.disposed) return;
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-        texture.repeat.set(1.8, 1.8);
-        texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
-        this.groundMaterial.map = texture;
-        this.groundMaterial.bumpMap = texture;
-        this.groundMaterial.needsUpdate = true;
-      },
-    );
 
     this.characterAsset = new GLTFLoader().loadAsync("/models/soldier.glb").then((asset) => {
       const data = { scene: asset.scene, animations: asset.animations };
@@ -453,6 +447,26 @@ export class VisualFactory {
       castAndReceive(tower);
       scene.add(tower);
     }
+
+    // Spider-Verse Comic Neon Signage along perimeter walls
+    const signNorth = this.createNeonSignMesh("NEON ARCADE 🕹️", 0x00f5d4, 0xff0055, 3.8, 1.4);
+    signNorth.position.set(0, 2.5, -20.0);
+    scene.add(signNorth);
+
+    const signSouth = this.createNeonSignMesh("CYBERNETICS // D-7", 0xffb703, 0x00f5d4, 4.2, 1.4);
+    signSouth.position.set(0, 2.5, 20.0);
+    signSouth.rotation.y = Math.PI;
+    scene.add(signSouth);
+
+    const signWest = this.createNeonSignMesh("RAMEN // ラーメン", 0xff007f, 0xffe600, 3.8, 1.4);
+    signWest.position.set(-20.0, 2.5, 0);
+    signWest.rotation.y = Math.PI / 2;
+    scene.add(signWest);
+
+    const signEast = this.createNeonSignMesh("BIOHAZARD ☣ S-04", 0x39ff14, 0xff3d00, 4.0, 1.4);
+    signEast.position.set(20.0, 2.5, 0);
+    signEast.rotation.y = -Math.PI / 2;
+    scene.add(signEast);
   }
 
   createToxicVat() {
@@ -921,10 +935,29 @@ export class VisualFactory {
       rig.model.position.z = THREE.MathUtils.lerp(rig.model.position.z, attacking ? 0.12 : hit > 0 ? -0.1 : 0, 1 - Math.exp(-dt * 20));
     }
 
-    if (rig.weaponGroup) {
+    if (rig.kind === "player") {
+      // Natural two-handed tactical weapon aiming posture (Upper-body aiming layer)
+      if (rig.rightArmBone) {
+        rig.rightArmBone.quaternion.set(0.3512, 0, 0.7243, 0.5934);
+      }
+      if (rig.rightForeArmBone) {
+        rig.rightForeArmBone.quaternion.set(0.6332, 0, 0.0612, 0.7715);
+      }
+      if (rig.leftArmBone) {
+        rig.leftArmBone.quaternion.set(-0.5229, 0, 0.5282, 0.669);
+      }
+      if (rig.leftForeArmBone) {
+        rig.leftForeArmBone.quaternion.set(-0.3079, 0, -0.2463, 0.919);
+      }
+      if (rig.weaponGroup) {
+        rig.recoilZ = THREE.MathUtils.lerp(rig.recoilZ, 0, 1 - Math.exp(-dt * 26));
+        rig.recoilPitch = THREE.MathUtils.lerp(rig.recoilPitch, 0, 1 - Math.exp(-dt * 28));
+        rig.weaponGroup.position.z = 0 - rig.recoilZ * 12;
+      }
+    } else if (rig.weaponGroup) {
       rig.recoilZ = THREE.MathUtils.lerp(rig.recoilZ, 0, 1 - Math.exp(-dt * 26));
       rig.recoilPitch = THREE.MathUtils.lerp(rig.recoilPitch, 0, 1 - Math.exp(-dt * 28));
-      rig.weaponGroup.position.z = 0.33 - rig.recoilZ;
+      rig.weaponGroup.position.z = 0.35 - rig.recoilZ;
       rig.weaponGroup.rotation.x = -rig.recoilPitch;
     }
 
@@ -952,8 +985,8 @@ export class VisualFactory {
   }
 
   applyWeaponRecoil(rig: CharacterRig, intensity = 1) {
-    rig.recoilZ = Math.min(0.28, rig.recoilZ + 0.14 * intensity);
-    rig.recoilPitch = Math.min(0.38, rig.recoilPitch + 0.22 * intensity);
+    rig.recoilZ = Math.min(0.08, rig.recoilZ + 0.04 * intensity);
+    rig.recoilPitch = Math.min(0.1, rig.recoilPitch + 0.05 * intensity);
   }
 
   disposeCharacter(rig: CharacterRig) {
@@ -976,14 +1009,14 @@ export class VisualFactory {
 
   addBloodDecal(scene: THREE.Scene, position: THREE.Vector3, scale = 1) {
     const decal = new THREE.Mesh(this.decalGeometry, this.bloodMaterial);
-    const size = 2.6 * scale;
+    const size = 1.9 * scale;
     decal.scale.set(size, size, 1);
     decal.rotation.x = -Math.PI / 2;
     decal.rotation.z = Math.random() * Math.PI * 2;
-    decal.position.set(position.x, 0.044, position.z);
+    decal.position.set(position.x, 0.04, position.z);
     scene.add(decal);
     this.bloodDecals.push(decal);
-    if (this.bloodDecals.length > 24) {
+    if (this.bloodDecals.length > 28) {
       const old = this.bloodDecals.shift();
       if (old) scene.remove(old);
     }
@@ -1006,37 +1039,126 @@ export class VisualFactory {
 
   createMuzzleFlashMesh(color = 0xffea00) {
     const group = new THREE.Group();
-    const outerFlameMat = new THREE.MeshBasicMaterial({
-      color: 0xff6600,
-      transparent: true,
-      opacity: 0.95,
-      side: THREE.DoubleSide,
-    });
-    const innerFlameMat = new THREE.MeshBasicMaterial({
+
+    // Sleek, compact comic muzzle flare (subtle, clean, and tight)
+    const starShape = new THREE.Shape();
+    const points = 5;
+    const outerRadius = 0.16;
+    const innerRadius = 0.06;
+    for (let i = 0; i < points * 2; i += 1) {
+      const angle = (i * Math.PI) / points;
+      const r = i % 2 === 0 ? outerRadius : innerRadius;
+      const px = Math.cos(angle) * r;
+      const py = Math.sin(angle) * r;
+      if (i === 0) starShape.moveTo(px, py);
+      else starShape.lineTo(px, py);
+    }
+    starShape.closePath();
+
+    const starGeo = new THREE.ShapeGeometry(starShape);
+    const starMat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+    const star = new THREE.Mesh(starGeo, starMat);
+    star.position.z = 0.05;
+
+    const core = new THREE.Mesh(
+      new THREE.CircleGeometry(0.06, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
+    );
+    core.position.z = 0.07;
+
+    group.add(star, core);
+    group.rotation.z = Math.random() * Math.PI;
+    return group;
+  }
+
+  createRadialSpeedLinesMesh(color = 0x00f0ff): THREE.Group {
+    const group = new THREE.Group();
+    const lineMat = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.85,
       side: THREE.DoubleSide,
+      depthWrite: false,
     });
-    const coreMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 1.0,
-    });
+    const streakCount = 20;
+    for (let i = 0; i < streakCount; i += 1) {
+      const angle = (i / streakCount) * Math.PI * 2 + THREE.MathUtils.randFloatSpread(0.12);
+      const length = THREE.MathUtils.randFloat(1.4, 2.8);
+      const width = THREE.MathUtils.randFloat(0.04, 0.12);
+      const geo = new THREE.PlaneGeometry(width, length);
+      const streak = new THREE.Mesh(geo, lineMat);
+      const radius = THREE.MathUtils.randFloat(0.9, 1.9);
+      streak.position.set(Math.cos(angle) * radius, 0.45, Math.sin(angle) * radius);
+      streak.rotation.x = -Math.PI / 2;
+      streak.rotation.z = angle + Math.PI / 2;
+      group.add(streak);
+    }
+    return group;
+  }
 
-    const outerCone = mesh(new THREE.ConeGeometry(0.26, 0.78, 6), outerFlameMat);
-    outerCone.rotation.x = Math.PI / 2;
-    outerCone.position.z = 0.39;
+  createNeonSignMesh(text: string, color = 0x00f5d4, accentColor = 0xff0055, width = 3.6, height = 1.3): THREE.Group {
+    const group = new THREE.Group();
 
-    const innerCone = mesh(new THREE.ConeGeometry(0.16, 0.54, 6), innerFlameMat);
-    innerCone.rotation.x = Math.PI / 2;
-    innerCone.rotation.z = Math.PI / 6;
-    innerCone.position.z = 0.27;
+    // Dark enclosure box
+    const boxMat = new THREE.MeshStandardMaterial({ color: 0x090d14, roughness: 0.35, metalness: 0.8 });
+    const box = mesh(new RoundedBoxGeometry(width, height, 0.32, 2, 0.05), boxMat);
+    group.add(box);
 
-    const core = mesh(new THREE.SphereGeometry(0.12, 8, 6), coreMat);
-    core.position.z = 0.08;
+    // High-res canvas for neon pop-art signage
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 180;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#0a0e16";
+      ctx.fillRect(0, 0, 512, 180);
 
-    group.add(outerCone, innerCone, core);
+      // Halftone dot pattern background
+      ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+      for (let x = 6; x < 512; x += 14) {
+        for (let y = 6; y < 180; y += 14) {
+          ctx.beginPath();
+          ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Comic neon double border
+      ctx.strokeStyle = `#${new THREE.Color(accentColor).getHexString()}`;
+      ctx.lineWidth = 8;
+      ctx.strokeRect(12, 12, 488, 156);
+
+      ctx.strokeStyle = `#${new THREE.Color(color).getHexString()}`;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(18, 18, 476, 144);
+
+      // Comic neon typography
+      ctx.font = "900 44px 'Impact', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      // RGB drop shadow offset
+      ctx.fillStyle = `#${new THREE.Color(accentColor).getHexString()}`;
+      ctx.fillText(text, 259, 93);
+
+      // Neon main text with bloom glow
+      ctx.fillStyle = `#${new THREE.Color(color).getHexString()}`;
+      ctx.shadowColor = `#${new THREE.Color(color).getHexString()}`;
+      ctx.shadowBlur = 18;
+      ctx.fillText(text, 256, 90);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const panelMat = new THREE.MeshBasicMaterial({ map: tex });
+    const panel = mesh(new THREE.PlaneGeometry(width - 0.2, height - 0.2), panelMat);
+    panel.position.z = 0.17;
+    group.add(panel);
+
+    const signLight = new THREE.PointLight(color, 2.8, 6.5, 2);
+    signLight.position.set(0, 0, 0.6);
+    group.add(signLight);
+
     return group;
   }
 
@@ -1113,6 +1235,7 @@ export class VisualFactory {
   private attachAnimatedCharacter(rig: CharacterRig, kind: "player" | EnemyId, definition?: EnemyDefinition) {
     return this.characterAsset.then((asset) => {
       if (this.disposed || rig.disposed) return;
+      rig.kind = kind;
       const model = cloneSkinnedModel(asset.scene);
       model.scale.setScalar(rig.scale * (kind === "player" ? 1.92 : 1.54));
       model.rotation.y = Math.PI;
@@ -1134,29 +1257,120 @@ export class VisualFactory {
         model.scale.z *= 1.25;
       }
 
-      // Hide all generic military soldier meshes from base asset
+      // Find skeletal bones
+      rig.rightArmBone = findBone(model, "mixamorig:RightArm", "mixamorigRightArm", "RightArm");
+      rig.rightForeArmBone = findBone(model, "mixamorig:RightForeArm", "mixamorigRightForeArm", "RightForeArm");
+      rig.rightHandBone = findBone(model, "mixamorig:RightHand", "mixamorigRightHand", "RightHand");
+      rig.leftArmBone = findBone(model, "mixamorig:LeftArm", "mixamorigLeftArm", "LeftArm");
+      rig.leftForeArmBone = findBone(model, "mixamorig:LeftForeArm", "mixamorigLeftForeArm", "LeftForeArm");
+      rig.spineBone = findBone(model, "mixamorig:Spine1", "mixamorigSpine1", "Spine1");
+
+      // Configure Vanguard Skinned Mesh & Visor with rich textures & distinct tints
       model.traverse((object) => {
-        if (object instanceof THREE.SkinnedMesh || (object instanceof THREE.Mesh && !object.name.startsWith("custom-"))) {
-          object.visible = false;
+        if (object instanceof THREE.SkinnedMesh || object instanceof THREE.Mesh) {
+          object.visible = true;
+          object.castShadow = true;
+          object.receiveShadow = true;
+
+          if (object.name === "vanguard_visor") {
+            const visorColor =
+              kind === "player"
+                ? 0x00f5d4
+                : kind === "spitter"
+                  ? 0x39ff14
+                  : kind === "juggernaut"
+                    ? 0xff0055
+                    : 0xff3333;
+            object.material = new THREE.MeshStandardMaterial({
+              color: visorColor,
+              emissive: visorColor,
+              emissiveIntensity: 3.5,
+              roughness: 0.15,
+              metalness: 0.85,
+            });
+          } else if (object.name === "vanguard_Mesh" && object.material) {
+            const origMat = object.material as THREE.MeshStandardMaterial;
+            if (kind === "player") {
+              const mat = origMat.clone();
+              mat.color = new THREE.Color(0xb8e0ff);
+              mat.roughness = 0.5;
+              mat.metalness = 0.35;
+              object.material = mat;
+            } else {
+              const mat = origMat.clone();
+              const zombieTint =
+                definition?.color ??
+                (kind === "runner"
+                  ? 0x9e6050
+                  : kind === "brute"
+                    ? 0x485868
+                    : kind === "spitter"
+                      ? 0x40955e
+                      : kind === "boomer"
+                        ? 0x908250
+                        : 0x5e8568);
+              mat.color = new THREE.Color(zombieTint);
+              mat.roughness = 0.72;
+              mat.metalness = 0.12;
+              object.material = mat;
+            }
+          }
         }
       });
 
-      // Build custom comic anatomy directly on live skeleton bones
-      if (kind === "player") {
-        this.buildStylizedOperator(model);
-      } else {
-        this.buildStylizedZombie(model, kind, definition?.color ?? 0x5f6d62);
+      // Special infected mutant organs
+      if (kind === "spitter") {
+        const neck = findBone(model, "mixamorig:Neck", "mixamorigNeck", "Neck");
+        if (neck) {
+          const acidSac = mesh(
+            new THREE.SphereGeometry(12, 10, 8),
+            new THREE.MeshStandardMaterial({
+              color: 0x39ff14,
+              emissive: 0x22cc00,
+              emissiveIntensity: 2.2,
+              roughness: 0.2,
+            }),
+          );
+          acidSac.position.set(0, 4, 10);
+          acidSac.name = "spitter-acid-sac";
+          neck.add(acidSac);
+          rig.glowSac = acidSac;
+        }
+      } else if (kind === "boomer") {
+        const spine = findBone(model, "mixamorig:Spine", "mixamorigSpine", "Spine");
+        if (spine) {
+          const bellySac = mesh(
+            new THREE.SphereGeometry(22, 12, 10),
+            new THREE.MeshStandardMaterial({
+              color: 0xffd000,
+              emissive: 0xff8800,
+              emissiveIntensity: 1.8,
+              roughness: 0.3,
+            }),
+          );
+          bellySac.position.set(0, 6, 14);
+          bellySac.name = "boomer-belly-sac";
+          spine.add(bellySac);
+          rig.glowSac = bellySac;
+        }
+      } else if (kind === "juggernaut") {
+        const chest = findBone(model, "mixamorig:Spine2", "mixamorigSpine2", "Spine2");
+        if (chest) {
+          const core = mesh(
+            new THREE.SphereGeometry(14, 10, 8),
+            new THREE.MeshStandardMaterial({
+              color: 0xff0055,
+              emissive: 0xff0055,
+              emissiveIntensity: 3.2,
+              roughness: 0.1,
+            }),
+          );
+          core.position.set(0, 10, 14);
+          core.name = "juggernaut-boss-core";
+          chest.add(core);
+          rig.bossCore = core;
+        }
       }
-
-      model.traverse((object) => {
-        if (object.name !== "custom-outlined-mesh") return;
-        const outline = object.children[0];
-        if (outline) {
-          const inkScale =
-            kind === "player" ? 1.09 : kind === "juggernaut" ? 1.065 : kind === "brute" ? 1.07 : 1.072;
-          outline.scale.setScalar(inkScale);
-        }
-      });
 
       const placeholder = rig.root.getObjectByName("character-placeholder");
       if (placeholder) {
@@ -1167,24 +1381,19 @@ export class VisualFactory {
 
       if (kind === "player") {
         const weaponRig = this.createPlayerWeaponRigs();
-        rig.root.add(weaponRig.group);
+        if (rig.rightHandBone) {
+          rig.rightHandBone.add(weaponRig.group);
+          weaponRig.group.scale.setScalar(65);
+          weaponRig.group.position.set(0, 10, 0);
+          weaponRig.group.quaternion.set(-0.1482, -0.7664, -0.556, -0.2857);
+        } else {
+          weaponRig.group.position.set(0.18, 1.18, 0.32);
+          rig.root.add(weaponRig.group);
+        }
         rig.weaponGroup = weaponRig.group;
         rig.weaponModels = weaponRig.weaponModels;
         rig.muzzle = weaponRig.initialMuzzle;
         rig.currentWeaponId = "pistol";
-      }
-
-      if (kind === "spitter") {
-        const sac = model.getObjectByName("spitter-acid-sac") as THREE.Mesh | undefined;
-        if (sac) rig.glowSac = sac;
-      }
-      if (kind === "boomer") {
-        const sac = model.getObjectByName("boomer-belly-sac") as THREE.Mesh | undefined;
-        if (sac) rig.glowSac = sac;
-      }
-      if (kind === "juggernaut") {
-        const core = model.getObjectByName("juggernaut-boss-core") as THREE.Mesh | undefined;
-        if (core) rig.bossCore = core;
       }
 
       const mixer = new THREE.AnimationMixer(model);
@@ -1825,7 +2034,6 @@ export class VisualFactory {
 
   private createPlayerWeaponRigs() {
     const masterGroup = new THREE.Group();
-    masterGroup.position.set(0.08, 1.2, 0.33);
 
     const gunmetal = new THREE.MeshStandardMaterial({ color: 0x151b1d, roughness: 0.28, metalness: 0.9 });
     const steel = new THREE.MeshStandardMaterial({ color: 0x485255, roughness: 0.35, metalness: 0.75 });
@@ -2026,110 +2234,86 @@ export class VisualFactory {
     canvas.width = canvas.height = 1024;
     const ctx = canvas.getContext("2d");
     if (ctx) {
-      // Warm industrial concrete base
-      ctx.fillStyle = "#4a4e52";
+      // 1. Premium dark slate tactical asphalt base
+      ctx.fillStyle = "#181d24";
       ctx.fillRect(0, 0, 1024, 1024);
 
-      // Procedural concrete aggregate and grit noise
-      for (let i = 0; i < 6000; i += 1) {
+      // 2. Subtle micro-grit texture
+      for (let i = 0; i < 4000; i += 1) {
         const x = Math.random() * 1024;
         const y = Math.random() * 1024;
-        const radius = Math.random() * 2.2 + 0.5;
-        const brightness = Math.random() > 0.5 ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.12)";
-        ctx.fillStyle = brightness;
+        const r = Math.random() * 1.5 + 0.5;
+        ctx.fillStyle = Math.random() > 0.5 ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.1)";
         ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Concrete slabs division joints
-      ctx.strokeStyle = "#25282a";
-      ctx.lineWidth = 6;
+      // 3. Crisp tactical concrete slab seams
+      ctx.strokeStyle = "#0d1116";
+      ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(512, 0); ctx.lineTo(512, 1024);
       ctx.moveTo(0, 512); ctx.lineTo(1024, 512);
+      ctx.moveTo(256, 0); ctx.lineTo(256, 1024);
+      ctx.moveTo(768, 0); ctx.lineTo(768, 1024);
+      ctx.moveTo(0, 256); ctx.lineTo(1024, 256);
+      ctx.moveTo(0, 768); ctx.lineTo(1024, 768);
       ctx.stroke();
 
-      // Detailed branching fissure cracks
-      const drawCrack = (startX: number, startY: number, segments: number, maxLen: number) => {
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        let currX = startX;
-        let currY = startY;
-        for (let s = 0; s < segments; s += 1) {
-          const angle = Math.random() * Math.PI * 2;
-          const len = Math.random() * maxLen + 10;
-          currX += Math.cos(angle) * len;
-          currY += Math.sin(angle) * len;
-          ctx.lineTo(currX, currY);
-        }
-        ctx.strokeStyle = "#1b1e20";
-        ctx.lineWidth = 3.5;
-        ctx.stroke();
+      // 4. Subtle tactical center targeting rings
+      ctx.strokeStyle = "rgba(0, 245, 212, 0.12)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(512, 512, 140, 0, Math.PI * 2);
+      ctx.arc(512, 512, 280, 0, Math.PI * 2);
+      ctx.stroke();
 
-        ctx.strokeStyle = "rgba(255,255,255,0.12)";
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-      };
+      // Subtle crosshair ticks
+      ctx.strokeStyle = "rgba(0, 245, 212, 0.18)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(512, 350); ctx.lineTo(512, 410);
+      ctx.moveTo(512, 614); ctx.lineTo(512, 674);
+      ctx.moveTo(350, 512); ctx.lineTo(410, 512);
+      ctx.moveTo(614, 512); ctx.lineTo(674, 512);
+      ctx.stroke();
 
-      // Fissure clusters across slabs
-      drawCrack(220, 240, 6, 35);
-      drawCrack(250, 270, 4, 25);
-      drawCrack(760, 320, 7, 40);
-      drawCrack(780, 350, 5, 20);
-      drawCrack(340, 780, 6, 35);
-      drawCrack(820, 740, 8, 45);
-      drawCrack(512, 512, 9, 30);
-
-      // Yellow industrial hazard boundary lines & caution stripes
+      // 5. Clean Yellow & Black Hazard Perimeter Stripes (edges only)
       ctx.fillStyle = "#f59e0b";
-      ctx.fillRect(40, 40, 944, 20);
-      ctx.fillRect(40, 964, 944, 20);
-      ctx.fillRect(40, 40, 20, 944);
-      ctx.fillRect(964, 40, 20, 944);
+      ctx.fillRect(36, 36, 952, 20);
+      ctx.fillRect(36, 968, 952, 20);
+      ctx.fillRect(36, 36, 20, 952);
+      ctx.fillRect(968, 36, 20, 952);
 
-      // Black diagonal hash marks inside hazard lines
-      ctx.fillStyle = "#1e2422";
-      for (let x = 40; x < 984; x += 36) {
+      // Black diagonal hash marks
+      ctx.fillStyle = "#11161d";
+      for (let x = 36; x < 988; x += 32) {
         ctx.beginPath();
-        ctx.moveTo(x, 40);
-        ctx.lineTo(x + 18, 40);
-        ctx.lineTo(x + 6, 60);
-        ctx.lineTo(x - 12, 60);
+        ctx.moveTo(x, 36);
+        ctx.lineTo(x + 16, 36);
+        ctx.lineTo(x + 4, 56);
+        ctx.lineTo(x - 12, 56);
         ctx.closePath();
         ctx.fill();
 
         ctx.beginPath();
-        ctx.moveTo(x, 964);
-        ctx.lineTo(x + 18, 964);
-        ctx.lineTo(x + 6, 984);
-        ctx.lineTo(x - 12, 984);
+        ctx.moveTo(x, 968);
+        ctx.lineTo(x + 16, 968);
+        ctx.lineTo(x + 4, 988);
+        ctx.lineTo(x - 12, 988);
         ctx.closePath();
         ctx.fill();
       }
 
-      // Metal Drainage Grates
-      const drawDrainGrate = (gx: number, gy: number, gw: number, gh: number) => {
-        ctx.fillStyle = "#1b2024";
-        ctx.fillRect(gx, gy, gw, gh);
-        ctx.strokeStyle = "#384148";
-        ctx.lineWidth = 4;
-        ctx.strokeRect(gx, gy, gw, gh);
-
-        // Slits
-        ctx.fillStyle = "#090c0e";
-        for (let sy = gy + 8; sy < gy + gh - 8; sy += 12) {
-          ctx.fillRect(gx + 8, sy, gw - 16, 5);
-        }
-      };
-
-      drawDrainGrate(540, 160, 60, 240);
-      drawDrainGrate(160, 620, 240, 60);
+      ctx.strokeStyle = "#080c10";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(36, 36, 952, 952);
     }
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(2.5, 2.5);
+    texture.repeat.set(1.0, 1.0);
     texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
     return texture;
   }
