@@ -2,6 +2,7 @@ import * as THREE from "three";
 import RAPIER from "@dimforge/rapier3d-compat";
 import { ENEMIES, getWeaponStats, PICKUPS, WAVES, WEAPONS } from "./config";
 import { GameAudio } from "./audio";
+import { VisualFactory, type CharacterRig } from "./visuals";
 import type {
   EnemyDefinition,
   EnemyId,
@@ -27,6 +28,7 @@ interface EnemyEntity {
   type: EnemyId;
   definition: EnemyDefinition;
   mesh: THREE.Group;
+  rig: CharacterRig;
   health: number;
   maxHealth: number;
   attackCooldown: number;
@@ -70,6 +72,8 @@ interface Obstacle {
 
 const FIXED_STEP = 1 / 60;
 const ARENA_LIMIT = 18.5;
+const MAX_ACTIVE_ENEMIES = 36;
+const CROWD_CELL_SIZE = 2.5;
 
 await RAPIER.init();
 
@@ -80,7 +84,8 @@ export class GameEngine {
   private scene = new THREE.Scene();
   private camera = new THREE.OrthographicCamera();
   private renderer: THREE.WebGLRenderer;
-  private clock = new THREE.Clock();
+  private visuals: VisualFactory;
+  private timer = new THREE.Timer();
   private accumulator = 0;
   private frame = 0;
   private paused = true;
@@ -88,10 +93,17 @@ export class GameEngine {
   private hudTimer = 0;
   private announcement = "";
   private announcementTimer = 0;
+  private pixelRatio = Math.min(typeof window === "undefined" ? 1 : window.devicePixelRatio, 1.5);
+  private frameTimeAverage = FIXED_STEP;
+  private performanceSampleTime = 0;
+  private qaFramesRendered = 0;
 
   private physics = new RAPIER.World({ x: 0, y: 0, z: 0 });
   private playerBody: RAPIER.RigidBody;
   private playerMesh = new THREE.Group();
+  private playerRig: CharacterRig | null = null;
+  private cameraLook = new THREE.Vector3();
+  private cameraShake = 0;
   private playerHealth = 100;
   private maxHealth = 100;
   private moveSpeed = 6.2;
@@ -124,6 +136,7 @@ export class GameEngine {
   private spawnTimer = 0;
   private waveActive = false;
   private audio = new GameAudio();
+  private enemyCandidate = new THREE.Vector3();
 
   constructor(container: HTMLElement, profile: ProfileV1, callbacks: EngineCallbacks) {
     this.container = container;
@@ -132,15 +145,18 @@ export class GameEngine {
     this.loadout = profile.equippedLoadout.length ? [...profile.equippedLoadout] : ["pistol"];
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    if (this.qaMode) this.pixelRatio = 0.5;
+    this.renderer.setPixelRatio(this.pixelRatio);
+    this.renderer.shadowMap.enabled = !this.qaMode;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.34;
     this.renderer.domElement.className = "game-canvas";
     this.renderer.domElement.setAttribute("aria-label", "Deadwave evacuation depot combat arena");
     this.container.appendChild(this.renderer.domElement);
+    this.timer.connect(document);
+    this.visuals = new VisualFactory(this.renderer);
 
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, 0.72, 0)
@@ -158,7 +174,6 @@ export class GameEngine {
     this.createWeaponStates();
     this.bindEvents();
     this.resize();
-    this.frame = requestAnimationFrame(this.animate);
   }
 
   start(wave = 1) {
@@ -167,16 +182,28 @@ export class GameEngine {
     this.audio.start();
     this.paused = false;
     this.startWave(wave);
+    this.timer.reset();
+    this.scheduleFrame();
+    void this.visuals.ready();
   }
 
   pause() {
+    if (this.paused) return;
     this.paused = true;
-    this.firing = false;
+    this.clearInputState();
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
+    this.audio.setPaused(true);
   }
 
   resume() {
+    if (this.destroyed || !this.paused) return;
     this.paused = false;
-    this.clock.getDelta();
+    this.audio.setPaused(false);
+    this.accumulator = 0;
+    this.qaFramesRendered = 0;
+    this.timer.reset();
+    this.scheduleFrame();
   }
 
   startNextWave() {
@@ -196,91 +223,75 @@ export class GameEngine {
     for (const id of profile.ownedWeapons) this.ensureWeaponState(id);
   }
 
-  unlockAndEquip(id: WeaponId) {
-    this.ensureWeaponState(id);
-    if (!this.loadout.includes(id)) {
-      if (this.loadout.length < 2) this.loadout.push(id);
-      else this.loadout[1] = id;
-    }
-    this.activeWeaponIndex = this.loadout.indexOf(id);
-    this.emitHud(true);
-  }
-
   equipLoadout(ids: WeaponId[]) {
     this.loadout = ids.slice(0, 2);
     if (!this.loadout.length) this.loadout = ["pistol"];
     this.activeWeaponIndex = 0;
     for (const id of this.loadout) this.ensureWeaponState(id);
+    this.emitHud(true);
   }
 
   refillAmmo() {
-    for (const [id, state] of this.weaponStates) {
+    let changed = false;
+    for (const id of new Set(this.loadout)) {
+      const state = this.weaponStates.get(id);
+      if (!state) continue;
       const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
+      if (state.magazine === stats.magazine && state.reserve === stats.reserve && state.reloading === 0) continue;
       state.magazine = stats.magazine;
       state.reserve = stats.reserve;
       state.reloading = 0;
+      changed = true;
     }
+    if (!changed) return false;
     this.audio.tone(620, 0.12, 0.06, "sine");
     this.emitHud(true);
+    return true;
   }
 
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
-    cancelAnimationFrame(this.frame);
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
     this.unbindEvents();
     this.audio.stop();
+    this.timer.dispose();
+    if (this.playerRig) this.visuals.disposeCharacter(this.playerRig);
+    for (const enemy of this.enemies) this.visuals.disposeCharacter(enemy.rig);
+    this.visuals.dispose(this.scene);
     this.renderer.dispose();
     this.renderer.domElement.remove();
-    this.scene.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      mesh.geometry?.dispose?.();
-      if (Array.isArray(mesh.material)) mesh.material.forEach((material) => material.dispose());
-      else mesh.material?.dispose?.();
-    });
     this.physics.free();
   }
 
   private setupScene() {
-    this.scene.background = new THREE.Color(0x07100d);
-    this.scene.fog = new THREE.FogExp2(0x07100d, 0.025);
+    this.scene.background = new THREE.Color(0x09100f);
+    this.scene.fog = new THREE.FogExp2(0x0b1211, 0.018);
 
-    const ambient = new THREE.HemisphereLight(0xb8ffd0, 0x06100b, 1.45);
+    const ambient = new THREE.HemisphereLight(0xc7ddd7, 0x171b18, 1.52);
     this.scene.add(ambient);
-    const key = new THREE.DirectionalLight(0xd8ffb4, 3.2);
-    key.position.set(-10, 20, 8);
+    const key = new THREE.DirectionalLight(0xe1ece8, 3.15);
+    key.position.set(-11, 22, 9);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.mapSize.set(1024, 1024);
     key.shadow.camera.left = -24;
     key.shadow.camera.right = 24;
     key.shadow.camera.top = 24;
     key.shadow.camera.bottom = -24;
+    key.shadow.bias = -0.0002;
+    key.shadow.normalBias = 0.035;
+    key.shadow.radius = 2;
     this.scene.add(key);
-    const warning = new THREE.PointLight(0xff593d, 35, 18, 2);
-    warning.position.set(14, 4, -11);
-    this.scene.add(warning);
+    const coldFill = new THREE.PointLight(0x70cfc1, 18, 19, 2);
+    coldFill.position.set(-13, 5, 12);
+    const warning = new THREE.PointLight(0xff4b2f, 25, 20, 2);
+    warning.position.set(14, 4.5, -11);
+    this.scene.add(coldFill, warning);
 
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(42, 42, 1, 1),
-      new THREE.MeshStandardMaterial({ color: 0x18251e, roughness: 0.96, metalness: 0.06 }),
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    const grid = new THREE.GridHelper(42, 42, 0x385b43, 0x203429);
-    grid.position.y = 0.012;
-    (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.22;
-    this.scene.add(grid);
-
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(19.3, 19.55, 72),
-      new THREE.MeshBasicMaterial({ color: 0x7bff9a, transparent: true, opacity: 0.32, side: THREE.DoubleSide }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.025;
-    this.scene.add(ring);
+    this.scene.add(this.visuals.createGround());
+    this.visuals.addPerimeter(this.scene);
+    this.visuals.addSetDressing(this.scene);
 
     this.addObstacle(-8.5, -5.5, 4.5, 1.2, 0x273b32);
     this.addObstacle(8.5, 5.2, 4.3, 1.15, 0x273b32);
@@ -300,34 +311,19 @@ export class GameEngine {
 
   private addObstacle(x: number, z: number, width: number, depth: number, color: number) {
     const height = 2.2;
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(width, height, depth),
-      new THREE.MeshStandardMaterial({ color, roughness: 0.72, metalness: 0.42 }),
-    );
-    mesh.position.set(x, height / 2, z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(width + 0.02, 0.22, depth + 0.02),
-      new THREE.MeshStandardMaterial({ color: 0xc8e05b, emissive: 0x303a0a }),
-    );
-    stripe.position.set(x, 1.2, z);
-    this.scene.add(stripe);
+    const structure = this.visuals.createDepotStructure(width, depth, color);
+    structure.position.set(x, 0, z);
+    this.scene.add(structure);
     const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, height / 2, z));
     this.physics.createCollider(RAPIER.ColliderDesc.cuboid(width / 2, height / 2, depth / 2), body);
     this.obstacles.push({ x, z, hx: width / 2, hz: depth / 2 });
   }
 
   private addBarricade(x: number, z: number, width: number, depth: number, rotation: number) {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(width, 0.8, depth),
-      new THREE.MeshStandardMaterial({ color: 0x5f5b45, roughness: 0.9 }),
-    );
-    mesh.position.set(x, 0.4, z);
-    mesh.rotation.y = rotation;
-    mesh.castShadow = true;
-    this.scene.add(mesh);
+    const barricade = this.visuals.createBarricade(width, depth);
+    barricade.position.set(x, 0, z);
+    barricade.rotation.y = rotation;
+    this.scene.add(barricade);
     // The conservative AABB keeps both the player and horde clear of angled cover.
     const hx = Math.abs(Math.cos(rotation) * width / 2) + Math.abs(Math.sin(rotation) * depth / 2);
     const hz = Math.abs(Math.sin(rotation) * width / 2) + Math.abs(Math.cos(rotation) * depth / 2);
@@ -337,74 +333,25 @@ export class GameEngine {
   }
 
   private addFloodlight(x: number, z: number, color: number) {
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.08, 0.12, 4.8, 8),
-      new THREE.MeshStandardMaterial({ color: 0x28352f, metalness: 0.8 }),
-    );
-    pole.position.set(x, 2.4, z);
-    this.scene.add(pole);
-    const light = new THREE.PointLight(color, 28, 12, 2);
-    light.position.set(x, 4.5, z);
-    this.scene.add(light);
+    const fixture = this.visuals.createFloodlight(color);
+    fixture.position.set(x, 0, z);
+    this.scene.add(fixture);
+    const light = new THREE.SpotLight(color, 52, 22, Math.PI / 5, 0.5, 1.5);
+    light.position.set(x, 4.75, z);
+    light.target.position.set(x * 0.35, 0, z * 0.35);
+    this.scene.add(light, light.target);
   }
 
   private addBarrel(x: number, z: number) {
-    const group = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.47, 0.47, 1.15, 14),
-      new THREE.MeshStandardMaterial({ color: 0x7d2f27, roughness: 0.55, metalness: 0.45 }),
-    );
-    body.position.y = 0.58;
-    body.castShadow = true;
-    group.add(body);
-    const bandMaterial = new THREE.MeshStandardMaterial({ color: 0xff7b43, emissive: 0x471109 });
-    for (const y of [0.28, 0.86]) {
-      const band = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.045, 6, 16), bandMaterial);
-      band.rotation.x = Math.PI / 2;
-      band.position.y = y;
-      group.add(band);
-    }
+    const group = this.visuals.createBarrel();
     group.position.set(x, 0, z);
     this.scene.add(group);
     this.barrels.push({ mesh: group, active: true });
   }
 
   private createPlayer() {
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.62, 0.78, 28),
-      new THREE.MeshBasicMaterial({ color: 0xb8ff5a, transparent: true, opacity: 0.58, side: THREE.DoubleSide }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.035;
-    this.playerMesh.add(ring);
-    const legs = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.33, 0.4, 0.65, 9),
-      new THREE.MeshStandardMaterial({ color: 0x18211e, roughness: 0.9 }),
-    );
-    legs.position.y = 0.55;
-    legs.castShadow = true;
-    this.playerMesh.add(legs);
-    const torso = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.42, 0.5, 0.9, 10),
-      new THREE.MeshStandardMaterial({ color: 0xd5ddcf, roughness: 0.65 }),
-    );
-    torso.position.y = 1.25;
-    torso.castShadow = true;
-    this.playerMesh.add(torso);
-    const helmet = new THREE.Mesh(
-      new THREE.SphereGeometry(0.35, 12, 8),
-      new THREE.MeshStandardMaterial({ color: 0x39453f, roughness: 0.52, metalness: 0.3 }),
-    );
-    helmet.position.y = 1.92;
-    helmet.castShadow = true;
-    this.playerMesh.add(helmet);
-    const gun = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.16, 1.18),
-      new THREE.MeshStandardMaterial({ color: 0x202826, metalness: 0.75, roughness: 0.32 }),
-    );
-    gun.position.set(0.26, 1.35, 0.65);
-    gun.castShadow = true;
-    this.playerMesh.add(gun);
+    this.playerRig = this.visuals.createPlayer();
+    this.playerMesh = this.playerRig.root;
     this.scene.add(this.playerMesh);
   }
 
@@ -457,45 +404,8 @@ export class GameEngine {
 
   private spawnEnemy(type: EnemyId) {
     const definition = ENEMIES[type];
-    const group = new THREE.Group();
-    const scale = type === "juggernaut" ? 1.65 : type === "brute" ? 1.25 : type === "runner" ? 0.86 : 1;
-    const legs = new THREE.Mesh(
-      new THREE.CylinderGeometry(definition.radius * 0.54, definition.radius * 0.7, 0.75 * scale, 8),
-      new THREE.MeshStandardMaterial({ color: 0x27322b, roughness: 0.95 }),
-    );
-    legs.position.y = 0.42 * scale;
-    legs.castShadow = true;
-    group.add(legs);
-    const torsoMaterial = new THREE.MeshStandardMaterial({ color: definition.color, roughness: 0.82 });
-    const torso = new THREE.Mesh(
-      new THREE.CylinderGeometry(definition.radius * 0.62, definition.radius * 0.78, 1.05 * scale, 9),
-      torsoMaterial,
-    );
-    torso.position.y = 1.18 * scale;
-    torso.castShadow = true;
-    group.add(torso);
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(definition.radius * 0.48, 10, 8),
-      new THREE.MeshStandardMaterial({ color: type === "spitter" ? 0xa4ff64 : 0x8c9a78, roughness: 0.8 }),
-    );
-    head.position.set(0, 1.94 * scale, 0.06);
-    head.castShadow = true;
-    group.add(head);
-    const eyeMaterial = new THREE.MeshBasicMaterial({ color: type === "spitter" ? 0xc4ff45 : 0xff6548 });
-    for (const x of [-0.13, 0.13]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.045 * scale, 6, 5), eyeMaterial);
-      eye.position.set(x * scale, 2.02 * scale, definition.radius * 0.42);
-      group.add(eye);
-    }
-    if (type === "juggernaut") {
-      const bossRing = new THREE.Mesh(
-        new THREE.RingGeometry(1.45, 1.68, 36),
-        new THREE.MeshBasicMaterial({ color: 0xff4935, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
-      );
-      bossRing.rotation.x = -Math.PI / 2;
-      bossRing.position.y = 0.05;
-      group.add(bossRing);
-    }
+    const rig = this.visuals.createEnemy(type, definition);
+    const group = rig.root;
     const spawn = this.randomSpawnPoint();
     group.position.copy(spawn);
     this.scene.add(group);
@@ -503,6 +413,7 @@ export class GameEngine {
       type,
       definition,
       mesh: group,
+      rig,
       health: definition.health,
       maxHealth: definition.health,
       attackCooldown: Math.random() * 0.6,
@@ -560,20 +471,23 @@ export class GameEngine {
     const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
     if (state.reloading > 0 || state.cooldown > 0) return;
     if (state.magazine <= 0) {
-      this.reload();
+      this.reloadWeapon(id);
       return;
     }
     state.magazine -= 1;
     state.cooldown = 1 / stats.fireRate;
     this.audio.tone(id === "shotgun" ? 95 : id === "smg" ? 180 : 135, id === "shotgun" ? 0.12 : 0.045, id === "shotgun" ? 0.18 : 0.08, "sawtooth");
-    const origin = this.playerMesh.position.clone().add(new THREE.Vector3(this.aim.x * 0.8, 1.25, this.aim.z * 0.8));
+    const origin = this.playerRig
+      ? this.playerRig.muzzle.getWorldPosition(new THREE.Vector3())
+      : this.playerMesh.position.clone().add(new THREE.Vector3(this.aim.x * 0.8, 1.25, this.aim.z * 0.8));
     for (let pellet = 0; pellet < stats.pellets; pellet += 1) {
       const angle = Math.atan2(this.aim.z, this.aim.x) + THREE.MathUtils.randFloatSpread(stats.spread * 2);
       const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(id === "shotgun" ? 0.075 : 0.065, 6, 4),
-        new THREE.MeshBasicMaterial({ color: stats.color }),
+        new THREE.CylinderGeometry(id === "shotgun" ? 0.035 : 0.027, id === "shotgun" ? 0.055 : 0.038, id === "shotgun" ? 0.52 : 0.78, 8),
+        new THREE.MeshBasicMaterial({ color: stats.color, transparent: true, opacity: 0.92 }),
       );
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
       mesh.position.copy(origin);
       this.scene.add(mesh);
       this.projectiles.push({ mesh, velocity: direction.multiplyScalar(id === "shotgun" ? 30 : 37), damage: stats.damage, life: 1.35, enemy: false });
@@ -585,11 +499,16 @@ export class GameEngine {
     flash.position.copy(origin).addScaledVector(this.aim, 0.2);
     this.scene.add(flash);
     this.effects.push({ mesh: flash, life: 0.06, maxLife: 0.06 });
-    if (state.magazine === 0 && state.reserve > 0) window.setTimeout(() => this.reload(), 110);
+    this.cameraShake = Math.max(this.cameraShake, id === "shotgun" ? 0.22 : 0.06);
+    if (state.magazine === 0 && state.reserve > 0) this.reloadWeapon(id);
   }
 
   private reload() {
     const id = this.loadout[this.activeWeaponIndex] ?? "pistol";
+    this.reloadWeapon(id);
+  }
+
+  private reloadWeapon(id: WeaponId) {
     const state = this.weaponStates.get(id);
     if (!state) return;
     const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
@@ -611,7 +530,8 @@ export class GameEngine {
       0,
       (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0),
     );
-    if (movement.lengthSq() > 0) movement.normalize();
+    const moving = movement.lengthSq() > 0;
+    if (moving) movement.normalize();
     const speed = this.dashRemaining > 0 ? 16.5 : this.moveSpeed;
     const velocity = movement.multiplyScalar(speed);
     this.playerBody.setLinvel({ x: velocity.x, y: 0, z: velocity.z }, true);
@@ -624,6 +544,16 @@ export class GameEngine {
     const position = this.playerBody.translation();
     this.playerMesh.position.set(position.x, 0, position.z);
     this.playerMesh.rotation.y = Math.atan2(this.aim.x, this.aim.z);
+    if (this.playerRig) {
+      this.visuals.animateCharacter(this.playerRig, dt, moving ? speed : 0, false, 0);
+      if (this.playerRig.model) {
+        this.playerRig.model.rotation.z = THREE.MathUtils.lerp(
+          this.playerRig.model.rotation.z,
+          this.dashRemaining > 0 ? -0.13 : 0,
+          1 - Math.exp(-dt * 15),
+        );
+      }
+    }
 
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     this.dashRemaining = Math.max(0, this.dashRemaining - dt);
@@ -658,7 +588,7 @@ export class GameEngine {
     if (!this.waveActive) return;
     if (this.spawnQueue.length > 0) {
       this.spawnTimer -= dt;
-      if (this.spawnTimer <= 0 && this.enemies.length < 50) {
+      if (this.spawnTimer <= 0 && this.enemies.length < MAX_ACTIVE_ENEMIES) {
         const type = this.spawnQueue.shift();
         if (type) this.spawnEnemy(type);
         this.spawnTimer = WAVES[this.wave - 1].spawnInterval;
@@ -673,6 +603,15 @@ export class GameEngine {
 
   private updateEnemies(dt: number) {
     const playerPosition = this.playerMesh.position;
+    const grid = new Map<string, EnemyEntity[]>();
+    for (const enemy of this.enemies) {
+      const cellX = Math.floor(enemy.mesh.position.x / CROWD_CELL_SIZE);
+      const cellZ = Math.floor(enemy.mesh.position.z / CROWD_CELL_SIZE);
+      const key = `${cellX},${cellZ}`;
+      const bucket = grid.get(key);
+      if (bucket) bucket.push(enemy);
+      else grid.set(key, [enemy]);
+    }
     for (let index = 0; index < this.enemies.length; index += 1) {
       const enemy = this.enemies[index];
       enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
@@ -680,14 +619,20 @@ export class GameEngine {
       enemy.chargeRemaining = Math.max(0, enemy.chargeRemaining - dt);
       enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
 
-      const towardPlayer = playerPosition.clone().sub(enemy.mesh.position).setY(0);
-      const distance = towardPlayer.length();
-      if (distance > 0.01) towardPlayer.normalize();
-      enemy.mesh.rotation.y = Math.atan2(towardPlayer.x, towardPlayer.z);
+      const toPlayerX = playerPosition.x - enemy.mesh.position.x;
+      const toPlayerZ = playerPosition.z - enemy.mesh.position.z;
+      const distanceSquared = toPlayerX * toPlayerX + toPlayerZ * toPlayerZ;
+      const distance = Math.sqrt(distanceSquared);
+      const inverseDistance = distance > 0.01 ? 1 / distance : 0;
+      const towardX = toPlayerX * inverseDistance;
+      const towardZ = toPlayerZ * inverseDistance;
+      let facingX = towardX;
+      let facingZ = towardZ;
 
       if (enemy.type === "spitter" && distance < enemy.definition.attackRange && distance > 3.8) {
         if (enemy.attackCooldown <= 0) {
-          this.spawnEnemyProjectile(enemy, towardPlayer);
+          this.enemyCandidate.set(towardX, 0, towardZ);
+          this.spawnEnemyProjectile(enemy, this.enemyCandidate);
           enemy.attackCooldown = enemy.definition.attackCooldown;
         }
       } else {
@@ -704,24 +649,60 @@ export class GameEngine {
           }
         } else {
           const speed = enemy.definition.speed * (enemy.chargeRemaining > 0 ? 3.4 : 1);
-          const separation = new THREE.Vector3();
-          for (let otherIndex = 0; otherIndex < this.enemies.length; otherIndex += 1) {
-            if (index === otherIndex) continue;
-            const other = this.enemies[otherIndex];
-            const delta = enemy.mesh.position.clone().sub(other.mesh.position).setY(0);
-            const gap = delta.length();
-            if (gap > 0 && gap < enemy.definition.radius + other.definition.radius + 0.25) {
-              separation.add(delta.normalize().multiplyScalar((1.6 - gap) * 0.5));
+          let separationX = 0;
+          let separationZ = 0;
+          const cellX = Math.floor(enemy.mesh.position.x / CROWD_CELL_SIZE);
+          const cellZ = Math.floor(enemy.mesh.position.z / CROWD_CELL_SIZE);
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            for (let offsetZ = -1; offsetZ <= 1; offsetZ += 1) {
+              const nearby = grid.get(`${cellX + offsetX},${cellZ + offsetZ}`);
+              if (!nearby) continue;
+              for (const other of nearby) {
+                if (enemy === other) continue;
+                const dx = enemy.mesh.position.x - other.mesh.position.x;
+                const dz = enemy.mesh.position.z - other.mesh.position.z;
+                const gapSquared = dx * dx + dz * dz;
+                const minimumGap = enemy.definition.radius + other.definition.radius + 0.25;
+                if (gapSquared > 0.0001 && gapSquared < minimumGap * minimumGap) {
+                  const gap = Math.sqrt(gapSquared);
+                  const push = (minimumGap - gap) / minimumGap;
+                  separationX += dx / gap * push;
+                  separationZ += dz / gap * push;
+                }
+              }
             }
           }
-          const direction = towardPlayer.add(separation).normalize();
-          const candidate = enemy.mesh.position.clone().addScaledVector(direction, speed * dt);
-          const resolved = this.resolveEnemyPosition(candidate, enemy.definition.radius);
-          enemy.mesh.position.copy(resolved);
+          let directionX = towardX + separationX * 0.78;
+          let directionZ = towardZ + separationZ * 0.78;
+          const directionLength = Math.hypot(directionX, directionZ) || 1;
+          directionX /= directionLength;
+          directionZ /= directionLength;
+          facingX = directionX;
+          facingZ = directionZ;
+          this.enemyCandidate.set(
+            enemy.mesh.position.x + directionX * speed * dt,
+            0,
+            enemy.mesh.position.z + directionZ * speed * dt,
+          );
+          this.resolveEnemyPosition(this.enemyCandidate, enemy.definition.radius);
+          enemy.mesh.position.x = this.enemyCandidate.x;
+          enemy.mesh.position.z = this.enemyCandidate.z;
         }
       }
-      const bob = Math.sin(performance.now() * 0.008 + index) * 0.035;
-      enemy.mesh.position.y = bob;
+      const targetFacing = Math.atan2(facingX, facingZ);
+      const facingDelta = Math.atan2(
+        Math.sin(targetFacing - enemy.mesh.rotation.y),
+        Math.cos(targetFacing - enemy.mesh.rotation.y),
+      );
+      enemy.mesh.rotation.y += facingDelta * (1 - Math.exp(-dt * 13));
+      enemy.mesh.position.y = 0;
+      this.visuals.animateCharacter(
+        enemy.rig,
+        dt,
+        distance > enemy.definition.attackRange ? enemy.definition.speed * (enemy.chargeRemaining > 0 ? 2.2 : 1) : 0,
+        distance <= enemy.definition.attackRange,
+        enemy.hitFlash,
+      );
     }
   }
 
@@ -745,6 +726,10 @@ export class GameEngine {
         this.removeProjectile(index);
         continue;
       }
+      if (this.pointInsideObstacle(projectile.mesh.position.x, projectile.mesh.position.z)) {
+        this.removeProjectile(index);
+        continue;
+      }
       if (projectile.enemy) {
         if (projectile.mesh.position.distanceTo(this.playerMesh.position.clone().setY(1)) < 0.85) {
           this.damagePlayer(projectile.damage);
@@ -756,10 +741,6 @@ export class GameEngine {
       const barrel = this.barrels.find((item) => item.active && item.mesh.position.distanceTo(projectile.mesh.position.clone().setY(0)) < 0.72);
       if (barrel) {
         this.explodeBarrel(barrel);
-        this.removeProjectile(index);
-        continue;
-      }
-      if (this.pointInsideObstacle(projectile.mesh.position.x, projectile.mesh.position.z)) {
         this.removeProjectile(index);
         continue;
       }
@@ -782,6 +763,7 @@ export class GameEngine {
   private damageEnemy(enemy: EnemyEntity, damage: number, index: number) {
     enemy.health -= damage;
     enemy.hitFlash = 0.08;
+    this.createHitBurst(enemy.mesh.position.clone().setY(1.05 * enemy.rig.scale));
     this.audio.tone(220 + Math.random() * 60, 0.025, 0.025, "square");
     if (enemy.health <= 0) this.killEnemy(index);
   }
@@ -790,8 +772,10 @@ export class GameEngine {
     const enemy = this.enemies[index];
     if (!enemy) return;
     const position = enemy.mesh.position.clone();
+    this.visuals.disposeCharacter(enemy.rig);
     this.scene.remove(enemy.mesh);
     this.enemies.splice(index, 1);
+    this.visuals.addBloodDecal(this.scene, position, enemy.type === "juggernaut" ? 1.75 : enemy.type === "brute" ? 1.25 : 0.82);
     this.createPickup("coin", position, enemy.definition.reward);
     if (Math.random() < 0.16 || (this.activeAmmoTotal() < 5 && Math.random() < 0.7)) this.createPickup("ammo", position.clone().add(new THREE.Vector3(0.55, 0, 0)), 1);
     if (Math.random() < 0.065) this.createPickup("health", position.clone().add(new THREE.Vector3(-0.55, 0, 0)), 25);
@@ -821,7 +805,25 @@ export class GameEngine {
     blast.position.copy(position).setY(0.9);
     this.scene.add(blast);
     this.effects.push({ mesh: blast, life: 0.48, maxLife: 0.48 });
+    this.cameraShake = 0.72;
     this.audio.tone(55, 0.35, 0.24, "sawtooth");
+  }
+
+  private createHitBurst(position: THREE.Vector3) {
+    const colors = [0x7d0d10, 0xa91a17, 0x461011];
+    for (let particle = 0; particle < 3; particle += 1) {
+      const burst = new THREE.Mesh(
+        new THREE.SphereGeometry(0.045 + particle * 0.014, 7, 5),
+        new THREE.MeshBasicMaterial({ color: colors[particle], transparent: true, opacity: 0.86 }),
+      );
+      burst.position.copy(position).add(new THREE.Vector3(
+        THREE.MathUtils.randFloatSpread(0.45),
+        THREE.MathUtils.randFloatSpread(0.35),
+        THREE.MathUtils.randFloatSpread(0.45),
+      ));
+      this.scene.add(burst);
+      this.effects.push({ mesh: burst, life: 0.16 + particle * 0.03, maxLife: 0.16 + particle * 0.03 });
+    }
   }
 
   private updatePickups(dt: number) {
@@ -852,6 +854,7 @@ export class GameEngine {
           this.audio.tone(410, 0.18, 0.05, "sine");
         }
         this.scene.remove(pickup.mesh);
+        this.visuals.disposeObject(pickup.mesh);
         this.pickups.splice(index, 1);
       }
     }
@@ -877,6 +880,7 @@ export class GameEngine {
   private damagePlayer(amount: number) {
     if (this.dashRemaining > 0 || this.playerHealth <= 0) return;
     this.playerHealth = Math.max(0, this.playerHealth - amount);
+    this.cameraShake = Math.max(this.cameraShake, 0.42);
     this.audio.tone(70, 0.12, 0.12, "sawtooth");
     this.container.classList.remove("is-hit");
     void this.container.offsetWidth;
@@ -956,38 +960,81 @@ export class GameEngine {
     this.updateProjectiles(dt);
     this.updatePickups(dt);
     this.updateEffects(dt);
+    this.updateCamera(dt);
     this.emitHud();
   }
 
+  private updateCamera(dt: number) {
+    const desired = new THREE.Vector3(
+      THREE.MathUtils.clamp(this.playerMesh.position.x * 0.42, -5.8, 5.8),
+      0,
+      THREE.MathUtils.clamp(this.playerMesh.position.z * 0.42, -5.2, 5.2),
+    );
+    this.cameraLook.lerp(desired, 1 - Math.exp(-dt * 4.2));
+    const shake = this.profile.settings.reducedMotion ? 0 : this.cameraShake;
+    const offsetX = shake > 0 ? THREE.MathUtils.randFloatSpread(shake) : 0;
+    const offsetZ = shake > 0 ? THREE.MathUtils.randFloatSpread(shake) : 0;
+    this.camera.position.set(this.cameraLook.x + offsetX, 20, this.cameraLook.z + 17 + offsetZ);
+    this.camera.lookAt(this.cameraLook.x, 0.42, this.cameraLook.z);
+    this.cameraShake = Math.max(0, this.cameraShake - dt * 2.8);
+    const dust = this.scene.getObjectByName("ambient-dust");
+    if (dust) dust.rotation.y += dt * 0.012;
+  }
+
+  private scheduleFrame() {
+    if (!this.destroyed && !this.paused && this.frame === 0) this.frame = requestAnimationFrame(this.animate);
+  }
+
   private animate = () => {
-    if (this.destroyed) return;
-    this.frame = requestAnimationFrame(this.animate);
-    const delta = Math.min(0.05, this.clock.getDelta());
-    if (!this.paused) {
-      this.accumulator = Math.min(this.accumulator + delta, FIXED_STEP * 5);
-      while (this.accumulator >= FIXED_STEP) {
-        this.step(FIXED_STEP);
-        this.accumulator -= FIXED_STEP;
+    this.frame = 0;
+    if (this.destroyed || this.paused) return;
+    this.timer.update();
+    const delta = Math.min(0.05, this.timer.getDelta());
+    this.frameTimeAverage += (delta - this.frameTimeAverage) * 0.04;
+    this.performanceSampleTime += delta;
+    if (this.performanceSampleTime >= 2) {
+      this.performanceSampleTime = 0;
+      const maximum = Math.min(window.devicePixelRatio, 1.5);
+      const nextRatio = this.frameTimeAverage > 0.021
+        ? Math.max(1, this.pixelRatio - 0.15)
+        : this.frameTimeAverage < 0.0172
+          ? Math.min(maximum, this.pixelRatio + 0.1)
+          : this.pixelRatio;
+      if (Math.abs(nextRatio - this.pixelRatio) > 0.01) {
+        this.pixelRatio = nextRatio;
+        this.renderer.setPixelRatio(this.pixelRatio);
+        this.resize();
       }
     }
-    this.renderer.render(this.scene, this.camera);
+    this.accumulator = Math.min(this.accumulator + delta, FIXED_STEP * 5);
+    while (this.accumulator >= FIXED_STEP && !this.paused) {
+      this.step(FIXED_STEP);
+      this.accumulator -= FIXED_STEP;
+    }
+    if (!this.qaMode || this.qaFramesRendered < 2) {
+      this.renderer.render(this.scene, this.camera);
+      this.qaFramesRendered += 1;
+    }
+    this.scheduleFrame();
   };
 
   private resize = () => {
     const width = Math.max(1, this.container.clientWidth);
     const height = Math.max(1, this.container.clientHeight);
     const aspect = width / height;
-    const view = aspect < 1 ? 27 : 23;
+    const view = aspect < 0.8 ? 22 : 19.5;
     this.camera.left = -view * aspect / 2;
     this.camera.right = view * aspect / 2;
     this.camera.top = view / 2;
     this.camera.bottom = -view / 2;
     this.camera.near = 0.1;
     this.camera.far = 100;
-    this.camera.position.set(0, 25, 20);
-    this.camera.lookAt(0, 0, 0);
+    this.camera.position.set(0, 20, 17);
+    this.camera.lookAt(0, 0.42, 0);
     this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(width, height, false);
+    if (this.paused && !this.destroyed) this.renderer.render(this.scene, this.camera);
   };
 
   private onPointerMove = (event: PointerEvent) => {
@@ -997,7 +1044,7 @@ export class GameEngine {
   };
 
   private onPointerDown = (event: PointerEvent) => {
-    if (event.button === 0) this.firing = true;
+    if (!this.paused && event.button === 0) this.firing = true;
   };
 
   private onPointerUp = (event: PointerEvent) => {
@@ -1005,6 +1052,11 @@ export class GameEngine {
   };
 
   private onKeyDown = (event: KeyboardEvent) => {
+    if (event.code === "Escape") {
+      if (!event.repeat) this.callbacks.onPauseToggle();
+      return;
+    }
+    if (this.paused) return;
     if (["KeyW", "KeyA", "KeyS", "KeyD", "Space"].includes(event.code)) event.preventDefault();
     this.keys.add(event.code);
     if (event.repeat) return;
@@ -1017,12 +1069,18 @@ export class GameEngine {
       this.dashCooldown = 2.8;
       this.audio.tone(260, 0.08, 0.045, "sine");
     }
-    if (event.code === "Escape") this.callbacks.onPauseToggle();
     if (event.code === "KeyK" && this.qaMode) {
-      for (const enemy of this.enemies) this.scene.remove(enemy.mesh);
+      for (const enemy of this.enemies) {
+        this.visuals.disposeCharacter(enemy.rig);
+        this.scene.remove(enemy.mesh);
+      }
       this.enemies = [];
       this.spawnQueue = [];
+      this.waveActive = false;
+      this.pause();
       this.emitHud(true);
+      if (this.wave >= 10) this.callbacks.onVictory();
+      else this.callbacks.onWaveComplete(this.wave);
     }
   };
 
@@ -1030,14 +1088,35 @@ export class GameEngine {
     this.keys.delete(event.code);
   };
 
+  private clearInputState() {
+    this.keys.clear();
+    this.firing = false;
+    this.playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
+  private onFocusLost = () => {
+    this.clearInputState();
+    if (this.paused || this.destroyed) return;
+    this.pause();
+    this.callbacks.onPauseToggle();
+  };
+
+  private onVisibilityChange = () => {
+    if (document.hidden) this.onFocusLost();
+  };
+
+  private onContextMenu = (event: Event) => event.preventDefault();
+
   private bindEvents() {
     window.addEventListener("resize", this.resize);
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("blur", this.onFocusLost);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.renderer.domElement.addEventListener("pointermove", this.onPointerMove);
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
-    this.renderer.domElement.addEventListener("contextmenu", (event) => event.preventDefault());
+    this.renderer.domElement.addEventListener("contextmenu", this.onContextMenu);
   }
 
   private unbindEvents() {
@@ -1045,8 +1124,11 @@ export class GameEngine {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("blur", this.onFocusLost);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     this.renderer.domElement.removeEventListener("pointermove", this.onPointerMove);
     this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
+    this.renderer.domElement.removeEventListener("contextmenu", this.onContextMenu);
   }
 
   private shuffle<T>(values: T[]) {

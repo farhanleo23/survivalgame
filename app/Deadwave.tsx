@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { GameEngine as GameEngineType } from "@/game/GameEngine";
 import {
   getPerkUpgradeCost,
@@ -28,6 +28,8 @@ const initialHud: HudState = {
   dash: 1,
 };
 
+type EngineStatus = "idle" | "loading" | "ready" | "error";
+
 export function Deadwave() {
   const [profile, setProfile] = useState<ProfileV1>(() => createDefaultProfile());
   const [screen, setScreen] = useState<GameScreen>("lobby");
@@ -35,6 +37,7 @@ export function Deadwave() {
   const [hydrated, setHydrated] = useState(false);
   const [notice, setNotice] = useState("");
   const [runToken, setRunToken] = useState(0);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus>("idle");
   const stageRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngineType | null>(null);
 
@@ -59,39 +62,48 @@ export function Deadwave() {
     if (screen !== "playing" || !stageRef.current || engineRef.current) return;
     let cancelled = false;
     const mount = stageRef.current;
-    void import("@/game/GameEngine").then(({ GameEngine }) => {
-      if (cancelled || !mount || engineRef.current) return;
-      const engine = new GameEngine(mount, profile, {
-        onHud: setHud,
-        onCoins: (amount) => commitProfile((current) => ({ ...current, coins: current.coins + amount })),
-        onWaveChange: (wave) => commitProfile((current) => ({ ...current, highestWave: Math.max(current.highestWave, wave) })),
-        onWaveComplete: () => setScreen("armory"),
-        onDeath: () => setScreen("dead"),
-        onVictory: () => {
-          commitProfile((current) => ({
-            ...current,
-            highestWave: 10,
-            completedLevels: current.completedLevels.includes(1) ? current.completedLevels : [...current.completedLevels, 1],
-          }));
-          setScreen("victory");
-        },
-        onPauseToggle: () => {
-          setScreen((current) => {
-            if (current === "playing") {
-              engineRef.current?.pause();
-              return "paused";
-            }
-            if (current === "paused") {
-              engineRef.current?.resume();
-              return "playing";
-            }
-            return current;
-          });
-        },
-      });
-      engineRef.current = engine;
-      engine.start(1);
-    });
+    void (async () => {
+      let engine: GameEngineType | null = null;
+      try {
+        const { GameEngine } = await import("@/game/GameEngine");
+        if (cancelled || !mount || engineRef.current) return;
+        engine = new GameEngine(mount, profile, {
+          onHud: setHud,
+          onCoins: (amount) => commitProfile((current) => ({ ...current, coins: current.coins + amount })),
+          onWaveChange: (wave) => commitProfile((current) => ({ ...current, highestWave: Math.max(current.highestWave, wave) })),
+          onWaveComplete: () => setScreen("armory"),
+          onDeath: () => setScreen("dead"),
+          onVictory: () => {
+            commitProfile((current) => ({
+              ...current,
+              highestWave: 10,
+              completedLevels: current.completedLevels.includes(1) ? current.completedLevels : [...current.completedLevels, 1],
+            }));
+            setScreen("victory");
+          },
+          onPauseToggle: () => {
+            setScreen((current) => {
+              if (current === "playing") {
+                engineRef.current?.pause();
+                return "paused";
+              }
+              if (current === "paused") {
+                engineRef.current?.resume();
+                return "playing";
+              }
+              return current;
+            });
+          },
+        });
+        engineRef.current = engine;
+        engine.start(1);
+        if (!cancelled) setEngineStatus("ready");
+      } catch {
+        engine?.destroy();
+        if (engineRef.current === engine) engineRef.current = null;
+        if (!cancelled) setEngineStatus("error");
+      }
+    })();
     return () => { cancelled = true; };
   }, [screen, runToken, profile, commitProfile]);
 
@@ -105,6 +117,7 @@ export function Deadwave() {
     engineRef.current = null;
     setHud(initialHud);
     setNotice("");
+    setEngineStatus("loading");
     setRunToken((token) => token + 1);
     setScreen("playing");
   };
@@ -112,6 +125,7 @@ export function Deadwave() {
   const returnToLobby = () => {
     engineRef.current?.destroy();
     engineRef.current = null;
+    setEngineStatus("idle");
     setScreen("lobby");
   };
 
@@ -135,13 +149,19 @@ export function Deadwave() {
     }
     setNotice(`${WEAPONS[id].name} added to your loadout.`);
     commitProfile(() => result.profile);
-    engineRef.current?.unlockAndEquip(id);
+    engineRef.current?.equipLoadout(result.profile.equippedLoadout);
   };
 
   const buyWeaponUpgrade = (id: WeaponId) => {
     const result = upgradeWeapon(profile, id);
     if (!result.ok) {
-      setNotice(result.reason === "insufficient" ? "Not enough salvage." : "Weapon is already rank V.");
+      setNotice(
+        result.reason === "insufficient"
+          ? "Not enough salvage."
+          : result.reason === "unowned"
+            ? "Acquire the weapon before upgrading it."
+            : "Weapon is already rank V.",
+      );
       return;
     }
     setNotice(`${WEAPONS[id].name} upgraded to rank ${result.profile.weaponRanks[id]}.`);
@@ -163,8 +183,11 @@ export function Deadwave() {
       setNotice("You need 20 salvage for a full ammunition refill.");
       return;
     }
+    if (!engineRef.current?.refillAmmo()) {
+      setNotice("Equipped weapon ammunition is already full.");
+      return;
+    }
     commitProfile((current) => ({ ...current, coins: current.coins - 20 }));
-    engineRef.current?.refillAmmo();
     setNotice("All equipped weapons refilled.");
   };
 
@@ -202,12 +225,38 @@ export function Deadwave() {
       )}
 
       {gameVisible && (
-        <section className="game-view" data-testid="game-stage">
+        <section
+          className="game-view"
+          data-testid="game-stage"
+          onPointerMove={(event) => {
+            event.currentTarget.style.setProperty("--aim-x", `${event.clientX}px`);
+            event.currentTarget.style.setProperty("--aim-y", `${event.clientY}px`);
+          }}
+        >
           <div className="canvas-mount" ref={stageRef} />
           <div className="vignette" aria-hidden="true" />
-          <Hud hud={hud} coins={profile.coins} healthPercent={healthPercent} />
-          {screen === "playing" && (
+          {engineStatus === "ready" && <div className="combat-reticle" aria-hidden="true"><i /><b /></div>}
+          {engineStatus === "ready" && <Hud hud={hud} coins={profile.coins} healthPercent={healthPercent} />}
+          {screen === "playing" && engineStatus === "ready" && (
             <div className="game-controls">WASD move <i /> Mouse aim <i /> Click fire <i /> R reload <i /> Shift dash <i /> Esc pause</div>
+          )}
+          {screen === "playing" && engineStatus === "loading" && (
+            <div className="engine-status" role="status" aria-live="polite">
+              <p className="eyebrow">Deploying operator</p>
+              <h2>Establishing combat link…</h2>
+              <span>Loading physics, terrain, and character systems.</span>
+            </div>
+          )}
+          {screen === "playing" && engineStatus === "error" && (
+            <div className="engine-status engine-error" role="alert">
+              <p className="eyebrow">Combat link failed</p>
+              <h2>The depot could not be initialized.</h2>
+              <span>WebGL or a required game asset may be unavailable. Retry the deployment or return to command.</span>
+              <div className="engine-error-actions">
+                <button className="primary-action" onClick={startNewRun}>Retry deployment <span>→</span></button>
+                <button className="text-action" onClick={returnToLobby}>Return to command</button>
+              </div>
+            </div>
           )}
         </section>
       )}
@@ -323,9 +372,9 @@ function Lobby({ profile, onStart, onToggleSetting }: {
         <article className="level-card active"><span className="level-index">01</span><div><h3>Evacuation Depot</h3><p>Perimeter breach detected</p></div><span className="status-tag">Ready</span></article>
         <article className={`level-card locked ${profile.completedLevels.includes(1) ? "revealed" : ""}`}><span className="level-index">02</span><div><h3>Downtown Hospital</h3><p>{profile.completedLevels.includes(1) ? "Signal acquired — next milestone" : "Complete Level 01 to reveal"}</p></div><span className="status-tag">Locked</span></article>
         <div className="quick-settings" aria-label="Settings">
-          <button className={profile.settings.music ? "active" : ""} onClick={() => onToggleSetting("music")} aria-label="Toggle music">♫</button>
-          <button className={profile.settings.sfx ? "active" : ""} onClick={() => onToggleSetting("sfx")} aria-label="Toggle sound effects">SFX</button>
-          <button className={profile.settings.reducedMotion ? "active" : ""} onClick={() => onToggleSetting("reducedMotion")} aria-label="Toggle reduced motion">RM</button>
+          <button className={profile.settings.music ? "active" : ""} onClick={() => onToggleSetting("music")} aria-label="Toggle music" aria-pressed={profile.settings.music}>♫</button>
+          <button className={profile.settings.sfx ? "active" : ""} onClick={() => onToggleSetting("sfx")} aria-label="Toggle sound effects" aria-pressed={profile.settings.sfx}>SFX</button>
+          <button className={profile.settings.reducedMotion ? "active" : ""} onClick={() => onToggleSetting("reducedMotion")} aria-label="Toggle reduced motion" aria-pressed={profile.settings.reducedMotion}>RM</button>
         </div>
       </section>
     </div>
@@ -402,7 +451,7 @@ function Armory({ profile, wave, notice, onBuyWeapon, onUpgradeWeapon, onUpgrade
   return (
     <Modal eyebrow={`Wave ${wave} secured`} title="Field armory" wide>
       <div className="armory-balance"><span>Banked salvage</span><strong>◆ {profile.coins}</strong><button onClick={onRefill}>Refill all ammo <b>20</b></button></div>
-      {notice && <div className="armory-notice">{notice}</div>}
+      {notice && <div className="armory-notice" role="status" aria-live="polite">{notice}</div>}
       <div className="armory-layout">
         <section><h3 className="section-title">Arsenal</h3><div className="armory-list">
           {WEAPON_IDS.map((id) => {
@@ -439,11 +488,12 @@ function Armory({ profile, wave, notice, onBuyWeapon, onUpgradeWeapon, onUpgrade
 }
 
 function Modal({ eyebrow, title, wide = false, children }: { eyebrow: string; title: string; wide?: boolean; children: React.ReactNode }) {
-  return <div className="modal-backdrop"><section className={`modal-panel ${wide ? "wide" : ""}`}><header><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></header>{children}</section></div>;
+  const titleId = useId();
+  return <div className="modal-backdrop"><section className={`modal-panel ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}><header><p className="eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></header>{children}</section></div>;
 }
 
 function SettingToggle({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return <button className="setting-toggle" onClick={onClick}><span>{label}</span><i className={active ? "active" : ""}><b /></i></button>;
+  return <button className="setting-toggle" onClick={onClick} aria-pressed={active}><span>{label}</span><i className={active ? "active" : ""} aria-hidden="true"><b /></i></button>;
 }
 
 function WeaponGlyph({ id, compact = false }: { id: WeaponId; compact?: boolean }) {

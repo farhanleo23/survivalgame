@@ -56,7 +56,30 @@ describe("profile persistence", () => {
 
 describe("economy and upgrades", () => {
   it("rejects a weapon purchase without enough salvage", () => {
-    expect(purchaseWeapon(createDefaultProfile(), "smg")).toMatchObject({ ok: false, reason: "insufficient" });
+    const profile = createDefaultProfile();
+    const original = structuredClone(profile);
+    expect(purchaseWeapon(profile, "smg")).toMatchObject({ ok: false, reason: "insufficient" });
+    expect(profile).toEqual(original);
+  });
+
+  it("persists a third weapon by replacing loadout slot two", () => {
+    const first = purchaseWeapon({ ...createDefaultProfile(), coins: 1_180 }, "smg");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const result = purchaseWeapon(first.profile, "shotgun");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.profile.coins).toBe(720);
+      expect(result.profile.ownedWeapons).toEqual(["pistol", "smg", "shotgun"]);
+      expect(result.profile.equippedLoadout).toEqual(["pistol", "shotgun"]);
+    }
+  });
+
+  it("rejects upgrades for unowned weapons without mutating the profile", () => {
+    const profile = { ...createDefaultProfile(), coins: 1_000 };
+    const original = structuredClone(profile);
+    expect(upgradeWeapon(profile, "rifle")).toMatchObject({ ok: false, reason: "unowned" });
+    expect(profile).toEqual(original);
   });
 
   it("persists purchased weapons and spends the exact price", () => {

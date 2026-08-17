@@ -16,7 +16,7 @@ Progress is stored locally in the browser. Weapons, upgrades, perks, settings, c
 
 ## Development
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.13 or newer. The repository includes an `.nvmrc`, so nvm users can run `nvm use` before installing dependencies.
 
 ```bash
 npm install
