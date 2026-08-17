@@ -157,11 +157,25 @@ export class VisualFactory {
     this.groundMaterial = new THREE.MeshStandardMaterial({
       map: this.groundTileTexture,
       bumpMap: this.groundTileTexture,
-      bumpScale: 0.08,
-      roughness: 0.72,
-      metalness: 0.15,
-      color: 0xffffff,
+      bumpScale: 0.045,
+      roughness: 0.88,
+      metalness: 0.12,
+      color: 0xb7c0bc,
     });
+
+    new THREE.TextureLoader().load(
+      "/textures/depot-floor-comic-v2.png",
+      (texture) => {
+        if (this.disposed) return;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+        texture.repeat.set(1.8, 1.8);
+        texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+        this.groundMaterial.map = texture;
+        this.groundMaterial.bumpMap = texture;
+        this.groundMaterial.needsUpdate = true;
+      },
+    );
 
     this.characterAsset = new GLTFLoader().loadAsync("/models/soldier.glb").then((asset) => {
       const data = { scene: asset.scene, animations: asset.animations };
@@ -187,21 +201,21 @@ export class VisualFactory {
 
     // Glowing central landing / defense zone ring
     const centerPadOuter = mesh(
-      new THREE.RingGeometry(6.8, 7.15, 64),
-      new THREE.MeshBasicMaterial({ color: 0x4ecdc4, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+      new THREE.RingGeometry(6.92, 7.08, 64),
+      new THREE.MeshBasicMaterial({ color: 0x4ecdc4, transparent: true, opacity: 0.3, side: THREE.DoubleSide }),
     );
     centerPadOuter.rotation.x = -Math.PI / 2;
     centerPadOuter.position.y = 0.024;
     const centerPadInner = mesh(
-      new THREE.RingGeometry(3.6, 3.85, 48),
-      new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.6, side: THREE.DoubleSide }),
+      new THREE.RingGeometry(3.68, 3.8, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.34, side: THREE.DoubleSide }),
     );
     centerPadInner.rotation.x = -Math.PI / 2;
     centerPadInner.position.y = 0.025;
     group.add(centerPadOuter, centerPadInner);
 
     // Stylized crosshair markings on center zone
-    const markMaterial = new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+    const markMaterial = new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
     for (let i = 0; i < 4; i += 1) {
       const angle = (i * Math.PI) / 2;
       const tick = mesh(new THREE.PlaneGeometry(0.35, 1.6), markMaterial);
@@ -242,7 +256,7 @@ export class VisualFactory {
     const puddleMat = new THREE.MeshBasicMaterial({
       color: 0x39ff14,
       transparent: true,
-      opacity: 0.35,
+      opacity: 0.18,
       depthWrite: false,
     });
     for (const [x, z, sx, sz] of [
@@ -342,9 +356,9 @@ export class VisualFactory {
     const carbon = new THREE.MeshStandardMaterial({ color: 0x18201d, metalness: 0.88, roughness: 0.25 });
     const steel = new THREE.MeshStandardMaterial({ color: 0x3a4b45, metalness: 0.75, roughness: 0.35 });
     const vatFluid = new THREE.MeshStandardMaterial({
-      color: 0x39ff14,
-      emissive: 0x22c55e,
-      emissiveIntensity: 2.5,
+      color: 0x2bcf38,
+      emissive: 0x15943b,
+      emissiveIntensity: 1.1,
       roughness: 0.15,
       metalness: 0.1,
     });
@@ -370,7 +384,7 @@ export class VisualFactory {
     vent.position.y = 2.75;
     root.add(cap, vent);
 
-    const toxicLight = new THREE.PointLight(0x39ff14, 10, 6, 2);
+    const toxicLight = new THREE.PointLight(0x39ff14, 4.2, 6, 2);
     toxicLight.position.y = 1.5;
     root.add(toxicLight);
 
@@ -676,7 +690,7 @@ export class VisualFactory {
   createPlayer(): CharacterRig {
     const rig = this.createEmptyRig(1);
     const ring = mesh(
-      new THREE.RingGeometry(0.58, 0.72, 36),
+      new THREE.RingGeometry(0.68, 0.84, 36),
       new THREE.MeshBasicMaterial({ color: 0x00f5d4, transparent: true, opacity: 0.65, side: THREE.DoubleSide }),
     );
     ring.name = "selection-ring";
@@ -921,7 +935,7 @@ export class VisualFactory {
     return this.characterAsset.then((asset) => {
       if (this.disposed || rig.disposed) return;
       const model = cloneSkinnedModel(asset.scene);
-      model.scale.setScalar(rig.scale * (kind === "player" ? 1.22 : 1.15));
+      model.scale.setScalar(rig.scale * (kind === "player" ? 1.78 : 1.44));
       model.rotation.y = Math.PI;
 
       if (kind === "runner") {
@@ -950,6 +964,12 @@ export class VisualFactory {
       } else {
         this.buildStylizedZombie(model, kind, definition?.color ?? 0x5f6d62);
       }
+
+      model.traverse((object) => {
+        if (object.name !== "custom-outlined-mesh") return;
+        const outline = object.children[0];
+        if (outline) outline.scale.setScalar(kind === "player" ? 1.075 : kind === "juggernaut" ? 1.055 : 1.05);
+      });
 
       const placeholder = rig.root.getObjectByName("character-placeholder");
       if (placeholder) {
@@ -1397,7 +1417,7 @@ export class VisualFactory {
     const core = mesh(new RoundedBoxGeometry(0.54, 0.6, 0.06, 1, 0.02), glowCore);
     core.position.set(0, 1.35, 0.26);
 
-    const furnaceLight = new THREE.PointLight(0xff8800, 16, 9, 2);
+    const furnaceLight = new THREE.PointLight(0xff8800, 7, 8, 2);
     furnaceLight.position.set(0, 1.35, 0.35);
 
     root.add(base, pillar, box, core, furnaceLight);
@@ -1476,9 +1496,9 @@ export class VisualFactory {
   createSlimePool(radius = 1.4) {
     const root = new THREE.Group();
     const fluidMat = new THREE.MeshStandardMaterial({
-      color: 0x39ff14,
-      emissive: 0x22c55e,
-      emissiveIntensity: 3.2,
+      color: 0x22b82f,
+      emissive: 0x15943b,
+      emissiveIntensity: 0.75,
       roughness: 0.15,
       transparent: true,
       opacity: 0.85,
@@ -1495,7 +1515,7 @@ export class VisualFactory {
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.039;
 
-    const slimeLight = new THREE.PointLight(0x39ff14, 12, 6, 2);
+    const slimeLight = new THREE.PointLight(0x39ff14, 2.2, 5, 2);
     slimeLight.position.y = 0.6;
 
     root.add(pool, ring, slimeLight);

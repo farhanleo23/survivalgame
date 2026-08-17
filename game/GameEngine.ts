@@ -88,7 +88,7 @@ export class GameEngine {
   private callbacks: EngineCallbacks;
   private profile: ProfileV1;
   private scene = new THREE.Scene();
-  private camera = new THREE.OrthographicCamera();
+  private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 110);
   private renderer: THREE.WebGLRenderer;
   private visuals: VisualFactory;
   private timer = new THREE.Timer();
@@ -135,9 +135,12 @@ export class GameEngine {
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private keys = new Set<string>();
   private firing = false;
+  private virtualMove = new THREE.Vector2();
+  private usingTouchControls = false;
+  private alertLights: THREE.PointLight[] = [];
   private qaMode =
     typeof window !== "undefined" &&
-    window.location.hostname === "localhost" &&
+    ["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname) &&
     new URLSearchParams(window.location.search).has("qa");
 
   private enemies: EnemyEntity[] = [];
@@ -195,10 +198,9 @@ export class GameEngine {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.36;
+    this.renderer.toneMappingExposure = 1.08;
     this.renderer.domElement.className = "game-canvas";
     this.renderer.domElement.setAttribute("aria-label", "Deadwave evacuation depot combat arena");
-    this.container.appendChild(this.renderer.domElement);
 
     this.floatingLayer = document.createElement("div");
     this.floatingLayer.className = "floating-hud-layer";
@@ -223,6 +225,7 @@ export class GameEngine {
     this.createWeaponStates();
     this.bindEvents();
     this.resize();
+    this.container.insertBefore(this.renderer.domElement, this.floatingLayer);
   }
 
   start(wave = 1) {
@@ -304,6 +307,23 @@ export class GameEngine {
     return true;
   }
 
+  setVirtualMove(x: number, z: number) {
+    this.usingTouchControls = true;
+    this.virtualMove.set(THREE.MathUtils.clamp(x, -1, 1), THREE.MathUtils.clamp(z, -1, 1));
+  }
+
+  setVirtualFire(active: boolean) {
+    this.usingTouchControls = true;
+    this.firing = active;
+  }
+
+  triggerVirtualAction(action: "dash" | "reload" | "swap") {
+    this.usingTouchControls = true;
+    if (action === "dash") this.startDash();
+    else if (action === "reload") this.reload();
+    else this.switchWeapon();
+  }
+
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -322,17 +342,15 @@ export class GameEngine {
   }
 
   private setupScene() {
-    // Warm industrial warehouse background & atmosphere
-    this.scene.background = new THREE.Color(0x181512);
-    this.scene.fog = new THREE.FogExp2(0x181512, 0.012);
+    // Dark teal atmosphere with warm industrial pools of light.
+    this.scene.background = new THREE.Color(0x071315);
+    this.scene.fog = new THREE.FogExp2(0x0a2022, 0.016);
 
-    // Warm tungsten ceiling ambient illumination with warm floor bounce
-    const ambient = new THREE.HemisphereLight(0xffeedd, 0x3d3028, 2.2);
+    const ambient = new THREE.HemisphereLight(0x6ea6a5, 0x170c08, 0.78);
     this.scene.add(ambient);
 
-    // Strong overhead directional sunlight/floodlight
-    const key = new THREE.DirectionalLight(0xffecd0, 3.8);
-    key.position.set(-12, 24, 10);
+    const key = new THREE.DirectionalLight(0xffc47d, 2.15);
+    key.position.set(-13, 22, -8);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
     key.shadow.camera.left = -24;
@@ -341,12 +359,40 @@ export class GameEngine {
     key.shadow.camera.bottom = -24;
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.035;
-    key.shadow.radius = 2;
+    key.shadow.radius = 3;
     this.scene.add(key);
+
+    const coolFill = new THREE.DirectionalLight(0x39a9b1, 1.05);
+    coolFill.position.set(14, 10, 16);
+    this.scene.add(coolFill);
 
     this.scene.add(this.visuals.createGround());
     this.visuals.addPerimeter(this.scene);
     this.visuals.addSetDressing(this.scene);
+
+    // Edge architecture creates 2.5D depth without obstructing the central combat lanes.
+    this.addObstacle(-15.7, 11.4, 4.2, 3.2, 0x252924);
+    this.addObstacle(15.2, -11.8, 4.6, 3.0, 0x28302d);
+    this.addObstacle(-15.6, -12.7, 3.2, 2.7, 0x202b2c);
+    this.addObstacle(15.8, 12.8, 3.0, 2.6, 0x302a24);
+    this.addBarricade(-10.8, 14.8, 4.2, 0.45, 0.14);
+    this.addBarricade(10.7, -14.7, 4.0, 0.45, -0.18);
+
+    this.addFloodlight(-16.2, -15.5, 0xff8a36);
+    this.addFloodlight(15.6, 14.9, 0x47c9d3);
+    this.addFloodlight(-15.7, 15.2, 0x39ff8f);
+
+    for (const [x, z, color] of [
+      [-10, -8, 0xff7a24],
+      [10, 8, 0x38c7cf],
+      [-9, 10, 0xff3d2e],
+      [11, -10, 0x39ff72],
+    ] as const) {
+      const light = new THREE.PointLight(color, 3.5, 12, 2);
+      light.position.set(x, 2.8, z);
+      this.alertLights.push(light);
+      this.scene.add(light);
+    }
 
     // 1. Glowing furnace heaters on stands (matching screenshot left & right)
     this.addFurnaceBeacon(-11.5, 5.5);
@@ -740,9 +786,9 @@ export class GameEngine {
 
   private updatePlayer(dt: number) {
     const inputDir = new THREE.Vector3(
-      (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0),
+      (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0) + this.virtualMove.x,
       0,
-      (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0),
+      (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0) + this.virtualMove.y,
     );
     const hasInput = inputDir.lengthSq() > 0;
     if (hasInput) inputDir.normalize();
@@ -862,6 +908,20 @@ export class GameEngine {
   }
 
   private updateAim() {
+    if (this.usingTouchControls && this.enemies.length > 0) {
+      let closest = this.enemies[0];
+      let closestDistance = closest.mesh.position.distanceToSquared(this.playerMesh.position);
+      for (let index = 1; index < this.enemies.length; index += 1) {
+        const distance = this.enemies[index].mesh.position.distanceToSquared(this.playerMesh.position);
+        if (distance < closestDistance) {
+          closest = this.enemies[index];
+          closestDistance = distance;
+        }
+      }
+      this.mouseWorldPos.copy(closest.mesh.position);
+      this.aim.copy(closest.mesh.position).sub(this.playerMesh.position).setY(0).normalize();
+      return;
+    }
     this.raycaster.setFromCamera(this.mouseNdc, this.camera);
     const hit = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(this.groundPlane, hit)) {
@@ -1448,6 +1508,7 @@ export class GameEngine {
     this.updateProjectiles(dt);
     this.updatePickups(dt);
     this.updateEffects(dt);
+    this.updateAtmosphere();
     this.updateCamera(dt);
     this.emitHud();
   }
@@ -1474,8 +1535,8 @@ export class GameEngine {
     const offsetZ = shake > 0 ? THREE.MathUtils.randFloatSpread(shake) : 0;
 
     const posX = this.cameraLook.x + this.cameraRecoil.x + offsetX;
-    const posZ = this.cameraLook.z + 17 + this.cameraRecoil.z + offsetZ;
-    this.camera.position.set(posX, 20, posZ);
+    const posZ = this.cameraLook.z + 18.5 + this.cameraRecoil.z + offsetZ;
+    this.camera.position.set(posX, 22.5, posZ);
 
     const targetX = this.cameraLook.x + this.cameraRecoil.x * 0.5;
     const targetZ = this.cameraLook.z + this.cameraRecoil.z * 0.5;
@@ -1485,6 +1546,17 @@ export class GameEngine {
 
     const dust = this.scene.getObjectByName("ambient-dust");
     if (dust) dust.rotation.y += dt * 0.012;
+  }
+
+  private updateAtmosphere() {
+    const pressure = (this.wave - 1) / 9;
+    const pulse = 0.76 + Math.sin(this.missionElapsed * (1.6 + pressure * 2.2)) * 0.24;
+    this.alertLights.forEach((light, index) => {
+      light.intensity = 2.8 + pressure * 5.2 + (index % 2 === 0 ? pulse : 1 - pulse) * pressure * 2.5;
+    });
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.density = 0.014 + pressure * 0.007;
+    }
   }
 
   private scheduleFrame() {
@@ -1528,15 +1600,11 @@ export class GameEngine {
   private resize = () => {
     const width = Math.max(1, this.container.clientWidth);
     const height = Math.max(1, this.container.clientHeight);
-    const aspect = width / height;
-    const view = aspect < 0.8 ? 22 : 19.5;
-    this.camera.left = (-view * aspect) / 2;
-    this.camera.right = (view * aspect) / 2;
-    this.camera.top = view / 2;
-    this.camera.bottom = -view / 2;
+    this.camera.aspect = width / height;
+    this.camera.fov = width / height < 0.8 ? 56 : 42;
     this.camera.near = 0.1;
-    this.camera.far = 100;
-    this.camera.position.set(0, 20, 17);
+    this.camera.far = 110;
+    this.camera.position.set(0, 22.5, 18.5);
     this.camera.lookAt(0, 0.42, 0);
     this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(this.pixelRatio);
@@ -1596,17 +1664,7 @@ export class GameEngine {
       return;
     }
 
-    if ((code === "ShiftLeft" || code === "ShiftRight" || code === "Space") && this.dashCooldown <= 0) {
-      const inputDir = new THREE.Vector3(
-        (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0),
-        0,
-        (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0),
-      );
-      this.dashDirection = inputDir.lengthSq() > 0 ? inputDir.normalize() : this.aim.clone();
-      this.dashRemaining = this.dashTotal;
-      this.dashCooldown = 2.8;
-      this.audio.playDash();
-    }
+    if (code === "ShiftLeft" || code === "ShiftRight" || code === "Space") this.startDash();
     if (code === "KeyK" && this.qaMode) {
       for (const enemy of this.enemies) {
         this.visuals.disposeCharacter(enemy.rig);
@@ -1635,9 +1693,24 @@ export class GameEngine {
 
   private clearInputState() {
     this.keys.clear();
+    this.virtualMove.set(0, 0);
     this.firing = false;
     this.playerVelocity.set(0, 0, 0);
     this.playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
+  private startDash() {
+    if (this.paused || this.dashCooldown > 0) return;
+    const inputDir = new THREE.Vector3(
+      (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0) + this.virtualMove.x,
+      0,
+      (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0) + this.virtualMove.y,
+    );
+    this.dashDirection = inputDir.lengthSq() > 0 ? inputDir.normalize() : this.aim.clone();
+    this.dashRemaining = this.dashTotal;
+    this.dashCooldown = 2.8;
+    this.cameraShake = Math.max(this.cameraShake, 0.18);
+    this.audio.playDash();
   }
 
   private onFocusLost = () => {

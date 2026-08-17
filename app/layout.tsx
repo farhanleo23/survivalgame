@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 const title = "Deadwave — Zombie Survival Shooter";
 const description =
-  "Survive ten waves, recover coins, and upgrade your arsenal in a top-down zombie shooter.";
+  "Survive ten escalating waves in a comic-book 2.5D industrial arena, recover salvage, and upgrade your arsenal.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       title,
       description,
-      images: [{ url: socialImage, width: 1672, height: 941, alt: "Deadwave survivor holding an evacuation depot against a zombie horde" }],
+      images: [{ url: socialImage, width: 1200, height: 630, alt: "Deadwave operator holding an industrial depot against an infected horde" }],
     },
     twitter: { card: "summary_large_image", title, description, images: [socialImage] },
   };

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type PointerEvent } from "react";
 import type { GameEngine as GameEngineType } from "@/game/GameEngine";
 import {
   getPerkUpgradeCost,
@@ -73,13 +73,7 @@ export function Deadwave() {
           onHud: setHud,
           onCoins: (amount) => commitProfile((current) => ({ ...current, coins: current.coins + amount })),
           onWaveChange: (wave) => commitProfile((current) => ({ ...current, highestWave: Math.max(current.highestWave, wave) })),
-          onWaveComplete: (completedWave) => {
-            if (completedWave < 2) {
-              engineRef.current?.startNextWave();
-            } else {
-              setScreen("armory");
-            }
-          },
+          onWaveComplete: () => setScreen("armory"),
           onDeath: () => setScreen("dead"),
           onVictory: () => {
             commitProfile((current) => ({
@@ -220,7 +214,7 @@ export function Deadwave() {
       {screen === "lobby" && (
         <Lobby
           profile={profile}
-          onStart={startNewRun}
+          onStart={() => setScreen("loadout")}
           onOpenArmory={() => setScreen("loadout")}
           onToggleSetting={toggleSetting}
         />
@@ -239,6 +233,7 @@ export function Deadwave() {
         <section
           className="game-view"
           data-testid="game-stage"
+          data-wave={hud.wave}
           onPointerMove={(event) => {
             event.currentTarget.style.setProperty("--aim-x", `${event.clientX}px`);
             event.currentTarget.style.setProperty("--aim-y", `${event.clientY}px`);
@@ -266,6 +261,13 @@ export function Deadwave() {
               <span><b>Q</b> Swap</span>
               <span><b>ESC</b> Pause</span>
             </div>
+          )}
+          {screen === "playing" && engineStatus === "ready" && (
+            <MobileControls
+              onMove={(x, z) => engineRef.current?.setVirtualMove(x, z)}
+              onFire={(active) => engineRef.current?.setVirtualFire(active)}
+              onAction={(action) => engineRef.current?.triggerVirtualAction(action)}
+            />
           )}
           {screen === "playing" && engineStatus === "loading" && (
             <div className="engine-status" role="status" aria-live="polite">
@@ -324,7 +326,7 @@ export function Deadwave() {
       )}
 
       {screen === "victory" && (
-        <Modal eyebrow="Extraction Successful" title="DEPOT CLEARED — SECTOR SECURED" wide>
+        <Modal eyebrow="Extraction Successful // Depot Cleared" title="LEVEL 01 SURVIVED" wide>
           <div className="victory-grid">
             <div>
               <p className="modal-copy">The Juggernaut boss has fallen. All ten waves survived and maximum salvage extracted to headquarters.</p>
@@ -467,7 +469,7 @@ function Lobby({
               </div>
               <div className="launch-stat-box">
                 <span>SALVAGE</span>
-                <strong>◆ {profile.coins}</strong>
+                <strong>{profile.coins}<i> BANKED</i></strong>
               </div>
             </div>
 
@@ -550,7 +552,7 @@ function Loadout({
         <button className="back-button" onClick={onBack}>← Command</button>
         <div>
           <p className="eyebrow">PRE-OPERATION CHECK</p>
-          <h2>CONFIGURE LOADOUT</h2>
+          <h2>CHOOSE YOUR LOADOUT</h2>
         </div>
         <div className="loadout-count">{profile.equippedLoadout.length} / 2 Slots Equipped</div>
       </header>
@@ -567,6 +569,7 @@ function Loadout({
             <button
               key={id}
               className={`weapon-card ${equipped ? "equipped" : ""} ${!owned ? "unowned" : ""}`}
+              aria-label={`${equipped ? "Equipped" : owned ? "Owned" : "Locked"} ${weapon.name}`}
               onClick={() => onToggleWeapon(id)}
               disabled={!owned}
             >
@@ -629,8 +632,8 @@ function Hud({
       <div className="comic-hud-top-left">
         <div className="operator-vitals-card">
           <div className="operator-title-row">
-            <span className="heart-icon">❤️</span>
-            <strong className="operator-name">KAI: HP {Math.round(healthPercent)}%</strong>
+            <span className="heart-icon" aria-hidden="true">+</span>
+            <strong className="operator-name">KAI // HP {Math.round(healthPercent)}%</strong>
           </div>
           <div className="vital-bar health-bar">
             <div className="vital-fill health-fill-bar" style={{ width: `${healthPercent}%` }} />
@@ -677,10 +680,11 @@ function Hud({
       {/* 2. TOP-RIGHT: Salvage Score, Wave Counter & Timer */}
       <div className="comic-hud-top-right">
         <div className="hud-score-display">
+          <span>SALVAGE</span>
           <strong>{coins.toLocaleString()}</strong>
         </div>
-        <div className="hud-wave-status">
-          <span>WAVE {hud.wave}/10</span>
+        <div className="hud-wave-status" data-testid="hud-wave">
+          <span>WAVE {String(hud.wave).padStart(2, "0")} / 10</span>
           <small>{formattedTime}</small>
         </div>
       </div>
@@ -703,7 +707,7 @@ function Hud({
         </div>
 
         {/* Weapon Silhouette & Ammo Count */}
-        <div className={`comic-weapon-card ${isReloading ? "reloading" : ""}`}>
+        <div className={`comic-weapon-card weapon-hud ${isReloading ? "reloading" : ""}`}>
           <div className="weapon-silhouette-container">
             <WeaponGlyph id={hud.weapon} />
           </div>
@@ -715,6 +719,7 @@ function Hud({
             <span className="weapon-swap-key-tag">Q</span>
           )}
           <span className="weapon-rank-tag-mini">★{weaponRank}</span>
+          <span className="active-weapon-name">{hud.weaponName}</span>
         </div>
       </div>
 
@@ -763,6 +768,57 @@ function Hud({
   );
 }
 
+function MobileControls({
+  onMove,
+  onFire,
+  onAction,
+}: {
+  onMove: (x: number, z: number) => void;
+  onFire: (active: boolean) => void;
+  onAction: (action: "dash" | "reload" | "swap") => void;
+}) {
+  const bindMove = (x: number, z: number) => ({
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      onMove(x, z);
+    },
+    onPointerUp: () => onMove(0, 0),
+    onPointerCancel: () => onMove(0, 0),
+  });
+
+  return (
+    <div className="mobile-combat-controls" aria-label="Touch combat controls">
+      <div className="mobile-move-pad" aria-label="Movement controls">
+        <button type="button" className="move-up" aria-label="Move up" {...bindMove(0, -1)}>▲</button>
+        <button type="button" className="move-left" aria-label="Move left" {...bindMove(-1, 0)}>◀</button>
+        <span className="move-core" aria-hidden="true" />
+        <button type="button" className="move-right" aria-label="Move right" {...bindMove(1, 0)}>▶</button>
+        <button type="button" className="move-down" aria-label="Move down" {...bindMove(0, 1)}>▼</button>
+      </div>
+      <div className="mobile-action-pad">
+        <button type="button" className="touch-action touch-reload" onPointerDown={() => onAction("reload")}>R</button>
+        <button type="button" className="touch-action touch-swap" onPointerDown={() => onAction("swap")}>SWAP</button>
+        <button type="button" className="touch-action touch-dash" onPointerDown={() => onAction("dash")}>DASH</button>
+        <button
+          type="button"
+          className="touch-fire"
+          aria-label="Fire weapon with automatic aim"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            onFire(true);
+          }}
+          onPointerUp={() => onFire(false)}
+          onPointerCancel={() => onFire(false)}
+        >
+          FIRE
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Armory({
   profile,
   wave,
@@ -789,7 +845,7 @@ function Armory({
           <span>AVAILABLE SALVAGE</span>
           <strong>◆ {profile.coins}</strong>
         </div>
-        <button className="refill-action" onClick={onRefill}>
+        <button className="refill-action" aria-label="Refill all ammo 20" onClick={onRefill}>
           ⚡ Refill All Ammo (20 Salvage)
         </button>
       </div>
@@ -837,11 +893,12 @@ function Armory({
                         onClick={() => onUpgradeWeapon(id)}
                         disabled={rank >= 5 || profile.coins < cost}
                       >
-                        {rank >= 5 ? "MAX RANK" : <>Upgrade <b>◆ {cost}</b></>}
+                        {rank >= 5 ? "MAX RANK" : <>Upgrade <b>{cost} SALVAGE</b></>}
                       </button>
                     ) : (
                       <button
                         className="buy-btn"
+                        aria-label={`Acquire ${cost}`}
                         onClick={() => onBuyWeapon(id)}
                         disabled={profile.coins < cost}
                       >
@@ -878,7 +935,7 @@ function Armory({
                       onClick={() => onUpgradePerk(id)}
                       disabled={rank >= 3 || profile.coins < cost}
                     >
-                      {rank >= 3 ? "MAX RANK" : <>Upgrade <b>◆ {cost}</b></>}
+                      {rank >= 3 ? "MAX RANK" : <>Upgrade <b>{cost} SALVAGE</b></>}
                     </button>
                   </div>
                 </article>
@@ -891,7 +948,7 @@ function Armory({
       <div className="armory-footer">
         <p>All purchased weapons and perk ranks survive refreshes and failed runs.</p>
         <button className="primary-action" onClick={onContinue}>
-          Deploy to Wave {wave + 1} <span>→</span>
+          Begin Wave {wave + 1} <span>→</span>
         </button>
       </div>
     </Modal>

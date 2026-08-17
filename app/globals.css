@@ -959,11 +959,16 @@ button:focus-visible {
   position: fixed;
   inset: 0;
   z-index: 1;
-  background: #0a1210;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 72% 24%, rgba(20, 105, 112, 0.26), transparent 38%),
+    radial-gradient(circle at 22% 78%, rgba(177, 61, 18, 0.18), transparent 34%),
+    #061012;
   cursor: crosshair;
 }
 .canvas-mount {
   position: relative;
+  z-index: 0;
   width: 100%;
   height: 100%;
 }
@@ -971,13 +976,47 @@ button:focus-visible {
   width: 100%;
   height: 100%;
   display: block;
+  filter: saturate(1.12) contrast(1.08);
+}
+
+.game-view::before,
+.game-view::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.game-view::before {
+  background:
+    radial-gradient(circle at 18% 72%, rgba(255, 103, 28, 0.11), transparent 32%),
+    radial-gradient(circle at 78% 20%, rgba(0, 196, 211, 0.12), transparent 36%);
+  mix-blend-mode: screen;
+}
+
+.game-view::after {
+  opacity: 0.2;
+  background-image: repeating-linear-gradient(0deg, transparent 0 3px, rgba(2, 8, 9, 0.32) 4px);
+}
+
+.game-view[data-wave="7"]::before,
+.game-view[data-wave="8"]::before,
+.game-view[data-wave="9"]::before,
+.game-view[data-wave="10"]::before {
+  background:
+    radial-gradient(circle at 18% 72%, rgba(255, 72, 16, 0.17), transparent 34%),
+    radial-gradient(circle at 80% 18%, rgba(0, 211, 221, 0.13), transparent 38%),
+    linear-gradient(rgba(255, 0, 54, 0.025), rgba(255, 0, 54, 0.025));
 }
 
 .vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  box-shadow: inset 0 0 140px rgba(0, 0, 0, 0.55);
+  z-index: 3;
+  background: radial-gradient(ellipse at center, transparent 52%, rgba(1, 7, 8, 0.36) 78%, rgba(1, 5, 6, 0.76) 100%);
+  box-shadow: inset 0 0 110px rgba(0, 0, 0, 0.5);
 }
 
 .canvas-mount.is-hit::after {
@@ -1040,7 +1079,8 @@ button:focus-visible {
   inset: 0;
   z-index: 4;
   pointer-events: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: "Arial Narrow", "Roboto Condensed", ui-monospace, monospace;
+  text-transform: uppercase;
 }
 
 /* 1. Top-Left: Kai HP, Dash Bar & Isometric Radar Mini-Map */
@@ -1057,7 +1097,11 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 220px;
+  width: 238px;
+  padding: 10px 16px 12px 12px;
+  border-left: 3px solid rgba(255, 49, 80, 0.9);
+  background: linear-gradient(100deg, rgba(4, 10, 13, 0.9), rgba(4, 10, 13, 0.38) 82%, transparent);
+  clip-path: polygon(0 0, 94% 0, 100% 22%, 100% 100%, 0 100%);
 }
 
 .operator-title-row {
@@ -1067,8 +1111,14 @@ button:focus-visible {
 }
 
 .heart-icon {
-  font-size: 13px;
-  filter: drop-shadow(0 0 6px #ff0055);
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #ff3154;
+  color: #ff3154;
+  font: 900 14px/1 ui-monospace, monospace;
+  filter: drop-shadow(0 0 7px #ff0055);
 }
 
 .operator-name {
@@ -1134,11 +1184,13 @@ button:focus-visible {
   position: relative;
   width: 130px;
   height: 130px;
-  background: rgba(4, 14, 18, 0.85);
-  border: 2px solid rgba(0, 245, 212, 0.6);
+  background: linear-gradient(145deg, rgba(4, 16, 20, 0.92), rgba(2, 9, 12, 0.8));
+  border: 1px solid rgba(75, 220, 224, 0.68);
+  border-left-width: 3px;
   box-shadow: 0 0 20px rgba(0, 245, 212, 0.25);
   backdrop-filter: blur(6px);
-  transform: perspective(300px) rotateX(12deg);
+  transform: perspective(300px) rotateX(10deg) rotateZ(-1deg);
+  clip-path: polygon(0 0, 88% 0, 100% 12%, 100% 100%, 0 100%);
   overflow: hidden;
 }
 
@@ -1200,6 +1252,23 @@ button:focus-visible {
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
+  min-width: 190px;
+  padding: 10px 14px 12px 34px;
+  border-right: 3px solid rgba(56, 211, 218, 0.9);
+  background: linear-gradient(270deg, rgba(4, 10, 13, 0.9), rgba(4, 10, 13, 0.38) 82%, transparent);
+  clip-path: polygon(10% 0, 100% 0, 100% 100%, 0 100%, 0 20%);
+}
+
+.hud-score-display {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.hud-score-display span {
+  color: rgba(213, 233, 228, 0.58);
+  font: 800 8px ui-monospace, monospace;
+  letter-spacing: 0.22em;
 }
 
 .hud-score-display strong {
@@ -1255,7 +1324,7 @@ button:focus-visible {
   width: 58px;
   height: 58px;
   border: 2px solid #ffb703;
-  background: rgba(10, 20, 24, 0.88);
+  background: linear-gradient(145deg, rgba(11, 25, 29, 0.94), rgba(2, 9, 12, 0.9));
   box-shadow: 0 0 16px rgba(255, 183, 3, 0.4);
   display: flex;
   flex-direction: column;
@@ -1283,10 +1352,24 @@ button:focus-visible {
 }
 
 .comic-weapon-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 6px 12px;
+  border-bottom: 2px solid rgba(255, 183, 3, 0.75);
+  background: linear-gradient(270deg, rgba(3, 9, 12, 0.86), rgba(3, 9, 12, 0.22));
+  clip-path: polygon(8% 0, 100% 0, 100% 100%, 0 100%, 0 34%);
+}
+
+.active-weapon-name {
+  position: absolute;
+  right: 12px;
+  bottom: -15px;
+  color: rgba(221, 241, 236, 0.72);
+  font: 800 8px ui-monospace, monospace;
+  letter-spacing: 0.16em;
+  white-space: nowrap;
 }
 
 .weapon-silhouette-container {
@@ -1460,6 +1543,10 @@ button:focus-visible {
   font-size: clamp(18px, 2.4vw, 32px);
   font-weight: 900;
   letter-spacing: 0.22em;
+  padding: 14px 58px;
+  border-top: 1px solid rgba(98, 236, 239, 0.68);
+  border-bottom: 1px solid rgba(98, 236, 239, 0.32);
+  background: linear-gradient(90deg, transparent, rgba(3, 12, 15, 0.9) 20% 80%, transparent);
   text-shadow:
     0 0 20px rgba(0, 245, 212, 0.6),
     0 4px 30px #000;
@@ -1500,6 +1587,141 @@ button:focus-visible {
 }
 .game-controls b {
   color: var(--cyan);
+}
+
+.mobile-combat-controls {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse), (max-width: 900px) {
+  .combat-reticle,
+  .game-controls,
+  .comic-hud-bottom-left {
+    display: none;
+  }
+
+  .mobile-combat-controls {
+    position: absolute;
+    inset: auto 0 max(18px, env(safe-area-inset-bottom));
+    z-index: 10;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    padding: 0 max(18px, env(safe-area-inset-right)) 0 max(18px, env(safe-area-inset-left));
+    pointer-events: none;
+    user-select: none;
+    touch-action: none;
+  }
+
+  .mobile-move-pad {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(3, 44px);
+    grid-template-rows: repeat(3, 44px);
+    width: 132px;
+    height: 132px;
+    border: 1px solid rgba(75, 220, 224, 0.42);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(3, 14, 18, 0.85), rgba(3, 10, 13, 0.38));
+    box-shadow: 0 0 28px rgba(0, 245, 212, 0.12);
+    pointer-events: auto;
+  }
+
+  .mobile-move-pad button,
+  .touch-action,
+  .touch-fire {
+    border: 1px solid rgba(96, 232, 234, 0.58);
+    background: rgba(4, 16, 20, 0.8);
+    color: #dffdf8;
+    font: 900 12px ui-monospace, monospace;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-move-pad button:active,
+  .touch-action:active,
+  .touch-fire:active {
+    color: #041012;
+    background: var(--cyan);
+    box-shadow: 0 0 20px rgba(0, 245, 212, 0.75);
+  }
+
+  .move-up { grid-area: 1 / 2; }
+  .move-left { grid-area: 2 / 1; }
+  .move-core {
+    grid-area: 2 / 2;
+    width: 24px;
+    height: 24px;
+    place-self: center;
+    border: 1px solid rgba(255, 183, 3, 0.62);
+    transform: rotate(45deg);
+  }
+  .move-right { grid-area: 2 / 3; }
+  .move-down { grid-area: 3 / 2; }
+
+  .mobile-action-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    grid-template-rows: 44px 72px;
+    gap: 8px;
+    align-items: end;
+    pointer-events: auto;
+  }
+
+  .touch-action {
+    height: 40px;
+    border-radius: 3px;
+    color: var(--amber);
+    font-size: 9px;
+  }
+
+  .touch-fire {
+    grid-column: 2 / 4;
+    justify-self: end;
+    width: 78px;
+    height: 72px;
+    border: 2px solid #ff7548;
+    border-radius: 50%;
+    color: #fff;
+    background: radial-gradient(circle, rgba(255, 79, 39, 0.44), rgba(29, 7, 5, 0.86));
+    box-shadow: 0 0 24px rgba(255, 72, 35, 0.26);
+  }
+
+  .comic-hud-top-left {
+    left: max(10px, env(safe-area-inset-left));
+    top: max(10px, env(safe-area-inset-top));
+  }
+
+  .operator-vitals-card {
+    width: 190px;
+    padding: 8px 12px 9px 9px;
+  }
+
+  .isometric-minimap {
+    width: 88px;
+    height: 88px;
+  }
+
+  .comic-hud-top-right {
+    right: max(10px, env(safe-area-inset-right));
+    top: max(10px, env(safe-area-inset-top));
+    min-width: 145px;
+  }
+
+  .comic-hud-bottom-right {
+    right: max(14px, env(safe-area-inset-right));
+    bottom: 154px;
+    transform: scale(0.82);
+    transform-origin: right bottom;
+  }
+
+  .wave-announcement {
+    top: 26%;
+    max-width: 88vw;
+    padding-inline: 24px;
+    white-space: normal;
+    text-align: center;
+  }
 }
 
 /* Floating Arcade Popups */
