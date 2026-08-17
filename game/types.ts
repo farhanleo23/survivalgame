@@ -11,7 +11,6 @@ export type WeaponId = "pistol" | "smg" | "shotgun" | "rifle";
 export type EnemyId = "shambler" | "runner" | "spitter" | "brute" | "juggernaut";
 export type PickupId = "coin" | "ammo" | "health";
 export type PerkId = "vitality" | "mobility" | "magnet";
-export type GraphicsQuality = "low" | "medium" | "high";
 
 export interface WeaponDefinition {
   id: WeaponId;
@@ -84,7 +83,6 @@ export interface GameSettings {
   music: boolean;
   sfx: boolean;
   reducedMotion: boolean;
-  graphicsQuality: GraphicsQuality;
 }
 
 export interface ProfileV1 {

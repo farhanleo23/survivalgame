@@ -22,7 +22,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
   const base = new URL(`${protocol}://${host}`);
-  const socialImage = new URL("/og-deadwave-v2.png", base).toString();
+  const socialImage = new URL("/og.png", base).toString();
   return {
     metadataBase: base,
     title,
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       title,
       description,
-      images: [{ url: socialImage, width: 1672, height: 941, alt: "Deadwave operator surrounded by distinct zombie archetypes inside a glowing evacuation zone" }],
+      images: [{ url: socialImage, width: 1672, height: 941, alt: "Deadwave survivor holding an evacuation depot against a zombie horde" }],
     },
     twitter: { card: "summary_large_image", title, description, images: [socialImage] },
   };

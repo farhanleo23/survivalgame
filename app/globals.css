@@ -309,7 +309,6 @@ button:focus-visible { outline: 2px solid var(--acid); outline-offset: 3px; }
   font: 800 9px ui-monospace, monospace;
 }
 .quick-settings button.active { color: var(--mint); border-color: var(--mint); }
-.quick-settings .quality-button { width: 54px; letter-spacing: .04em; }
 
 .loadout-shell { padding-top: 34px; background: radial-gradient(circle at 50% 10%, rgba(46,88,61,.2), transparent 38%); }
 .screen-heading { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; padding: 6vh 0 4vh; border-bottom: 1px solid var(--line); }
@@ -344,38 +343,30 @@ button:focus-visible { outline: 2px solid var(--acid); outline-offset: 3px; }
 .deploy-bar { display: flex; align-items: center; justify-content: space-between; padding-top: 3vh; border-top: 1px solid var(--line); }
 .deploy-bar p { color: var(--muted); font-size: 11px; }
 
-.weapon-glyph { --weapon: #899b94; --weapon-dark: #3d4c49; --weapon-accent: #b8ff5a; position: relative; width: 184px; height: 96px; margin: 42px auto 28px; filter: drop-shadow(0 15px 16px rgba(0,0,0,.44)); }
-.weapon-glyph i { position: absolute; display: block; border: 1px solid rgba(220,239,230,.68); background: linear-gradient(180deg, #a8b7b1, var(--weapon)); clip-path: polygon(5% 0, 96% 0, 100% 72%, 86% 100%, 5% 100%, 0 64%); }
-.weapon-glyph .glyph-body { left: 49px; top: 29px; width: 91px; height: 25px; }
-.weapon-glyph .glyph-barrel { left: 136px; top: 33px; width: 44px; height: 9px; background: var(--weapon-dark); }
-.weapon-glyph .glyph-grip { left: 92px; top: 50px; width: 16px; height: 38px; background: var(--weapon-dark); transform: skewX(12deg); clip-path: polygon(0 0,100% 0,82% 100%,20% 100%); }
-.weapon-glyph .glyph-stock { left: 7px; top: 34px; width: 49px; height: 25px; background: var(--weapon-dark); clip-path: polygon(0 36%,77% 0,100% 21%,100% 100%,18% 88%); }
-.weapon-glyph .glyph-mag { left: 116px; top: 49px; width: 15px; height: 29px; background: var(--weapon-accent); transform: skewX(-8deg); }
-.weapon-glyph .glyph-optic { left: 79px; top: 19px; width: 33px; height: 10px; background: var(--weapon-accent); border-color: rgba(198,255,126,.8); clip-path: polygon(10% 0,90% 0,100% 100%,0 100%); }
-.weapon-glyph.pistol { width: 134px; }
-.weapon-glyph.pistol .glyph-body { left: 22px; width: 79px; height: 28px; }
-.weapon-glyph.pistol .glyph-barrel { left: 98px; width: 28px; top: 34px; }
-.weapon-glyph.pistol .glyph-grip { left: 65px; top: 53px; width: 20px; }
-.weapon-glyph.pistol .glyph-stock, .weapon-glyph.pistol .glyph-mag, .weapon-glyph.pistol .glyph-optic { display: none; }
-.weapon-glyph.smg { --weapon-accent: #61f2aa; }
-.weapon-glyph.smg .glyph-body { left: 39px; width: 97px; }
-.weapon-glyph.smg .glyph-stock { left: 4px; width: 43px; height: 20px; }
-.weapon-glyph.smg .glyph-barrel { left: 132px; width: 35px; }
-.weapon-glyph.shotgun { --weapon-accent: #ff9958; }
-.weapon-glyph.shotgun .glyph-body { left: 43px; top: 32px; width: 90px; height: 18px; }
-.weapon-glyph.shotgun .glyph-barrel { left: 128px; top: 34px; width: 54px; height: 7px; }
-.weapon-glyph.shotgun .glyph-mag, .weapon-glyph.shotgun .glyph-optic { display: none; }
-.weapon-glyph.rifle { --weapon: #748b87; --weapon-accent: #9be8ff; }
-.weapon-glyph.rifle .glyph-body { width: 96px; }
-.weapon-glyph.rifle .glyph-barrel { left: 139px; width: 43px; height: 7px; }
-.weapon-glyph.compact { width: 82px; height: 46px; margin: 0; transform: scale(.58); transform-origin: center; }
+.weapon-glyph {
+  position: relative;
+  width: 180px;
+  height: 92px;
+  margin: 44px auto 30px;
+  filter: drop-shadow(0 12px 16px rgba(0,0,0,.35));
+}
+.weapon-glyph i, .weapon-glyph b, .weapon-glyph span { position: absolute; display: block; background: #899990; border: 1px solid #b5c4bb; transform: skewX(-5deg); }
+.weapon-glyph i { width: 130px; height: 22px; right: 3px; top: 26px; }
+.weapon-glyph b { width: 12px; height: 42px; right: 66px; top: 43px; transform: skewX(12deg); }
+.weapon-glyph span { width: 54px; height: 24px; left: 4px; top: 34px; background: #526158; }
+.weapon-glyph.pistol { width: 125px; }
+.weapon-glyph.pistol i { width: 92px; height: 26px; }
+.weapon-glyph.pistol span { width: 35px; left: 3px; }
+.weapon-glyph.shotgun i { height: 15px; top: 30px; width: 145px; }
+.weapon-glyph.shotgun b { height: 34px; }
+.weapon-glyph.rifle i { background: #6f8580; }
+.weapon-glyph.smg i { width: 110px; }
+.weapon-glyph.compact { width: 78px; height: 45px; margin: 0; transform: scale(.58); transform-origin: center; }
 
 .game-view { --aim-x: 50%; --aim-y: 50%; position: fixed; inset: 0; z-index: 1; background: #07100e; cursor: none; }
 .canvas-mount { position: relative; width: 100%; height: 100%; }
 .game-canvas { width: 100%; height: 100%; display: block; }
-.vignette { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 105px rgba(0,0,0,.4); background: linear-gradient(to bottom, rgba(0,7,6,.08), transparent 18%, transparent 80%, rgba(0,0,0,.18)), radial-gradient(circle at 28% 28%, rgba(92,203,158,.055), transparent 40%), radial-gradient(circle at 78% 68%, rgba(255,92,47,.045), transparent 34%); mix-blend-mode: normal; }
-.vignette::after { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, rgba(78,255,177,.018), transparent 42%, rgba(255,104,55,.024)); box-shadow: inset 0 0 32px rgba(109,255,183,.035); mix-blend-mode: screen; }
-.graphics-low .vignette::after { display: none; }
+.vignette { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 120px rgba(0,0,0,.44); background: linear-gradient(to bottom, rgba(0,7,6,.1), transparent 18%, transparent 80%, rgba(0,0,0,.22)), radial-gradient(circle at 30% 30%, rgba(87,145,126,.04), transparent 42%); }
 .canvas-mount.is-hit::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: rgba(255,53,39,.22); animation: hit .2s ease-out forwards; }
 @keyframes hit { to { opacity: 0; } }
 
@@ -466,8 +457,6 @@ button:focus-visible { outline: 2px solid var(--acid); outline-offset: 3px; }
 .setting-toggle i b { position: absolute; left: 3px; top: 3px; width: 12px; height: 12px; border-radius: 50%; background: #71847a; transition: .16s; }
 .setting-toggle i.active { background: rgba(184,255,90,.2); }
 .setting-toggle i.active b { left: 21px; background: var(--acid); }
-.graphics-setting { display: flex; justify-content: space-between; align-items: center; width: 100%; border: 1px solid var(--line); padding: 13px 15px; background: rgba(255,255,255,.02); color: #b4c7bd; cursor: pointer; font: 700 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .1em; }
-.graphics-setting strong { color: var(--acid); font-size: 9px; letter-spacing: .16em; }
 .text-action { border: 0; padding: 12px; background: transparent; color: var(--muted); cursor: pointer; font: 700 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .1em; }
 .text-action:hover { color: var(--paper); }
 .danger-action:hover { color: var(--danger); }

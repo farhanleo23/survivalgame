@@ -1,4 +1,4 @@
-import type { GraphicsQuality, PerkId, ProfileV1, WeaponId } from "./types";
+import type { PerkId, ProfileV1, WeaponId } from "./types";
 
 export const PROFILE_KEY = "deadwave.profile.v1";
 
@@ -10,7 +10,7 @@ export function createDefaultProfile(): ProfileV1 {
     weaponRanks: { pistol: 1, smg: 1, shotgun: 1, rifle: 1 },
     perkRanks: { vitality: 0, mobility: 0, magnet: 0 },
     equippedLoadout: ["pistol"],
-    settings: { music: true, sfx: true, reducedMotion: false, graphicsQuality: "medium" },
+    settings: { music: true, sfx: true, reducedMotion: false },
     completedLevels: [],
     highestWave: 1,
   };
@@ -18,7 +18,6 @@ export function createDefaultProfile(): ProfileV1 {
 
 const weaponIds: WeaponId[] = ["pistol", "smg", "shotgun", "rifle"];
 const perkIds: PerkId[] = ["vitality", "mobility", "magnet"];
-const graphicsQualities: GraphicsQuality[] = ["low", "medium", "high"];
 
 function safeInt(value: unknown, min: number, max: number, fallback: number) {
   return typeof value === "number" && Number.isFinite(value)
@@ -55,9 +54,6 @@ export function validateProfile(raw: unknown): ProfileV1 {
       music: value.settings?.music !== false,
       sfx: value.settings?.sfx !== false,
       reducedMotion: value.settings?.reducedMotion === true,
-      graphicsQuality: graphicsQualities.includes(value.settings?.graphicsQuality as GraphicsQuality)
-        ? value.settings?.graphicsQuality as GraphicsQuality
-        : "medium",
     },
     completedLevels: Array.isArray(value.completedLevels)
       ? [...new Set(value.completedLevels.filter((level) => Number.isInteger(level) && level >= 1 && level <= 50))]

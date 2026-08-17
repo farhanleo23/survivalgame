@@ -13,7 +13,7 @@ import {
 } from "@/game/config";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
 import { createDefaultProfile, loadProfile, saveProfile } from "@/game/profile";
-import type { GameScreen, GraphicsQuality, HudState, PerkId, ProfileV1, WeaponId } from "@/game/types";
+import type { GameScreen, HudState, PerkId, ProfileV1, WeaponId } from "@/game/types";
 
 const initialHud: HudState = {
   health: 100,
@@ -201,18 +201,10 @@ export function Deadwave() {
     commitProfile((current) => ({ ...current, settings: { ...current.settings, [key]: !current.settings[key] } }));
   };
 
-  const cycleGraphicsQuality = () => {
-    const qualities: GraphicsQuality[] = ["low", "medium", "high"];
-    commitProfile((current) => {
-      const index = qualities.indexOf(current.settings.graphicsQuality);
-      return { ...current, settings: { ...current.settings, graphicsQuality: qualities[(index + 1) % qualities.length] } };
-    });
-  };
-
   if (!hydrated) return <main className="boot-screen"><span>Establishing tactical link…</span></main>;
 
   return (
-    <main className={`deadwave graphics-${profile.settings.graphicsQuality} ${profile.settings.reducedMotion ? "reduced-motion" : ""}`}>
+    <main className={`deadwave ${profile.settings.reducedMotion ? "reduced-motion" : ""}`}>
       {!gameVisible && <LobbyBackground />}
 
       {screen === "lobby" && (
@@ -220,7 +212,6 @@ export function Deadwave() {
           profile={profile}
           onStart={() => setScreen("loadout")}
           onToggleSetting={toggleSetting}
-          onCycleGraphicsQuality={cycleGraphicsQuality}
         />
       )}
 
@@ -277,7 +268,6 @@ export function Deadwave() {
             <SettingToggle label="Music" active={profile.settings.music} onClick={() => toggleSetting("music")} />
             <SettingToggle label="Sound effects" active={profile.settings.sfx} onClick={() => toggleSetting("sfx")} />
             <SettingToggle label="Reduced motion" active={profile.settings.reducedMotion} onClick={() => toggleSetting("reducedMotion")} />
-            <GraphicsSetting value={profile.settings.graphicsQuality} onClick={cycleGraphicsQuality} />
             <button className="text-action danger-action" onClick={returnToLobby}>Abandon run</button>
           </div>
         </Modal>
@@ -343,11 +333,10 @@ function LobbyBackground() {
   );
 }
 
-function Lobby({ profile, onStart, onToggleSetting, onCycleGraphicsQuality }: {
+function Lobby({ profile, onStart, onToggleSetting }: {
   profile: ProfileV1;
   onStart: () => void;
   onToggleSetting: (key: "music" | "sfx" | "reducedMotion") => void;
-  onCycleGraphicsQuality: () => void;
 }) {
   return (
     <div className="menu-shell">
@@ -386,7 +375,6 @@ function Lobby({ profile, onStart, onToggleSetting, onCycleGraphicsQuality }: {
           <button className={profile.settings.music ? "active" : ""} onClick={() => onToggleSetting("music")} aria-label="Toggle music" aria-pressed={profile.settings.music}>♫</button>
           <button className={profile.settings.sfx ? "active" : ""} onClick={() => onToggleSetting("sfx")} aria-label="Toggle sound effects" aria-pressed={profile.settings.sfx}>SFX</button>
           <button className={profile.settings.reducedMotion ? "active" : ""} onClick={() => onToggleSetting("reducedMotion")} aria-label="Toggle reduced motion" aria-pressed={profile.settings.reducedMotion}>RM</button>
-          <button className="active quality-button" onClick={onCycleGraphicsQuality} aria-label={`Graphics quality ${profile.settings.graphicsQuality}. Activate to change.`}>GFX {profile.settings.graphicsQuality[0].toUpperCase()}</button>
         </div>
       </section>
     </div>
@@ -508,12 +496,8 @@ function SettingToggle({ label, active, onClick }: { label: string; active: bool
   return <button className="setting-toggle" onClick={onClick} aria-pressed={active}><span>{label}</span><i className={active ? "active" : ""} aria-hidden="true"><b /></i></button>;
 }
 
-function GraphicsSetting({ value, onClick }: { value: GraphicsQuality; onClick: () => void }) {
-  return <button className="graphics-setting" onClick={onClick} aria-label={`Graphics quality ${value}. Activate to change.`}><span>Graphics quality</span><strong>{value}</strong></button>;
-}
-
 function WeaponGlyph({ id, compact = false }: { id: WeaponId; compact?: boolean }) {
-  return <div className={`weapon-glyph ${id} ${compact ? "compact" : ""}`} aria-hidden="true"><i className="glyph-body" /><i className="glyph-barrel" /><i className="glyph-grip" /><i className="glyph-stock" /><i className="glyph-mag" /><i className="glyph-optic" /></div>;
+  return <div className={`weapon-glyph ${id} ${compact ? "compact" : ""}`} aria-hidden="true"><i /><b /><span /></div>;
 }
 
 function roman(rank: number) {
