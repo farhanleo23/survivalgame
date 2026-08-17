@@ -138,6 +138,8 @@ export class GameEngine {
   private virtualMove = new THREE.Vector2();
   private usingTouchControls = false;
   private alertLights: THREE.PointLight[] = [];
+  private playerKeyLight = new THREE.PointLight(0xffb76f, 12, 17, 2);
+  private playerRimLight = new THREE.PointLight(0x44dce7, 8, 16, 2);
   private qaMode =
     typeof window !== "undefined" &&
     ["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname) &&
@@ -198,7 +200,7 @@ export class GameEngine {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.18;
     this.renderer.domElement.className = "game-canvas";
     this.renderer.domElement.setAttribute("aria-label", "Deadwave evacuation depot combat arena");
 
@@ -343,13 +345,13 @@ export class GameEngine {
 
   private setupScene() {
     // Dark teal atmosphere with warm industrial pools of light.
-    this.scene.background = new THREE.Color(0x071315);
-    this.scene.fog = new THREE.FogExp2(0x0a2022, 0.016);
+    this.scene.background = new THREE.Color(0x081718);
+    this.scene.fog = new THREE.FogExp2(0x0d2525, 0.0135);
 
-    const ambient = new THREE.HemisphereLight(0x6ea6a5, 0x170c08, 0.78);
+    const ambient = new THREE.HemisphereLight(0x84b8b5, 0x1b0e0a, 1.05);
     this.scene.add(ambient);
 
-    const key = new THREE.DirectionalLight(0xffc47d, 2.15);
+    const key = new THREE.DirectionalLight(0xffc47d, 2.4);
     key.position.set(-13, 22, -8);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
@@ -362,13 +364,14 @@ export class GameEngine {
     key.shadow.radius = 3;
     this.scene.add(key);
 
-    const coolFill = new THREE.DirectionalLight(0x39a9b1, 1.05);
+    const coolFill = new THREE.DirectionalLight(0x49c2c8, 1.38);
     coolFill.position.set(14, 10, 16);
     this.scene.add(coolFill);
 
     this.scene.add(this.visuals.createGround());
     this.visuals.addPerimeter(this.scene);
     this.visuals.addSetDressing(this.scene);
+    this.scene.add(this.playerKeyLight, this.playerRimLight);
 
     // Edge architecture creates 2.5D depth without obstructing the central combat lanes.
     this.addObstacle(-15.7, 11.4, 4.2, 3.2, 0x252924);
@@ -380,13 +383,13 @@ export class GameEngine {
 
     this.addFloodlight(-16.2, -15.5, 0xff8a36);
     this.addFloodlight(15.6, 14.9, 0x47c9d3);
-    this.addFloodlight(-15.7, 15.2, 0x39ff8f);
+    this.addFloodlight(-15.7, 15.2, 0x45bd9a);
 
     for (const [x, z, color] of [
       [-10, -8, 0xff7a24],
       [10, 8, 0x38c7cf],
       [-9, 10, 0xff3d2e],
-      [11, -10, 0x39ff72],
+      [11, -10, 0x37b987],
     ] as const) {
       const light = new THREE.PointLight(color, 3.5, 12, 2);
       light.position.set(x, 2.8, z);
@@ -1551,11 +1554,15 @@ export class GameEngine {
   private updateAtmosphere() {
     const pressure = (this.wave - 1) / 9;
     const pulse = 0.76 + Math.sin(this.missionElapsed * (1.6 + pressure * 2.2)) * 0.24;
+    this.playerKeyLight.position.set(this.playerMesh.position.x - 2.6, 4.6, this.playerMesh.position.z + 2.2);
+    this.playerRimLight.position.set(this.playerMesh.position.x + 2.8, 3.4, this.playerMesh.position.z - 2.3);
+    this.playerKeyLight.intensity = 11 + pulse * 2;
+    this.playerRimLight.intensity = 7 + pressure;
     this.alertLights.forEach((light, index) => {
       light.intensity = 2.8 + pressure * 5.2 + (index % 2 === 0 ? pulse : 1 - pulse) * pressure * 2.5;
     });
     if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.density = 0.014 + pressure * 0.007;
+      this.scene.fog.density = 0.0125 + pressure * 0.006;
     }
   }
 

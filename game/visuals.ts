@@ -41,6 +41,11 @@ interface CharacterAsset {
 const castAndReceive = (root: THREE.Object3D) => {
   root.traverse((object) => {
     if (object instanceof THREE.Mesh) {
+      if (object.name === "contact-shadow" || object.name === "surface-wear") {
+        object.castShadow = false;
+        object.receiveShadow = false;
+        return;
+      }
       object.castShadow = true;
       object.receiveShadow = true;
     }
@@ -94,6 +99,81 @@ const createInkOutlinedMesh = (
   return group;
 };
 
+const addGraphicInkEdges = (root: THREE.Object3D, opacity = 0.82) => {
+  const candidates: THREE.Mesh[] = [];
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    if (object.parent?.name === "custom-outlined-mesh") return;
+    if (object.name === "contact-shadow") return;
+    if (object.geometry instanceof THREE.PlaneGeometry) return;
+    candidates.push(object);
+  });
+
+  const ink = new THREE.LineBasicMaterial({
+    color: 0x070a0a,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+  });
+  for (const object of candidates) {
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(object.geometry, 24), ink);
+    edges.name = "graphic-ink-edges";
+    edges.renderOrder = 4;
+    object.add(edges);
+  }
+};
+
+const addContactShadow = (
+  root: THREE.Object3D,
+  radiusX: number,
+  radiusZ: number,
+  opacity = 0.28,
+) => {
+  const shadow = mesh(
+    new THREE.CircleGeometry(1, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x020505,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+    }),
+  );
+  shadow.name = "contact-shadow";
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.scale.set(radiusX, radiusZ, 1);
+  shadow.position.y = 0.018;
+  root.add(shadow);
+};
+
+const addIllustratedWear = (
+  root: THREE.Object3D,
+  width: number,
+  height: number,
+  frontZ: number,
+  opacity = 0.18,
+) => {
+  const wear = new THREE.MeshBasicMaterial({
+    color: 0xc9b78e,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+  });
+  const marks: Array<[number, number, number, number]> = [
+    [-0.22, 0.25, 0.28, -0.16],
+    [0.18, 0.58, 0.2, 0.12],
+    [-0.08, 0.75, 0.16, -0.08],
+  ];
+  for (const [x, y, markWidth, rotation] of marks) {
+    const mark = mesh(new THREE.PlaneGeometry(width * markWidth, Math.max(0.018, height * 0.018)), wear);
+    mark.name = "surface-wear";
+    mark.position.set(x * width, y * height, frontZ);
+    mark.rotation.z = rotation;
+    root.add(mark);
+  }
+};
+
 const findBone = (root: THREE.Object3D, ...candidates: string[]): THREE.Object3D | undefined => {
   for (const name of candidates) {
     const obj = root.getObjectByName(name);
@@ -144,7 +224,7 @@ export class VisualFactory {
       map: this.bloodTexture,
       transparent: true,
       depthWrite: false,
-      opacity: 0.88,
+      opacity: 0.82,
     });
 
     this.acidMaterial = new THREE.MeshBasicMaterial({
@@ -202,20 +282,20 @@ export class VisualFactory {
     // Glowing central landing / defense zone ring
     const centerPadOuter = mesh(
       new THREE.RingGeometry(6.92, 7.08, 64),
-      new THREE.MeshBasicMaterial({ color: 0x4ecdc4, transparent: true, opacity: 0.3, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: 0x4ecdc4, transparent: true, opacity: 0.13, side: THREE.DoubleSide }),
     );
     centerPadOuter.rotation.x = -Math.PI / 2;
     centerPadOuter.position.y = 0.024;
     const centerPadInner = mesh(
       new THREE.RingGeometry(3.68, 3.8, 48),
-      new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.34, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.12, side: THREE.DoubleSide }),
     );
     centerPadInner.rotation.x = -Math.PI / 2;
     centerPadInner.position.y = 0.025;
     group.add(centerPadOuter, centerPadInner);
 
     // Stylized crosshair markings on center zone
-    const markMaterial = new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+    const markMaterial = new THREE.MeshBasicMaterial({ color: 0xffb703, transparent: true, opacity: 0.11, side: THREE.DoubleSide });
     for (let i = 0; i < 4; i += 1) {
       const angle = (i * Math.PI) / 2;
       const tick = mesh(new THREE.PlaneGeometry(0.35, 1.6), markMaterial);
@@ -254,9 +334,9 @@ export class VisualFactory {
 
     // Toxic puddles
     const puddleMat = new THREE.MeshBasicMaterial({
-      color: 0x39ff14,
+      color: 0x2aa747,
       transparent: true,
-      opacity: 0.18,
+      opacity: 0.08,
       depthWrite: false,
     });
     for (const [x, z, sx, sz] of [
@@ -270,6 +350,28 @@ export class VisualFactory {
       puddle.scale.set(sx, sz, 1);
       puddle.position.set(x, 0.034, z);
       group.add(puddle);
+    }
+
+    // Sparse illustrated stains break up the floor without adding collision or combat clutter.
+    const stainMat = new THREE.MeshBasicMaterial({
+      color: 0x281914,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+    });
+    for (const [x, z, sx, sz, rotation] of [
+      [-13.4, 5.8, 1.8, 0.7, 0.2],
+      [12.2, -4.1, 1.4, 0.55, -0.6],
+      [-7.8, -12.6, 1.25, 0.42, 0.45],
+      [9.4, 12.5, 1.6, 0.5, -0.22],
+      [3.2, 9.5, 0.9, 0.36, 0.75],
+    ] as const) {
+      const stain = mesh(new THREE.CircleGeometry(1, 14), stainMat);
+      stain.rotation.x = -Math.PI / 2;
+      stain.rotation.z = rotation;
+      stain.scale.set(sx, sz, 1);
+      stain.position.set(x, 0.035, z);
+      group.add(stain);
     }
 
     return group;
@@ -356,9 +458,9 @@ export class VisualFactory {
     const carbon = new THREE.MeshStandardMaterial({ color: 0x18201d, metalness: 0.88, roughness: 0.25 });
     const steel = new THREE.MeshStandardMaterial({ color: 0x3a4b45, metalness: 0.75, roughness: 0.35 });
     const vatFluid = new THREE.MeshStandardMaterial({
-      color: 0x2bcf38,
-      emissive: 0x15943b,
-      emissiveIntensity: 1.1,
+      color: 0x29933d,
+      emissive: 0x0f6a2c,
+      emissiveIntensity: 0.58,
       roughness: 0.15,
       metalness: 0.1,
     });
@@ -384,10 +486,13 @@ export class VisualFactory {
     vent.position.y = 2.75;
     root.add(cap, vent);
 
-    const toxicLight = new THREE.PointLight(0x39ff14, 4.2, 6, 2);
+    const toxicLight = new THREE.PointLight(0x39c95b, 2.25, 5.2, 2);
     toxicLight.position.y = 1.5;
     root.add(toxicLight);
 
+    addIllustratedWear(root, 1.4, 2.2, 1.015, 0.16);
+    addContactShadow(root, 1.28, 0.92, 0.32);
+    addGraphicInkEdges(root, 0.32);
     castAndReceive(root);
     return root;
   }
@@ -435,6 +540,9 @@ export class VisualFactory {
     beaconLight.position.set(0.65, 2.05, 0);
     root.add(exhaust, beaconBase, beacon, beaconLight);
 
+    addIllustratedWear(root, 2.05, 1.55, 0.765, 0.16);
+    addContactShadow(root, 1.35, 0.82, 0.32);
+    addGraphicInkEdges(root, 0.34);
     castAndReceive(root);
     return root;
   }
@@ -489,6 +597,9 @@ export class VisualFactory {
     if (!longFace) windowPanel.rotation.y = Math.PI / 2;
     root.add(windowPanel);
 
+    if (longFace) addIllustratedWear(root, width * 0.72, 1.8, depth / 2 + 0.052, 0.12);
+    addContactShadow(root, width * 0.46, depth * 0.42, 0.22);
+    addGraphicInkEdges(root, 0.2);
     castAndReceive(root);
     return root;
   }
@@ -526,6 +637,9 @@ export class VisualFactory {
       root.add(node);
     }
 
+    addIllustratedWear(root, width * 0.84, 0.9, depth / 2 + 0.022, 0.12);
+    addContactShadow(root, width * 0.48, depth * 0.78, 0.28);
+    addGraphicInkEdges(root, 0.32);
     castAndReceive(root);
     return root;
   }
@@ -556,6 +670,8 @@ export class VisualFactory {
       root.add(lamp, face);
     }
 
+    addContactShadow(root, 0.5, 0.34, 0.24);
+    addGraphicInkEdges(root, 0.24);
     castAndReceive(root);
     return root;
   }
@@ -588,6 +704,9 @@ export class VisualFactory {
     hazard.position.set(0, 0.62, 0.485);
     root.add(cap, hazard);
 
+    addIllustratedWear(root, 0.8, 1.05, 0.506, 0.2);
+    addContactShadow(root, 0.58, 0.38, 0.34);
+    addGraphicInkEdges(root, 0.38);
     castAndReceive(root);
     return root;
   }
@@ -621,6 +740,9 @@ export class VisualFactory {
       }
       root.position.set(x, 0, z);
       root.rotation.y = rotation;
+      addIllustratedWear(root, 1.05, 1.35, 0.515, 0.12);
+      addContactShadow(root, 0.95, 0.64, 0.22);
+      addGraphicInkEdges(root, 0.18);
       castAndReceive(root);
       scene.add(root);
     }
@@ -656,17 +778,44 @@ export class VisualFactory {
     innerDisc.position.y = 0.038;
     group.add(innerDisc);
 
-    // Vertical translucent holographic beam cylinder
+    // Narrow holographic column with segmented rings and rising light fragments.
     const beamMat = new THREE.MeshBasicMaterial({
       color: 0x00f5d4,
       transparent: true,
-      opacity: 0.22,
+      opacity: 0.2,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    const beam = mesh(new THREE.CylinderGeometry(2.9, 2.9, 5.5, 32, 1, true), beamMat);
-    beam.position.y = 2.75;
+    const beam = mesh(new THREE.CylinderGeometry(0.24, 0.46, 4.2, 18, 1, true), beamMat);
+    beam.position.y = 2.1;
     group.add(beam);
+
+    for (let index = 0; index < 4; index += 1) {
+      const radius = 0.55 + index * 0.12;
+      const ring = mesh(
+        new THREE.RingGeometry(radius, radius + 0.065, 28),
+        new THREE.MeshBasicMaterial({
+          color: 0x6fffee,
+          transparent: true,
+          opacity: 0.5 - index * 0.07,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.62 + index * 0.82;
+      ring.rotation.z = index * 0.48;
+      group.add(ring);
+    }
+
+    const fragmentMat = new THREE.MeshBasicMaterial({ color: 0x8efff4, transparent: true, opacity: 0.68 });
+    for (let index = 0; index < 12; index += 1) {
+      const angle = index * 2.15;
+      const radius = 0.28 + (index % 3) * 0.16;
+      const fragment = mesh(new THREE.BoxGeometry(0.045, 0.2 + (index % 4) * 0.06, 0.045), fragmentMat);
+      fragment.position.set(Math.cos(angle) * radius, 0.45 + (index % 6) * 0.62, Math.sin(angle) * radius);
+      group.add(fragment);
+    }
 
     // Rotating chevron markers pointing inwards
     const chevronMat = new THREE.MeshBasicMaterial({
@@ -690,7 +839,7 @@ export class VisualFactory {
   createPlayer(): CharacterRig {
     const rig = this.createEmptyRig(1);
     const ring = mesh(
-      new THREE.RingGeometry(0.68, 0.84, 36),
+      new THREE.RingGeometry(0.74, 0.9, 36),
       new THREE.MeshBasicMaterial({ color: 0x00f5d4, transparent: true, opacity: 0.65, side: THREE.DoubleSide }),
     );
     ring.name = "selection-ring";
@@ -706,7 +855,7 @@ export class VisualFactory {
   }
 
   createEnemy(type: EnemyId, definition: EnemyDefinition): CharacterRig {
-    const scale = type === "juggernaut" ? 1.75 : type === "brute" ? 1.35 : type === "runner" ? 0.88 : 1.05;
+    const scale = type === "juggernaut" ? 1.85 : type === "brute" ? 1.42 : type === "runner" ? 0.92 : 1.08;
     const rig = this.createEmptyRig(scale);
 
     if (type === "juggernaut") {
@@ -897,8 +1046,8 @@ export class VisualFactory {
     root.add(torso, head, leftArm, rightArm, leftLeg, rightLeg, muzzle);
 
     const shadow = mesh(
-      new THREE.CircleGeometry(0.54 * scale, 20),
-      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.42, depthWrite: false }),
+      new THREE.CircleGeometry(0.6 * scale, 20),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.56, depthWrite: false }),
     );
     shadow.rotation.x = -Math.PI / 2;
     shadow.scale.z = 0.55;
@@ -935,7 +1084,7 @@ export class VisualFactory {
     return this.characterAsset.then((asset) => {
       if (this.disposed || rig.disposed) return;
       const model = cloneSkinnedModel(asset.scene);
-      model.scale.setScalar(rig.scale * (kind === "player" ? 1.78 : 1.44));
+      model.scale.setScalar(rig.scale * (kind === "player" ? 1.92 : 1.54));
       model.rotation.y = Math.PI;
 
       if (kind === "runner") {
@@ -968,7 +1117,11 @@ export class VisualFactory {
       model.traverse((object) => {
         if (object.name !== "custom-outlined-mesh") return;
         const outline = object.children[0];
-        if (outline) outline.scale.setScalar(kind === "player" ? 1.075 : kind === "juggernaut" ? 1.055 : 1.05);
+        if (outline) {
+          const inkScale =
+            kind === "player" ? 1.09 : kind === "juggernaut" ? 1.065 : kind === "brute" ? 1.07 : 1.072;
+          outline.scale.setScalar(inkScale);
+        }
       });
 
       const placeholder = rig.root.getObjectByName("character-placeholder");
@@ -1024,16 +1177,31 @@ export class VisualFactory {
   private buildStylizedOperator(template: THREE.Object3D) {
     // Toon Materials with Comic Ink Ramp
     const skinMat = new THREE.MeshToonMaterial({ color: 0xf6c8a7, gradientMap: this.toonRamp });
-    const hairMat = new THREE.MeshToonMaterial({ color: 0x3e2316, gradientMap: this.toonRamp });
+    const hairMat = new THREE.MeshToonMaterial({ color: 0x5a321e, gradientMap: this.toonRamp });
     const armorCyanMat = new THREE.MeshToonMaterial({
       color: 0x00f5d4,
       emissive: 0x00d2b4,
       emissiveIntensity: 0.45,
       gradientMap: this.toonRamp,
     });
-    const harnessOrangeMat = new THREE.MeshToonMaterial({ color: 0xff6600, gradientMap: this.toonRamp });
-    const suitDarkMat = new THREE.MeshToonMaterial({ color: 0x1e252b, gradientMap: this.toonRamp });
-    const bootMat = new THREE.MeshToonMaterial({ color: 0x111827, gradientMap: this.toonRamp });
+    const harnessOrangeMat = new THREE.MeshToonMaterial({
+      color: 0xff6a1f,
+      emissive: 0x481300,
+      emissiveIntensity: 0.16,
+      gradientMap: this.toonRamp,
+    });
+    const suitDarkMat = new THREE.MeshToonMaterial({
+      color: 0x2a3d42,
+      emissive: 0x071b20,
+      emissiveIntensity: 0.22,
+      gradientMap: this.toonRamp,
+    });
+    const bootMat = new THREE.MeshToonMaterial({
+      color: 0x18262c,
+      emissive: 0x061014,
+      emissiveIntensity: 0.12,
+      gradientMap: this.toonRamp,
+    });
     const goldMat = new THREE.MeshToonMaterial({ color: 0xffb703, gradientMap: this.toonRamp });
 
     // 1. Hips (Pelvis & Belt with Holster)
@@ -1421,6 +1589,8 @@ export class VisualFactory {
     furnaceLight.position.set(0, 1.35, 0.35);
 
     root.add(base, pillar, box, core, furnaceLight);
+    addContactShadow(root, 0.52, 0.38, 0.3);
+    addGraphicInkEdges(root, 0.34);
     castAndReceive(root);
     return root;
   }
@@ -1450,6 +1620,9 @@ export class VisualFactory {
     lamp.position.set(0, 0.85, 0);
     root.add(lamp);
 
+    addIllustratedWear(root, width * 0.86, 0.7, 0.218, 0.16);
+    addContactShadow(root, width * 0.5, 0.3, 0.3);
+    addGraphicInkEdges(root, 0.34);
     castAndReceive(root);
     return root;
   }
@@ -1468,6 +1641,8 @@ export class VisualFactory {
     band.position.y = 0.42;
 
     root.add(base, cone, band);
+    addContactShadow(root, 0.25, 0.18, 0.24);
+    addGraphicInkEdges(root, 0.28);
     castAndReceive(root);
     return root;
   }
@@ -1489,6 +1664,8 @@ export class VisualFactory {
       root.add(plank);
     }
 
+    addContactShadow(root, 0.7, 0.56, 0.2);
+    addGraphicInkEdges(root, 0.18);
     castAndReceive(root);
     return root;
   }
@@ -1496,29 +1673,44 @@ export class VisualFactory {
   createSlimePool(radius = 1.4) {
     const root = new THREE.Group();
     const fluidMat = new THREE.MeshStandardMaterial({
-      color: 0x22b82f,
-      emissive: 0x15943b,
-      emissiveIntensity: 0.75,
+      color: 0x288e3b,
+      emissive: 0x105e29,
+      emissiveIntensity: 0.34,
       roughness: 0.15,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.7,
     });
 
-    const pool = mesh(new THREE.CircleGeometry(radius, 28), fluidMat);
-    pool.rotation.x = -Math.PI / 2;
-    pool.position.y = 0.038;
+    const inkMat = new THREE.MeshBasicMaterial({ color: 0x07130a, transparent: true, opacity: 0.82, depthWrite: false });
+    const blobs: Array<[number, number, number, number]> = [
+      [0, 0, 1, 0.74],
+      [radius * 0.52, radius * 0.08, 0.56, 0.44],
+      [-radius * 0.46, -radius * 0.12, 0.48, 0.58],
+      [radius * 0.08, -radius * 0.5, 0.4, 0.32],
+    ];
+    for (const [x, z, sx, sz] of blobs) {
+      const ink = mesh(new THREE.CircleGeometry(radius * 1.07, 22), inkMat);
+      ink.rotation.x = -Math.PI / 2;
+      ink.scale.set(sx, sz, 1);
+      ink.position.set(x, 0.036, z);
+      const fluid = mesh(new THREE.CircleGeometry(radius, 22), fluidMat);
+      fluid.rotation.x = -Math.PI / 2;
+      fluid.scale.set(sx, sz, 1);
+      fluid.position.set(x, 0.039, z);
+      root.add(ink, fluid);
+    }
 
-    const ring = mesh(
-      new THREE.RingGeometry(radius * 0.95, radius * 1.08, 28),
-      new THREE.MeshBasicMaterial({ color: 0x76ff03, transparent: true, opacity: 0.6, side: THREE.DoubleSide }),
+    const glint = mesh(
+      new THREE.RingGeometry(radius * 0.18, radius * 0.22, 18),
+      new THREE.MeshBasicMaterial({ color: 0x8fc96a, transparent: true, opacity: 0.24, side: THREE.DoubleSide }),
     );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.039;
+    glint.rotation.x = -Math.PI / 2;
+    glint.position.set(-radius * 0.18, 0.043, -radius * 0.06);
 
-    const slimeLight = new THREE.PointLight(0x39ff14, 2.2, 5, 2);
+    const slimeLight = new THREE.PointLight(0x39b956, 1, 3.8, 2);
     slimeLight.position.y = 0.6;
 
-    root.add(pool, ring, slimeLight);
+    root.add(glint, slimeLight);
     return root;
   }
 
@@ -1878,9 +2070,10 @@ export class VisualFactory {
     if (context) {
       context.clearRect(0, 0, 256, 256);
       const gradient = context.createRadialGradient(128, 128, 10, 128, 128, 95);
-      gradient.addColorStop(0, "rgba(220, 0, 50, 0.95)");
-      gradient.addColorStop(0.5, "rgba(160, 0, 30, 0.85)");
-      gradient.addColorStop(1, "rgba(80, 0, 15, 0)");
+      gradient.addColorStop(0, "rgba(142, 16, 42, 0.92)");
+      gradient.addColorStop(0.48, "rgba(92, 8, 30, 0.88)");
+      gradient.addColorStop(0.82, "rgba(52, 4, 20, 0.78)");
+      gradient.addColorStop(1, "rgba(38, 3, 15, 0)");
       context.fillStyle = gradient;
       context.beginPath();
       for (let i = 0; i < 24; i += 1) {
@@ -1894,7 +2087,7 @@ export class VisualFactory {
       context.closePath();
       context.fill();
 
-      context.fillStyle = "rgba(230, 10, 60, 0.85)";
+      context.fillStyle = "rgba(105, 8, 30, 0.72)";
       for (let i = 0; i < 16; i += 1) {
         const angle = i * 2.41;
         const distance = 72 + (i % 7) * 12;

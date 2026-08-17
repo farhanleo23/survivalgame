@@ -976,7 +976,7 @@ button:focus-visible {
   width: 100%;
   height: 100%;
   display: block;
-  filter: saturate(1.12) contrast(1.08);
+  filter: saturate(1.15) contrast(1.06) brightness(1.06);
 }
 
 .game-view::before,
@@ -996,8 +996,12 @@ button:focus-visible {
 }
 
 .game-view::after {
-  opacity: 0.2;
-  background-image: repeating-linear-gradient(0deg, transparent 0 3px, rgba(2, 8, 9, 0.32) 4px);
+  opacity: 0.14;
+  background-image:
+    radial-gradient(circle, rgba(2, 7, 8, 0.6) 0 0.7px, transparent 0.8px),
+    repeating-linear-gradient(0deg, transparent 0 3px, rgba(2, 8, 9, 0.28) 4px);
+  background-size: 4px 4px, 100% 4px;
+  mix-blend-mode: multiply;
 }
 
 .game-view[data-wave="7"]::before,
@@ -1015,8 +1019,8 @@ button:focus-visible {
   inset: 0;
   pointer-events: none;
   z-index: 3;
-  background: radial-gradient(ellipse at center, transparent 52%, rgba(1, 7, 8, 0.36) 78%, rgba(1, 5, 6, 0.76) 100%);
-  box-shadow: inset 0 0 110px rgba(0, 0, 0, 0.5);
+  background: radial-gradient(ellipse at 50% 46%, transparent 58%, rgba(1, 7, 8, 0.26) 82%, rgba(1, 5, 6, 0.62) 100%);
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.36);
 }
 
 .canvas-mount.is-hit::after {
@@ -1540,13 +1544,13 @@ button:focus-visible {
   transform: translateX(-50%);
   color: var(--paper);
   text-transform: uppercase;
-  font-size: clamp(18px, 2.4vw, 32px);
+  font-size: clamp(15px, 1.8vw, 24px);
   font-weight: 900;
-  letter-spacing: 0.22em;
-  padding: 14px 58px;
+  letter-spacing: 0.18em;
+  padding: 10px 40px;
   border-top: 1px solid rgba(98, 236, 239, 0.68);
   border-bottom: 1px solid rgba(98, 236, 239, 0.32);
-  background: linear-gradient(90deg, transparent, rgba(3, 12, 15, 0.9) 20% 80%, transparent);
+  background: linear-gradient(90deg, transparent, rgba(3, 12, 15, 0.78) 20% 80%, transparent);
   text-shadow:
     0 0 20px rgba(0, 245, 212, 0.6),
     0 4px 30px #000;
