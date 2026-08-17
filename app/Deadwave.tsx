@@ -26,6 +26,8 @@ const initialHud: HudState = {
   reserve: WEAPONS.pistol.reserve,
   reloading: 0,
   dash: 1,
+  comboCount: 0,
+  comboTimer: 0,
 };
 
 type EngineStatus = "idle" | "loading" | "ready" | "error";
@@ -71,7 +73,13 @@ export function Deadwave() {
           onHud: setHud,
           onCoins: (amount) => commitProfile((current) => ({ ...current, coins: current.coins + amount })),
           onWaveChange: (wave) => commitProfile((current) => ({ ...current, highestWave: Math.max(current.highestWave, wave) })),
-          onWaveComplete: () => setScreen("armory"),
+          onWaveComplete: (completedWave) => {
+            if (completedWave < 2) {
+              engineRef.current?.startNextWave();
+            } else {
+              setScreen("armory");
+            }
+          },
           onDeath: () => setScreen("dead"),
           onVictory: () => {
             commitProfile((current) => ({
@@ -104,7 +112,9 @@ export function Deadwave() {
         if (!cancelled) setEngineStatus("error");
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [screen, runToken, profile, commitProfile]);
 
   useEffect(() => () => engineRef.current?.destroy(), []);
@@ -201,7 +211,7 @@ export function Deadwave() {
     commitProfile((current) => ({ ...current, settings: { ...current.settings, [key]: !current.settings[key] } }));
   };
 
-  if (!hydrated) return <main className="boot-screen"><span>Establishing tactical link…</span></main>;
+  if (!hydrated) return <main className="boot-screen"><span>ESTABLISHING TACTICAL LINK…</span></main>;
 
   return (
     <main className={`deadwave ${profile.settings.reducedMotion ? "reduced-motion" : ""}`}>
@@ -210,7 +220,8 @@ export function Deadwave() {
       {screen === "lobby" && (
         <Lobby
           profile={profile}
-          onStart={() => setScreen("loadout")}
+          onStart={startNewRun}
+          onOpenArmory={() => setScreen("loadout")}
           onToggleSetting={toggleSetting}
         />
       )}
@@ -236,25 +247,41 @@ export function Deadwave() {
           <div className="canvas-mount" ref={stageRef} />
           <div className="vignette" aria-hidden="true" />
           {engineStatus === "ready" && <div className="combat-reticle" aria-hidden="true"><i /><b /></div>}
-          {engineStatus === "ready" && <Hud hud={hud} coins={profile.coins} healthPercent={healthPercent} />}
+          {engineStatus === "ready" && (
+            <Hud
+              hud={hud}
+              coins={profile.coins}
+              healthPercent={healthPercent}
+              weaponRank={profile.weaponRanks[hud.weapon] ?? 1}
+              loadoutCount={Math.max(profile.equippedLoadout.length, profile.ownedWeapons.length)}
+            />
+          )}
           {screen === "playing" && engineStatus === "ready" && (
-            <div className="game-controls">WASD move <i /> Mouse aim <i /> Click fire <i /> R reload <i /> Shift dash <i /> Esc pause</div>
+            <div className="game-controls">
+              <span><b>WASD</b> Move</span>
+              <span><b>MOUSE</b> Aim</span>
+              <span><b>L-CLICK</b> Fire</span>
+              <span><b>R</b> Reload</span>
+              <span><b>SPACE / SHIFT</b> Dash</span>
+              <span><b>Q</b> Swap</span>
+              <span><b>ESC</b> Pause</span>
+            </div>
           )}
           {screen === "playing" && engineStatus === "loading" && (
             <div className="engine-status" role="status" aria-live="polite">
-              <p className="eyebrow">Deploying operator</p>
-              <h2>Establishing combat link…</h2>
-              <span>Loading physics, terrain, and character systems.</span>
+              <p className="eyebrow">DEPLOYING OPERATOR</p>
+              <h2>ESTABLISHING COMBAT LINK…</h2>
+              <span>Initializing quarantine depot, cel-shaded renderer, and physics world.</span>
             </div>
           )}
           {screen === "playing" && engineStatus === "error" && (
             <div className="engine-status engine-error" role="alert">
-              <p className="eyebrow">Combat link failed</p>
-              <h2>The depot could not be initialized.</h2>
-              <span>WebGL or a required game asset may be unavailable. Retry the deployment or return to command.</span>
+              <p className="eyebrow">COMBAT LINK FAILED</p>
+              <h2>The depot arena could not be initialized.</h2>
+              <span>WebGL or a required game shader may be unavailable. Retry deployment or return to lobby.</span>
               <div className="engine-error-actions">
                 <button className="primary-action" onClick={startNewRun}>Retry deployment <span>→</span></button>
-                <button className="text-action" onClick={returnToLobby}>Return to command</button>
+                <button className="text-action" onClick={returnToLobby}>Return to lobby</button>
               </div>
             </div>
           )}
@@ -262,13 +289,13 @@ export function Deadwave() {
       )}
 
       {screen === "paused" && (
-        <Modal eyebrow="Tactical link suspended" title="Paused" wide={false}>
+        <Modal eyebrow="Tactical Link Suspended" title="OPERATION PAUSED" wide={false}>
           <div className="pause-actions">
-            <button className="primary-action" onClick={() => { engineRef.current?.resume(); setScreen("playing"); }}>Resume operation <span>→</span></button>
+            <button className="primary-action" onClick={() => { engineRef.current?.resume(); setScreen("playing"); }}>Resume Operation <span>→</span></button>
             <SettingToggle label="Music" active={profile.settings.music} onClick={() => toggleSetting("music")} />
-            <SettingToggle label="Sound effects" active={profile.settings.sfx} onClick={() => toggleSetting("sfx")} />
-            <SettingToggle label="Reduced motion" active={profile.settings.reducedMotion} onClick={() => toggleSetting("reducedMotion")} />
-            <button className="text-action danger-action" onClick={returnToLobby}>Abandon run</button>
+            <SettingToggle label="Sound Effects" active={profile.settings.sfx} onClick={() => toggleSetting("sfx")} />
+            <SettingToggle label="Reduced Motion" active={profile.settings.reducedMotion} onClick={() => toggleSetting("reducedMotion")} />
+            <button className="text-action danger-action" onClick={returnToLobby}>Abandon Run</button>
           </div>
         </Modal>
       )}
@@ -287,33 +314,33 @@ export function Deadwave() {
       )}
 
       {screen === "dead" && (
-        <Modal eyebrow="Vital signs lost" title="The depot claimed another survivor" wide={false}>
-          <p className="modal-copy">Your weapons, upgrades, and <strong>{profile.coins} salvage</strong> are secure. Wave progress has been lost.</p>
+        <Modal eyebrow="Vital Signs Lost" title="M.I.A. IN SECTOR 01" wide={false}>
+          <p className="modal-copy">The quarantine depot claimed another survivor. Your unlocked weapons, upgrade ranks, and <strong>{profile.coins} salvage</strong> are permanently safe.</p>
           <div className="result-actions">
-            <button className="primary-action" onClick={startNewRun}>Return to wave one <span>→</span></button>
-            <button className="text-action" onClick={returnToLobby}>Return to command</button>
+            <button className="primary-action" onClick={startNewRun}>Deploy Again (Wave 1) <span>→</span></button>
+            <button className="text-action" onClick={returnToLobby}>Return to Command</button>
           </div>
         </Modal>
       )}
 
       {screen === "victory" && (
-        <Modal eyebrow="Extraction window secured" title="Level 01 survived" wide>
+        <Modal eyebrow="Extraction Successful" title="DEPOT CLEARED — SECTOR SECURED" wide>
           <div className="victory-grid">
             <div>
-              <p className="modal-copy">The evacuation depot is clear—for now. All recovered salvage and equipment have been secured.</p>
-              <div className="victory-stat"><span>Final wave</span><strong>10 / 10</strong></div>
-              <div className="victory-stat"><span>Banked salvage</span><strong>{profile.coins}</strong></div>
+              <p className="modal-copy">The Juggernaut boss has fallen. All ten waves survived and maximum salvage extracted to headquarters.</p>
+              <div className="victory-stat"><span>Final Wave</span><strong>10 / 10</strong></div>
+              <div className="victory-stat"><span>Banked Salvage</span><strong>◆ {profile.coins}</strong></div>
             </div>
             <article className="next-level-card">
               <span className="level-index">02</span>
               <div className="lock-icon">⌁</div>
-              <p className="eyebrow">Signal acquired</p>
+              <p className="eyebrow">Signal Acquired</p>
               <h3>Downtown Hospital</h3>
-              <p>Emergency generators are online. Something inside is still calling for help.</p>
-              <span className="status-tag">Next milestone</span>
+              <p>Emergency generators active. Bio-quarantine breached. Something inside is calling for help.</p>
+              <span className="status-tag">Next Milestone</span>
             </article>
           </div>
-          <button className="primary-action victory-button" onClick={returnToLobby}>Return to command <span>→</span></button>
+          <button className="primary-action victory-button" onClick={returnToLobby}>Return to Command <span>→</span></button>
         </Modal>
       )}
     </main>
@@ -333,55 +360,185 @@ function LobbyBackground() {
   );
 }
 
-function Lobby({ profile, onStart, onToggleSetting }: {
+function Lobby({
+  profile,
+  onStart,
+  onOpenArmory,
+  onToggleSetting,
+}: {
   profile: ProfileV1;
   onStart: () => void;
+  onOpenArmory: () => void;
   onToggleSetting: (key: "music" | "sfx" | "reducedMotion") => void;
 }) {
+  const showArmoryOption = profile.highestWave >= 2 || profile.ownedWeapons.length > 1;
+
   return (
-    <div className="menu-shell">
+    <div className="menu-shell lobby-shell-split">
       <header className="topbar lobby-topbar">
         <div className="brand-mark">DW</div>
-        <div><p className="eyebrow">Evacuation protocol // sector 01</p><h1>Deadwave</h1></div>
-        <div className="profile-salvage"><span>Banked salvage</span><strong>◆ {profile.coins}</strong></div>
+        <div>
+          <p className="eyebrow">EVACUATION PROTOCOL // SECTOR 01</p>
+          <h1>DEADWAVE</h1>
+        </div>
+        <div className="profile-salvage">
+          <span>Banked Salvage</span>
+          <strong>◆ {profile.coins}</strong>
+        </div>
       </header>
-      <section className="lobby-hero">
-        <div className="mission-card">
-          <p className="eyebrow">Level 01 // Active</p>
-          <h2>Survive the dead. Secure the depot.</h2>
-          <p className="mission-copy">Ten waves stand between you and extraction. Recover salvage, strengthen your arsenal, and do not let the perimeter fold.</p>
-          <div className="mission-stats">
-            <div><strong>10</strong><span>Waves</span></div>
-            <div><strong>{profile.highestWave}</strong><span>Best wave</span></div>
-            <div><strong>{profile.ownedWeapons.length}</strong><span>Weapons</span></div>
+
+      <div className="lobby-split-grid">
+        {/* Left Side: Glimpse of the Game */}
+        <section className="glimpse-panel" aria-label="Game Preview">
+          <div className="glimpse-header">
+            <span className="live-tag">● LIVE DEPOT FEED</span>
+            <span className="cam-id">CAM-01 // SECTOR 7A</span>
           </div>
-          <button className="primary-action" data-testid="start-mission" onClick={onStart}>Enter the depot <span>→</span></button>
-          <p className="control-hint">WASD move · Mouse aim · Click fire · Shift dash</p>
-        </div>
-        <div className="mission-visual">
-          <div className="radar-lines" />
-          <div className="radar-sweep" />
-          <div className="player-pip" />
-          <div className="enemy-pip enemy-a" />
-          <div className="enemy-pip enemy-b" />
-          <div className="enemy-pip enemy-c" />
-          <div className="mission-visual-label"><span>Live tactical feed</span><strong>Depot 7A</strong></div>
-        </div>
-      </section>
-      <section className="bottom-command-bar">
-        <article className="level-card active"><span className="level-index">01</span><div><h3>Evacuation Depot</h3><p>Perimeter breach detected</p></div><span className="status-tag">Ready</span></article>
-        <article className={`level-card locked ${profile.completedLevels.includes(1) ? "revealed" : ""}`}><span className="level-index">02</span><div><h3>Downtown Hospital</h3><p>{profile.completedLevels.includes(1) ? "Signal acquired — next milestone" : "Complete Level 01 to reveal"}</p></div><span className="status-tag">Locked</span></article>
-        <div className="quick-settings" aria-label="Settings">
-          <button className={profile.settings.music ? "active" : ""} onClick={() => onToggleSetting("music")} aria-label="Toggle music" aria-pressed={profile.settings.music}>♫</button>
-          <button className={profile.settings.sfx ? "active" : ""} onClick={() => onToggleSetting("sfx")} aria-label="Toggle sound effects" aria-pressed={profile.settings.sfx}>SFX</button>
-          <button className={profile.settings.reducedMotion ? "active" : ""} onClick={() => onToggleSetting("reducedMotion")} aria-label="Toggle reduced motion" aria-pressed={profile.settings.reducedMotion}>RM</button>
-        </div>
-      </section>
+
+          <div className="glimpse-arena-viewport">
+            <div className="arena-grid-lines" />
+            <div className="glimpse-radar-sweep" />
+
+            {/* Tactical Arena Elements */}
+            <div className="tactical-marker tactical-player">
+              <div className="tactical-ring" />
+              <span>OPERATOR</span>
+            </div>
+
+            <div className="tactical-marker tactical-enemy enemy-runner-1">
+              <i />
+              <small>RUNNER</small>
+            </div>
+            <div className="tactical-marker tactical-enemy enemy-shambler-1">
+              <i />
+              <small>SHAMBLER</small>
+            </div>
+            <div className="tactical-marker tactical-enemy enemy-spitter-1">
+              <i />
+              <small>SPITTER</small>
+            </div>
+            <div className="tactical-marker tactical-hazard vat-left">
+              <span>BIO-VAT</span>
+            </div>
+            <div className="tactical-marker tactical-hazard vat-right">
+              <span>BIO-VAT</span>
+            </div>
+            <div className="tactical-marker tactical-beacon">
+              <div className="beacon-pulse" />
+              <span>EXTRACTION BEACON</span>
+            </div>
+
+            <div className="glimpse-overlay-scanlines" />
+          </div>
+
+          <div className="glimpse-footer-intel">
+            <div className="intel-item">
+              <small>ARENA</small>
+              <strong>QUARANTINE DEPOT</strong>
+            </div>
+            <div className="intel-item">
+              <small>THREAT LEVEL</small>
+              <strong className="threat-high">10 HOSTILE WAVES</strong>
+            </div>
+            <div className="intel-item">
+              <small>TARGET</small>
+              <strong>JUGGERNAUT BOSS</strong>
+            </div>
+          </div>
+        </section>
+
+        {/* Right Side: Start the Game */}
+        <section className="launch-panel">
+          <div className="launch-content">
+            <p className="eyebrow">MISSION READY // SECTOR 01</p>
+            <h2>QUARANTINE DEPOT</h2>
+            <p className="launch-description">
+              Survive 10 escalating waves of infected hostiles in the industrial depot. Defend against Shamblers, Runners, Spitters, Brutes, and the Juggernaut titan.
+            </p>
+
+            <div className="launch-stats-row">
+              <div className="launch-stat-box">
+                <span>BEST WAVE</span>
+                <strong>{profile.highestWave}<i>/10</i></strong>
+              </div>
+              <div className="launch-stat-box">
+                <span>ARSENAL</span>
+                <strong>{profile.ownedWeapons.length}<i> WEAPONS</i></strong>
+              </div>
+              <div className="launch-stat-box">
+                <span>SALVAGE</span>
+                <strong>◆ {profile.coins}</strong>
+              </div>
+            </div>
+
+            <div className="launch-action-group">
+              <button
+                className="primary-action start-game-btn"
+                data-testid="start-mission"
+                onClick={onStart}
+              >
+                START GAME <span>→</span>
+              </button>
+
+              {showArmoryOption && (
+                <button
+                  className="secondary-action loadout-btn"
+                  onClick={onOpenArmory}
+                >
+                  FIELD ARMORY & GUN SELECTION ({profile.ownedWeapons.length} Owned)
+                </button>
+              )}
+            </div>
+
+            <div className="launch-controls-guide">
+              <span className="guide-title">COMBAT CONTROLS</span>
+              <div className="guide-keys">
+                <span><b>WASD</b> Move</span>
+                <span><b>MOUSE</b> Aim</span>
+                <span><b>CLICK</b> Fire</span>
+                <span><b>SPACE</b> Dash</span>
+                <span><b>Q / 1-4</b> Swap Gun</span>
+                <span><b>R</b> Reload</span>
+              </div>
+            </div>
+
+            <div className="quick-settings-bar">
+              <span>SETTINGS:</span>
+              <button
+                className={profile.settings.music ? "active" : ""}
+                onClick={() => onToggleSetting("music")}
+                aria-pressed={profile.settings.music}
+              >
+                ♫ Music: {profile.settings.music ? "ON" : "OFF"}
+              </button>
+              <button
+                className={profile.settings.sfx ? "active" : ""}
+                onClick={() => onToggleSetting("sfx")}
+                aria-pressed={profile.settings.sfx}
+              >
+                SFX: {profile.settings.sfx ? "ON" : "OFF"}
+              </button>
+              <button
+                className={profile.settings.reducedMotion ? "active" : ""}
+                onClick={() => onToggleSetting("reducedMotion")}
+                aria-pressed={profile.settings.reducedMotion}
+              >
+                Motion: {profile.settings.reducedMotion ? "REDUCED" : "FULL"}
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
 
-function Loadout({ profile, onToggleWeapon, onBack, onDeploy }: {
+function Loadout({
+  profile,
+  onToggleWeapon,
+  onBack,
+  onDeploy,
+}: {
   profile: ProfileV1;
   onToggleWeapon: (id: WeaponId) => void;
   onBack: () => void;
@@ -391,54 +548,231 @@ function Loadout({ profile, onToggleWeapon, onBack, onDeploy }: {
     <div className="menu-shell loadout-shell">
       <header className="screen-heading">
         <button className="back-button" onClick={onBack}>← Command</button>
-        <div><p className="eyebrow">Pre-operation check</p><h2>Choose your loadout</h2></div>
-        <div className="loadout-count">{profile.equippedLoadout.length} / 2 slots</div>
+        <div>
+          <p className="eyebrow">PRE-OPERATION CHECK</p>
+          <h2>CONFIGURE LOADOUT</h2>
+        </div>
+        <div className="loadout-count">{profile.equippedLoadout.length} / 2 Slots Equipped</div>
       </header>
+
       <section className="loadout-grid">
         {WEAPON_IDS.map((id) => {
           const weapon = WEAPONS[id];
           const owned = profile.ownedWeapons.includes(id);
           const equipped = profile.equippedLoadout.includes(id);
-          const stats = getWeaponStats(id, profile.weaponRanks[id]);
+          const rank = profile.weaponRanks[id] ?? 1;
+          const stats = getWeaponStats(id, rank);
+
           return (
-            <button key={id} className={`weapon-card ${equipped ? "equipped" : ""} ${!owned ? "unowned" : ""}`} onClick={() => onToggleWeapon(id)} disabled={!owned}>
-              <span className="weapon-rank">Rank {roman(profile.weaponRanks[id])}</span>
+            <button
+              key={id}
+              className={`weapon-card ${equipped ? "equipped" : ""} ${!owned ? "unowned" : ""}`}
+              onClick={() => onToggleWeapon(id)}
+              disabled={!owned}
+            >
+              <div className="weapon-card-header">
+                <span className="weapon-rank">★ {rank}/5</span>
+                <span className="equipped-badge">{equipped ? "EQUIPPED" : owned ? "OWNED" : "LOCKED"}</span>
+              </div>
               <WeaponGlyph id={id} />
-              <div><p className="eyebrow">{owned ? equipped ? "Equipped" : "Owned" : `${weapon.cost} salvage`}</p><h3>{weapon.name}</h3><p>{weapon.description}</p></div>
-              <div className="weapon-mini-stats"><span>DMG <b>{Math.round(stats.damage)}</b></span><span>MAG <b>{stats.magazine}</b></span><span>RPM <b>{Math.round(stats.fireRate * 60)}</b></span></div>
+              <div className="weapon-card-body">
+                <p className="eyebrow">{owned ? (equipped ? "Active Primary" : "Reserve Weapon") : `Cost: ${weapon.cost} Salvage`}</p>
+                <h3>{weapon.name}</h3>
+                <p>{weapon.description}</p>
+              </div>
+              <div className="weapon-mini-stats">
+                <span>DMG <b>{Math.round(stats.damage)}</b></span>
+                <span>MAG <b>{stats.magazine}</b></span>
+                <span>RPM <b>{Math.round(stats.fireRate * 60)}</b></span>
+                <span>RLD <b>{stats.reload.toFixed(1)}s</b></span>
+              </div>
             </button>
           );
         })}
       </section>
-      <footer className="deploy-bar"><p>Your equipment and upgrades persist even if the operation fails.</p><button className="primary-action" data-testid="deploy" onClick={onDeploy}>Deploy to wave one <span>→</span></button></footer>
+
+      <footer className="deploy-bar">
+        <p>Purchased weapons and upgrades persist permanently across all deployments.</p>
+        <button className="primary-action" data-testid="deploy" onClick={onDeploy}>
+          Deploy to Wave One <span>→</span>
+        </button>
+      </footer>
     </div>
   );
 }
 
-function Hud({ hud, coins, healthPercent }: { hud: HudState; coins: number; healthPercent: number }) {
+function Hud({
+  hud,
+  coins,
+  healthPercent,
+  weaponRank,
+  loadoutCount,
+}: {
+  hud: HudState;
+  coins: number;
+  healthPercent: number;
+  weaponRank: number;
+  loadoutCount: number;
+}) {
+  const isLowHealth = healthPercent < 30;
+  const isReloading = hud.reloading > 0;
+
+  // Format mission elapsed time mm:ss
+  const totalSeconds = Math.floor(hud.missionTime ?? 0);
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  const formattedTime = `${minutes}:${seconds}`;
+
   return (
-    <div className="hud" aria-live="polite">
-      <div className="hud-top-left">
-        <div className="hud-label"><span>Operator integrity</span><strong>{Math.ceil(hud.health)} / {hud.maxHealth}</strong></div>
-        <div className="health-track"><div style={{ width: `${healthPercent}%` }} /></div>
+    <div className={`comic-hud ${isLowHealth ? "low-health-warning" : ""}`} aria-live="polite">
+      {/* 1. TOP-LEFT: KAI HP, Dash Stamina & Angled Isometric Mini-Map */}
+      <div className="comic-hud-top-left">
+        <div className="operator-vitals-card">
+          <div className="operator-title-row">
+            <span className="heart-icon">❤️</span>
+            <strong className="operator-name">KAI: HP {Math.round(healthPercent)}%</strong>
+          </div>
+          <div className="vital-bar health-bar">
+            <div className="vital-fill health-fill-bar" style={{ width: `${healthPercent}%` }} />
+          </div>
+          <div className="vital-bar energy-bar">
+            <span className="energy-icon">⚡</span>
+            <div className="vital-fill energy-fill-bar" style={{ width: `${hud.dash * 100}%` }} />
+          </div>
+        </div>
+
+        {/* Isometric Angled Radar Mini-Map */}
+        <div className="isometric-minimap" aria-hidden="true">
+          <div className="minimap-grid-lines" />
+          {/* Player Arrow */}
+          <div
+            className="minimap-player-blip"
+            style={{
+              transform: `translate(-50%, -50%) rotate(${((hud.playerPos?.rotation ?? 0) * 180) / Math.PI + 90}deg)`,
+            }}
+          />
+          {/* Hostile Blips */}
+          {hud.minimapEnemies?.slice(0, 20).map((enemy, idx) => {
+            const playerX = hud.playerPos?.x ?? 0;
+            const playerZ = hud.playerPos?.z ?? 0;
+            const relX = ((enemy.x - playerX) / 38) * 100;
+            const relZ = ((enemy.z - playerZ) / 38) * 100;
+            const clampedX = Math.max(-42, Math.min(42, relX));
+            const clampedZ = Math.max(-42, Math.min(42, relZ));
+
+            return (
+              <div
+                key={idx}
+                className={`minimap-enemy-blip enemy-${enemy.type}`}
+                style={{
+                  left: `calc(50% + ${clampedX}%)`,
+                  top: `calc(50% + ${clampedZ}%)`,
+                }}
+              />
+            );
+          })}
+        </div>
       </div>
-      <div className="wave-counter" data-testid="hud-wave"><span>Wave</span><strong>{String(hud.wave).padStart(2, "0")}<i>/10</i></strong><small>{hud.enemies} hostiles</small></div>
-      <div className="salvage-counter"><span>◆</span><div><small>Banked salvage</small><strong>{coins}</strong></div></div>
-      <div className="weapon-hud">
-        <WeaponGlyph id={hud.weapon} compact />
-        <div><small>{hud.reloading > 0 ? "Reloading…" : hud.weaponName}</small><strong>{hud.magazine}<i>/ {hud.reserve}</i></strong></div>
+
+      {/* 2. TOP-RIGHT: Salvage Score, Wave Counter & Timer */}
+      <div className="comic-hud-top-right">
+        <div className="hud-score-display">
+          <strong>{coins.toLocaleString()}</strong>
+        </div>
+        <div className="hud-wave-status">
+          <span>WAVE {hud.wave}/10</span>
+          <small>{formattedTime}</small>
+        </div>
       </div>
-      <div className="dash-hud"><span>Dash</span><div><i style={{ width: `${hud.dash * 100}%` }} /></div></div>
-      {hud.bossHealth !== undefined && hud.bossMaxHealth !== undefined && (
-        <div className="boss-hud"><span>Juggernaut</span><div><i style={{ width: `${Math.max(0, hud.bossHealth / hud.bossMaxHealth * 100)}%` }} /></div></div>
+
+      {/* 3. BOTTOM-LEFT: Stylized Deadwave Logo Mark */}
+      <div className="comic-hud-bottom-left">
+        <span className="deadwave-watermark">DEADWAVE</span>
+      </div>
+
+      {/* 4. BOTTOM-RIGHT: Active Weapon Card, Ammo & Dash Ability Cooldown Box */}
+      <div className="comic-hud-bottom-right">
+        {/* Dash / Ability Cooldown Box */}
+        <div className={`ability-cooldown-box ${hud.dash >= 1 ? "ready" : "cooling"}`}>
+          <div className="ability-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+          </div>
+          <span className="ability-label">{hud.dash >= 1 ? "READY" : "COOLDOWN"}</span>
+        </div>
+
+        {/* Weapon Silhouette & Ammo Count */}
+        <div className={`comic-weapon-card ${isReloading ? "reloading" : ""}`}>
+          <div className="weapon-silhouette-container">
+            <WeaponGlyph id={hud.weapon} />
+          </div>
+          <div className="ammo-numbers">
+            <strong>{isReloading ? "RELOAD" : hud.magazine}</strong>
+            <small>/{hud.reserve}</small>
+          </div>
+          {loadoutCount > 1 && (
+            <span className="weapon-swap-key-tag">Q</span>
+          )}
+          <span className="weapon-rank-tag-mini">★{weaponRank}</span>
+        </div>
+      </div>
+
+      {/* Combo Streak Tracker */}
+      {hud.comboCount !== undefined && hud.comboCount >= 2 && (
+        <div className="combo-hud-badge">
+          <span className="combo-number">{hud.comboCount}x</span>
+          <span className="combo-label">COMBO STREAK</span>
+        </div>
       )}
+
+      {/* Wave Announcement Banner */}
       {hud.announcement && <div className="wave-announcement">{hud.announcement}</div>}
+
+      {/* Extraction / Inter-Wave Beacon Hold Banner */}
+      {hud.extractionZoneActive && (
+        <div className={`extraction-hud-card ${hud.extractionProgress && hud.extractionProgress > 0 ? "is-charging" : ""}`}>
+          <div className="extraction-hud-header">
+            <span className="beacon-icon">{hud.extractionProgress && hud.extractionProgress > 0 ? "⚡" : "📍"}</span>
+            <div>
+              <strong>EXTRACTION BEACON ACTIVE</strong>
+              <p>Stand in the central perimeter beacon to advance to the next round</p>
+            </div>
+          </div>
+          <div className="extraction-progress-track">
+            <div className="extraction-progress-fill" style={{ width: `${(hud.extractionProgress ?? 0) * 100}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Boss Health Bar for Wave 10 */}
+      {hud.bossHealth !== undefined && hud.bossMaxHealth !== undefined && (
+        <div className="boss-hud">
+          <div className="boss-title">
+            <span>⚠️ JUGGERNAUT DREADNOUGHT</span>
+            <strong>{Math.ceil(hud.bossHealth)} / {hud.bossMaxHealth}</strong>
+          </div>
+          <div className="boss-track">
+            <i style={{ width: `${Math.max(0, (hud.bossHealth / hud.bossMaxHealth) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+
       <div className="crosshair" aria-hidden="true"><span /><span /></div>
     </div>
   );
 }
 
-function Armory({ profile, wave, notice, onBuyWeapon, onUpgradeWeapon, onUpgradePerk, onRefill, onContinue }: {
+function Armory({
+  profile,
+  wave,
+  notice,
+  onBuyWeapon,
+  onUpgradeWeapon,
+  onUpgradePerk,
+  onRefill,
+  onContinue,
+}: {
   profile: ProfileV1;
   wave: number;
   notice: string;
@@ -449,57 +783,180 @@ function Armory({ profile, wave, notice, onBuyWeapon, onUpgradeWeapon, onUpgrade
   onContinue: () => void;
 }) {
   return (
-    <Modal eyebrow={`Wave ${wave} secured`} title="Field armory" wide>
-      <div className="armory-balance"><span>Banked salvage</span><strong>◆ {profile.coins}</strong><button onClick={onRefill}>Refill all ammo <b>20</b></button></div>
-      {notice && <div className="armory-notice" role="status" aria-live="polite">{notice}</div>}
-      <div className="armory-layout">
-        <section><h3 className="section-title">Arsenal</h3><div className="armory-list">
-          {WEAPON_IDS.map((id) => {
-            const weapon = WEAPONS[id];
-            const owned = profile.ownedWeapons.includes(id);
-            const rank = profile.weaponRanks[id];
-            const cost = owned ? getWeaponUpgradeCost(id, rank) : weapon.cost;
-            return (
-              <article className="armory-item" key={id}>
-                <WeaponGlyph id={id} compact />
-                <div><span>Rank {roman(rank)}</span><h4>{weapon.name}</h4><p>{weapon.description}</p></div>
-                {owned ? <button onClick={() => onUpgradeWeapon(id)} disabled={rank >= 5}>{rank >= 5 ? "Max rank" : <>Upgrade <b>{cost}</b></>}</button> : <button onClick={() => onBuyWeapon(id)}>Acquire <b>{cost}</b></button>}
-              </article>
-            );
-          })}
-        </div></section>
-        <section><h3 className="section-title">Operator perks</h3><div className="armory-list">
-          {PERK_IDS.map((id) => {
-            const perk = PERKS[id];
-            const rank = profile.perkRanks[id];
-            return (
-              <article className="armory-item perk-item" key={id}>
-                <div className="perk-glyph">{id === "vitality" ? "+" : id === "mobility" ? "»" : "◎"}</div>
-                <div><span>{rank} / 3 ranks</span><h4>{perk.name}</h4><p>{perk.description}</p></div>
-                <button onClick={() => onUpgradePerk(id)} disabled={rank >= 3}>{rank >= 3 ? "Max rank" : <>Upgrade <b>{getPerkUpgradeCost(id, rank)}</b></>}</button>
-              </article>
-            );
-          })}
-        </div></section>
+    <Modal eyebrow={`WAVE ${wave} SURVIVED`} title="FIELD ARMORY & REQUISITIONS" wide>
+      <div className="armory-balance">
+        <div>
+          <span>AVAILABLE SALVAGE</span>
+          <strong>◆ {profile.coins}</strong>
+        </div>
+        <button className="refill-action" onClick={onRefill}>
+          ⚡ Refill All Ammo (20 Salvage)
+        </button>
       </div>
-      <div className="armory-footer"><p>Purchases save immediately and persist across future runs.</p><button className="primary-action" onClick={onContinue}>Begin wave {wave + 1} <span>→</span></button></div>
+
+      {notice && <div className="armory-notice" role="status" aria-live="polite">{notice}</div>}
+
+      <div className="armory-layout">
+        {/* Weapon Upgrades Column */}
+        <section>
+          <h3 className="section-title">WEAPON ARSENAL</h3>
+          <div className="armory-list">
+            {WEAPON_IDS.map((id) => {
+              const weapon = WEAPONS[id];
+              const owned = profile.ownedWeapons.includes(id);
+              const rank = profile.weaponRanks[id] ?? 1;
+              const stats = getWeaponStats(id, rank);
+              const nextStats = getWeaponStats(id, Math.min(5, rank + 1));
+              const cost = owned ? getWeaponUpgradeCost(id, rank) : weapon.cost;
+
+              return (
+                <article className={`armory-item ${owned ? "owned" : ""}`} key={id}>
+                  <div className="armory-item-icon">
+                    <WeaponGlyph id={id} compact />
+                    <div className="stars-indicator">
+                      {"★".repeat(rank)}{"☆".repeat(5 - rank)}
+                    </div>
+                  </div>
+                  <div className="armory-item-details">
+                    <span className="item-rank-tag">{owned ? `Rank ${rank}/5` : "Unowned"}</span>
+                    <h4>{weapon.name}</h4>
+                    <p>{weapon.description}</p>
+                    <div className="armory-stat-bars">
+                      <div className="stat-bar-row">
+                        <span>DMG: {Math.round(stats.damage)} {owned && rank < 5 && <small>→ {Math.round(nextStats.damage)}</small>}</span>
+                      </div>
+                      <div className="stat-bar-row">
+                        <span>MAG: {stats.magazine} {owned && rank < 5 && <small>→ {nextStats.magazine}</small>}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="armory-item-action">
+                    {owned ? (
+                      <button
+                        className="upgrade-btn"
+                        onClick={() => onUpgradeWeapon(id)}
+                        disabled={rank >= 5 || profile.coins < cost}
+                      >
+                        {rank >= 5 ? "MAX RANK" : <>Upgrade <b>◆ {cost}</b></>}
+                      </button>
+                    ) : (
+                      <button
+                        className="buy-btn"
+                        onClick={() => onBuyWeapon(id)}
+                        disabled={profile.coins < cost}
+                      >
+                        Acquire <b>◆ {cost}</b>
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Operator Perks Column */}
+        <section>
+          <h3 className="section-title">OPERATOR PERKS</h3>
+          <div className="armory-list">
+            {PERK_IDS.map((id) => {
+              const perk = PERKS[id];
+              const rank = profile.perkRanks[id] ?? 0;
+              const cost = getPerkUpgradeCost(id, rank);
+
+              return (
+                <article className="armory-item perk-item" key={id}>
+                  <div className="perk-glyph">{id === "vitality" ? "✚" : id === "mobility" ? "⚡" : "🧲"}</div>
+                  <div className="armory-item-details">
+                    <span className="item-rank-tag">{rank} / 3 Ranks</span>
+                    <h4>{perk.name}</h4>
+                    <p>{perk.description}</p>
+                  </div>
+                  <div className="armory-item-action">
+                    <button
+                      className="upgrade-btn"
+                      onClick={() => onUpgradePerk(id)}
+                      disabled={rank >= 3 || profile.coins < cost}
+                    >
+                      {rank >= 3 ? "MAX RANK" : <>Upgrade <b>◆ {cost}</b></>}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+
+      <div className="armory-footer">
+        <p>All purchased weapons and perk ranks survive refreshes and failed runs.</p>
+        <button className="primary-action" onClick={onContinue}>
+          Deploy to Wave {wave + 1} <span>→</span>
+        </button>
+      </div>
     </Modal>
   );
 }
 
-function Modal({ eyebrow, title, wide = false, children }: { eyebrow: string; title: string; wide?: boolean; children: React.ReactNode }) {
+function Modal({
+  eyebrow,
+  title,
+  wide = false,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  wide?: boolean;
+  children: React.ReactNode;
+}) {
   const titleId = useId();
-  return <div className="modal-backdrop"><section className={`modal-panel ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}><header><p className="eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></header>{children}</section></div>;
+  return (
+    <div className="modal-backdrop">
+      <section className={`modal-panel ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header>
+          <p className="eyebrow">{eyebrow}</p>
+          <h2 id={titleId}>{title}</h2>
+        </header>
+        {children}
+      </section>
+    </div>
+  );
 }
 
 function SettingToggle({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return <button className="setting-toggle" onClick={onClick} aria-pressed={active}><span>{label}</span><i className={active ? "active" : ""} aria-hidden="true"><b /></i></button>;
+  return (
+    <button className="setting-toggle" onClick={onClick} aria-pressed={active}>
+      <span>{label}</span>
+      <i className={active ? "active" : ""} aria-hidden="true"><b /></i>
+    </button>
+  );
 }
 
 function WeaponGlyph({ id, compact = false }: { id: WeaponId; compact?: boolean }) {
-  return <div className={`weapon-glyph ${id} ${compact ? "compact" : ""}`} aria-hidden="true"><i /><b /><span /></div>;
-}
-
-function roman(rank: number) {
-  return ["I", "II", "III", "IV", "V"][Math.max(0, Math.min(4, rank - 1))];
+  if (id === "rifle") {
+    return (
+      <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
+        <path d="M4 14h18v-3h12v3h20v-2h22v2h18v4h-6v4h-4v-4h-8v-2H54v8l-6 10h-6l4-10H34v8l-4 6h-6l2-6H16l-4 6H6l4-10H4v-8z" />
+      </svg>
+    );
+  }
+  if (id === "shotgun") {
+    return (
+      <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
+        <path d="M4 16h24v-4h42v4h24v4H70v3h-16v-3H38v6h-8l-4-6H16l-6 8H4v-12z" />
+      </svg>
+    );
+  }
+  if (id === "smg") {
+    return (
+      <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
+        <path d="M12 12h28v-3h18v3h26v6H62v-2H48v12h-8l-2-10H28v8h-6l-2-8h-8v-6z" />
+      </svg>
+    );
+  }
+  return (
+    <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
+      <path d="M24 10h44v8H54v10h-10l-4-10H24v-8z" />
+    </svg>
+  );
 }

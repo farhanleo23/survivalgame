@@ -111,4 +111,12 @@ export interface HudState {
   bossHealth?: number;
   bossMaxHealth?: number;
   announcement?: string;
+  comboCount?: number;
+  comboTimer?: number;
+  extractionZoneActive?: boolean;
+  extractionProgress?: number;
+  missionTime?: number;
+  playerPos?: { x: number; z: number; rotation: number };
+  minimapEnemies?: Array<{ x: number; z: number; type: EnemyId }>;
 }
+
