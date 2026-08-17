@@ -56,6 +56,28 @@ test("pauses on focus loss and resumes the same run", async ({ page }) => {
   await expect(page.getByTestId("hud-wave")).toContainText("01");
 });
 
+test("renders the visual systems gallery without runtime errors", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  await page.goto("/?visualqa=1");
+  await page.getByTestId("start-mission").click();
+  await page.getByTestId("deploy").click();
+  const canvas = page.locator('canvas[data-visual-mode="gallery"]');
+  await expect(canvas).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Visual systems gallery")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("renders a stable 36-hostile graphics stress scene", async ({ page }) => {
+  await page.goto("/?stress=1");
+  await page.getByTestId("start-mission").click();
+  await page.getByTestId("deploy").click();
+  await expect(page.locator('canvas[data-visual-mode="stress"]')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("36 hostiles")).toBeVisible();
+  await expect(page.getByText("Juggernaut")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "The depot claimed another survivor" })).toHaveCount(0);
+});
+
 test("does not charge for a refill when equipped ammunition is full", async ({ page }) => {
   await seedProfile(page, profileWith({ coins: 100 }));
   await page.goto("/?qa=1");

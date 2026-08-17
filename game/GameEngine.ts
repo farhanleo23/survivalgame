@@ -3,6 +3,7 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import { ENEMIES, getWeaponStats, PICKUPS, WAVES, WEAPONS } from "./config";
 import { GameAudio } from "./audio";
 import { VisualFactory, type CharacterRig } from "./visuals";
+import { GRAPHICS_BUDGETS, WEAPON_VISUALS } from "./visual-registry";
 import type {
   EnemyDefinition,
   EnemyId,
@@ -58,9 +59,12 @@ interface BarrelEntity {
 }
 
 interface EffectEntity {
-  mesh: THREE.Mesh;
+  mesh: THREE.Object3D;
   life: number;
   maxLife: number;
+  mode?: "expand" | "particle" | "smoke" | "flash";
+  velocity?: THREE.Vector3;
+  spin?: THREE.Vector3;
 }
 
 interface Obstacle {
@@ -97,6 +101,15 @@ export class GameEngine {
   private frameTimeAverage = FIXED_STEP;
   private performanceSampleTime = 0;
   private qaFramesRendered = 0;
+  private visualQaMode =
+    typeof window !== "undefined" &&
+    window.location.hostname === "localhost" &&
+    new URLSearchParams(window.location.search).has("visualqa");
+  private stressMode =
+    typeof window !== "undefined" &&
+    window.location.hostname === "localhost" &&
+    new URLSearchParams(window.location.search).has("stress");
+  private visualQaRigs: CharacterRig[] = [];
 
   private physics = new RAPIER.World({ x: 0, y: 0, z: 0 });
   private playerBody: RAPIER.RigidBody;
@@ -143,6 +156,7 @@ export class GameEngine {
     this.profile = profile;
     this.callbacks = callbacks;
     this.loadout = profile.equippedLoadout.length ? [...profile.equippedLoadout] : ["pistol"];
+    this.pixelRatio = Math.min(window.devicePixelRatio, GRAPHICS_BUDGETS[profile.settings.graphicsQuality].maxPixelRatio);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     if (this.qaMode) this.pixelRatio = 0.5;
@@ -151,12 +165,13 @@ export class GameEngine {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.34;
+    this.renderer.toneMappingExposure = 1.16;
     this.renderer.domElement.className = "game-canvas";
     this.renderer.domElement.setAttribute("aria-label", "Deadwave evacuation depot combat arena");
+    this.renderer.domElement.dataset.visualMode = this.visualQaMode ? "gallery" : this.stressMode ? "stress" : "gameplay";
     this.container.appendChild(this.renderer.domElement);
     this.timer.connect(document);
-    this.visuals = new VisualFactory(this.renderer);
+    this.visuals = new VisualFactory(this.renderer, profile.settings.graphicsQuality);
 
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, 0.72, 0)
@@ -181,7 +196,9 @@ export class GameEngine {
     this.audio.configure(this.profile.settings);
     this.audio.start();
     this.paused = false;
-    this.startWave(wave);
+    if (this.visualQaMode) this.setupVisualQaScene();
+    else if (this.stressMode) this.setupStressScene();
+    else this.startWave(wave);
     this.timer.reset();
     this.scheduleFrame();
     void this.visuals.ready();
@@ -217,9 +234,11 @@ export class GameEngine {
   }
 
   setProfile(profile: ProfileV1) {
+    const qualityChanged = profile.settings.graphicsQuality !== this.profile.settings.graphicsQuality;
     this.profile = profile;
     this.audio.configure(profile.settings);
     this.applyPerks(profile.perkRanks);
+    if (qualityChanged) this.applyGraphicsQuality();
     for (const id of profile.ownedWeapons) this.ensureWeaponState(id);
   }
 
@@ -228,6 +247,7 @@ export class GameEngine {
     if (!this.loadout.length) this.loadout = ["pistol"];
     this.activeWeaponIndex = 0;
     for (const id of this.loadout) this.ensureWeaponState(id);
+    if (this.playerRig) this.visuals.setPlayerWeapon(this.playerRig, this.loadout[0] ?? "pistol");
     this.emitHud(true);
   }
 
@@ -259,6 +279,7 @@ export class GameEngine {
     this.timer.dispose();
     if (this.playerRig) this.visuals.disposeCharacter(this.playerRig);
     for (const enemy of this.enemies) this.visuals.disposeCharacter(enemy.rig);
+    for (const rig of this.visualQaRigs) this.visuals.disposeCharacter(rig);
     this.visuals.dispose(this.scene);
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -269,23 +290,25 @@ export class GameEngine {
     this.scene.background = new THREE.Color(0x09100f);
     this.scene.fog = new THREE.FogExp2(0x0b1211, 0.018);
 
-    const ambient = new THREE.HemisphereLight(0xc7ddd7, 0x171b18, 1.52);
+    const ambient = new THREE.HemisphereLight(0xb8d8d2, 0x101512, 0.92);
     this.scene.add(ambient);
-    const key = new THREE.DirectionalLight(0xe1ece8, 3.15);
+    const key = new THREE.DirectionalLight(0xd9eeea, 2.85);
+    key.name = "tactical-key-light";
     key.position.set(-11, 22, 9);
     key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
-    key.shadow.camera.left = -24;
-    key.shadow.camera.right = 24;
-    key.shadow.camera.top = 24;
-    key.shadow.camera.bottom = -24;
+    const shadowSize = GRAPHICS_BUDGETS[this.profile.settings.graphicsQuality].shadowMapSize;
+    key.shadow.mapSize.set(shadowSize, shadowSize);
+    key.shadow.camera.left = -20;
+    key.shadow.camera.right = 20;
+    key.shadow.camera.top = 20;
+    key.shadow.camera.bottom = -20;
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.035;
     key.shadow.radius = 2;
     this.scene.add(key);
-    const coldFill = new THREE.PointLight(0x70cfc1, 18, 19, 2);
+    const coldFill = new THREE.PointLight(0x59dcb7, 14, 19, 2);
     coldFill.position.set(-13, 5, 12);
-    const warning = new THREE.PointLight(0xff4b2f, 25, 20, 2);
+    const warning = new THREE.PointLight(0xff542f, 22, 20, 2);
     warning.position.set(14, 4.5, -11);
     this.scene.add(coldFill, warning);
 
@@ -350,7 +373,7 @@ export class GameEngine {
   }
 
   private createPlayer() {
-    this.playerRig = this.visuals.createPlayer();
+    this.playerRig = this.visuals.createPlayer(this.loadout[this.activeWeaponIndex] ?? "pistol");
     this.playerMesh = this.playerRig.root;
     this.scene.add(this.playerMesh);
   }
@@ -436,26 +459,40 @@ export class GameEngine {
     const group = new THREE.Group();
     const definition = PICKUPS[type];
     if (type === "coin") {
-      const coin = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.28, 0.28, 0.09, 12),
-        new THREE.MeshStandardMaterial({ color: definition.color, emissive: 0x57440a, metalness: 0.65, roughness: 0.28 }),
-      );
-      coin.rotation.x = Math.PI / 2;
-      group.add(coin);
+      const shardMaterial = new THREE.MeshStandardMaterial({ color: definition.color, emissive: 0x8b5a0a, emissiveIntensity: 1.25, metalness: 0.72, roughness: 0.24 });
+      const shard = new THREE.Mesh(new THREE.OctahedronGeometry(0.29, 0), shardMaterial);
+      shard.scale.y = 1.35;
+      const orbit = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.025, 6, 24), new THREE.MeshBasicMaterial({ color: 0xffd46b, transparent: true, opacity: 0.64 }));
+      orbit.rotation.x = Math.PI / 2;
+      group.add(shard, orbit);
     } else {
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(type === "health" ? 0.7 : 0.88, 0.38, 0.62),
-        new THREE.MeshStandardMaterial({ color: definition.color, emissive: type === "ammo" ? 0x092941 : 0x471014, roughness: 0.45 }),
+      const shell = new THREE.Mesh(
+        new THREE.BoxGeometry(type === "health" ? 0.72 : 0.92, 0.4, 0.64),
+        new THREE.MeshStandardMaterial({ color: type === "health" ? 0x7a2427 : 0x274750, emissive: type === "ammo" ? 0x0a4051 : 0x551216, emissiveIntensity: 0.6, roughness: 0.42, metalness: 0.42 }),
       );
-      group.add(box);
+      const band = new THREE.Mesh(new THREE.BoxGeometry(type === "health" ? 0.76 : 0.96, 0.11, 0.68), new THREE.MeshStandardMaterial({ color: definition.color, emissive: definition.color, emissiveIntensity: 0.72, roughness: 0.38 }));
+      group.add(shell, band);
       if (type === "health") {
-        const crossMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const crossA = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.06, 0.1), crossMaterial);
-        const crossB = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.38), crossMaterial);
-        crossA.position.y = crossB.position.y = 0.22;
+        const crossMaterial = new THREE.MeshBasicMaterial({ color: 0xfff5e9 });
+        const crossA = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.035, 0.11), crossMaterial);
+        const crossB = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.035, 0.4), crossMaterial);
+        crossA.position.y = crossB.position.y = 0.225;
         group.add(crossA, crossB);
+      } else {
+        const cartridgeMaterial = new THREE.MeshStandardMaterial({ color: 0xe3b95e, metalness: 0.82, roughness: 0.28 });
+        for (const x of [-0.25, 0, 0.25]) {
+          const cartridge = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.34, 8), cartridgeMaterial);
+          cartridge.position.set(x, 0.27, 0);
+          group.add(cartridge);
+        }
       }
     }
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.3, 1.8, 16, 1, true),
+      new THREE.MeshBasicMaterial({ color: definition.color, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
+    beam.position.y = 0.85;
+    group.add(beam);
     const glow = new THREE.PointLight(definition.color, 4, 3.5, 2);
     glow.position.y = 0.6;
     group.add(glow);
@@ -469,6 +506,7 @@ export class GameEngine {
     const state = this.weaponStates.get(id);
     if (!state) return;
     const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
+    const weaponVisual = WEAPON_VISUALS[id];
     if (state.reloading > 0 || state.cooldown > 0) return;
     if (state.magazine <= 0) {
       this.reloadWeapon(id);
@@ -485,7 +523,7 @@ export class GameEngine {
       const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
       const mesh = new THREE.Mesh(
         new THREE.CylinderGeometry(id === "shotgun" ? 0.035 : 0.027, id === "shotgun" ? 0.055 : 0.038, id === "shotgun" ? 0.52 : 0.78, 8),
-        new THREE.MeshBasicMaterial({ color: stats.color, transparent: true, opacity: 0.92 }),
+        new THREE.MeshBasicMaterial({ color: weaponVisual.tracerColor, transparent: true, opacity: 0.94 }),
       );
       mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
       mesh.position.copy(origin);
@@ -499,7 +537,7 @@ export class GameEngine {
     flash.position.copy(origin).addScaledVector(this.aim, 0.2);
     this.scene.add(flash);
     this.effects.push({ mesh: flash, life: 0.06, maxLife: 0.06 });
-    this.cameraShake = Math.max(this.cameraShake, id === "shotgun" ? 0.22 : 0.06);
+    this.cameraShake = Math.max(this.cameraShake, weaponVisual.kick);
     if (state.magazine === 0 && state.reserve > 0) this.reloadWeapon(id);
   }
 
@@ -520,6 +558,7 @@ export class GameEngine {
   private switchWeapon(direction = 1) {
     if (this.loadout.length < 2) return;
     this.activeWeaponIndex = (this.activeWeaponIndex + direction + this.loadout.length) % this.loadout.length;
+    if (this.playerRig) this.visuals.setPlayerWeapon(this.playerRig, this.loadout[this.activeWeaponIndex] ?? "pistol");
     this.audio.tone(480, 0.05, 0.04, "triangle");
     this.emitHud(true);
   }
@@ -707,13 +746,15 @@ export class GameEngine {
   }
 
   private spawnEnemyProjectile(enemy: EnemyEntity, direction: THREE.Vector3) {
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.19, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0xa5ff4d }),
+    const projectileMesh = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.21, 1),
+      new THREE.MeshStandardMaterial({ color: 0x8bef47, emissive: 0x5aff1c, emissiveIntensity: 2.4, roughness: 0.28, transparent: true, opacity: 0.94 }),
     );
-    mesh.position.copy(enemy.mesh.position).add(new THREE.Vector3(0, 1.2, 0));
-    this.scene.add(mesh);
-    this.projectiles.push({ mesh, velocity: direction.clone().multiplyScalar(8.5), damage: enemy.definition.damage, life: 2.2, enemy: true });
+    projectileMesh.position.copy(enemy.mesh.position).add(new THREE.Vector3(0, 1.2, 0));
+    const glow = new THREE.PointLight(0x7dff35, 4.5, 3.2, 2);
+    projectileMesh.add(glow);
+    this.scene.add(projectileMesh);
+    this.projectiles.push({ mesh: projectileMesh, velocity: direction.clone().multiplyScalar(8.5), damage: enemy.definition.damage, life: 2.2, enemy: true });
     this.audio.tone(155, 0.16, 0.04, "sine");
   }
 
@@ -723,16 +764,19 @@ export class GameEngine {
       projectile.life -= dt;
       projectile.mesh.position.addScaledVector(projectile.velocity, dt);
       if (projectile.life <= 0 || Math.abs(projectile.mesh.position.x) > 21 || Math.abs(projectile.mesh.position.z) > 21) {
+        if (projectile.enemy && Math.abs(projectile.mesh.position.x) < 20 && Math.abs(projectile.mesh.position.z) < 20) this.createAcidSplash(projectile.mesh.position);
         this.removeProjectile(index);
         continue;
       }
       if (this.pointInsideObstacle(projectile.mesh.position.x, projectile.mesh.position.z)) {
+        if (projectile.enemy) this.createAcidSplash(projectile.mesh.position);
         this.removeProjectile(index);
         continue;
       }
       if (projectile.enemy) {
         if (projectile.mesh.position.distanceTo(this.playerMesh.position.clone().setY(1)) < 0.85) {
           this.damagePlayer(projectile.damage);
+          this.createAcidSplash(projectile.mesh.position);
           this.removeProjectile(index);
         }
         continue;
@@ -798,23 +842,49 @@ export class GameEngine {
       const distance = enemy.mesh.position.distanceTo(position);
       if (distance < 5.4) this.damageEnemy(enemy, 190 * (1 - distance / 6.2), index);
     }
-    const blast = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 16, 10),
-      new THREE.MeshBasicMaterial({ color: 0xff6a2a, transparent: true, opacity: 0.52, wireframe: true }),
+    this.visuals.addScorchDecal(this.scene, position, 1.45);
+    const blast = new THREE.Group();
+    blast.position.copy(position).setY(0.82);
+    const flash = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.82, 1),
+      new THREE.MeshBasicMaterial({ color: 0xffc063, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    blast.position.copy(position).setY(0.9);
+    const shockwave = new THREE.Mesh(
+      new THREE.TorusGeometry(0.82, 0.08, 8, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff642e, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    shockwave.rotation.x = Math.PI / 2;
+    blast.add(flash, shockwave);
+    const pulse = new THREE.PointLight(0xff5a28, 28, 8, 2);
+    blast.add(pulse);
     this.scene.add(blast);
-    this.effects.push({ mesh: blast, life: 0.48, maxLife: 0.48 });
+    this.effects.push({ mesh: blast, life: 0.42, maxLife: 0.42, mode: "expand" });
+    for (let particle = 0; particle < 13; particle += 1) {
+      const smoke = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.18 + Math.random() * 0.2, 0),
+        new THREE.MeshBasicMaterial({ color: particle < 5 ? 0xff6a2a : 0x24201d, transparent: true, opacity: particle < 5 ? 0.86 : 0.64, depthWrite: false }),
+      );
+      smoke.position.copy(position).setY(0.55 + Math.random() * 0.8);
+      this.scene.add(smoke);
+      this.effects.push({
+        mesh: smoke,
+        life: 0.55 + Math.random() * 0.5,
+        maxLife: 1.05,
+        mode: "smoke",
+        velocity: new THREE.Vector3(THREE.MathUtils.randFloatSpread(3.8), 1.1 + Math.random() * 2.1, THREE.MathUtils.randFloatSpread(3.8)),
+        spin: new THREE.Vector3(Math.random(), Math.random(), Math.random()),
+      });
+    }
     this.cameraShake = 0.72;
     this.audio.tone(55, 0.35, 0.24, "sawtooth");
   }
 
   private createHitBurst(position: THREE.Vector3) {
     const colors = [0x7d0d10, 0xa91a17, 0x461011];
-    for (let particle = 0; particle < 3; particle += 1) {
+    for (let particle = 0; particle < 6; particle += 1) {
       const burst = new THREE.Mesh(
-        new THREE.SphereGeometry(0.045 + particle * 0.014, 7, 5),
-        new THREE.MeshBasicMaterial({ color: colors[particle], transparent: true, opacity: 0.86 }),
+        new THREE.TetrahedronGeometry(0.045 + (particle % 3) * 0.014, 0),
+        new THREE.MeshBasicMaterial({ color: colors[particle % colors.length], transparent: true, opacity: 0.88 }),
       );
       burst.position.copy(position).add(new THREE.Vector3(
         THREE.MathUtils.randFloatSpread(0.45),
@@ -822,7 +892,30 @@ export class GameEngine {
         THREE.MathUtils.randFloatSpread(0.45),
       ));
       this.scene.add(burst);
-      this.effects.push({ mesh: burst, life: 0.16 + particle * 0.03, maxLife: 0.16 + particle * 0.03 });
+      const life = 0.18 + particle * 0.025;
+      this.effects.push({
+        mesh: burst,
+        life,
+        maxLife: life,
+        mode: "particle",
+        velocity: new THREE.Vector3(THREE.MathUtils.randFloatSpread(2.8), 0.7 + Math.random() * 1.8, THREE.MathUtils.randFloatSpread(2.8)),
+        spin: new THREE.Vector3(Math.random() * 6, Math.random() * 6, Math.random() * 6),
+      });
+    }
+  }
+
+  private createAcidSplash(position: THREE.Vector3) {
+    const ground = position.clone().setY(0);
+    this.visuals.addAcidDecal(this.scene, ground, 0.62 + Math.random() * 0.25);
+    for (let particle = 0; particle < 7; particle += 1) {
+      const drop = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.035 + Math.random() * 0.045, 0),
+        new THREE.MeshBasicMaterial({ color: particle % 2 ? 0xb6ff55 : 0x55d92d, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending }),
+      );
+      drop.position.copy(position);
+      this.scene.add(drop);
+      const life = 0.28 + Math.random() * 0.2;
+      this.effects.push({ mesh: drop, life, maxLife: life, mode: "particle", velocity: new THREE.Vector3(THREE.MathUtils.randFloatSpread(2.4), 0.6 + Math.random() * 1.6, THREE.MathUtils.randFloatSpread(2.4)) });
     }
   }
 
@@ -861,17 +954,41 @@ export class GameEngine {
   }
 
   private updateEffects(dt: number) {
+    const maximum = GRAPHICS_BUDGETS[this.profile.settings.graphicsQuality].maxParticles;
+    while (this.effects.length > maximum) {
+      const oldest = this.effects.shift();
+      if (oldest) {
+        oldest.mesh.removeFromParent();
+        this.visuals.disposeObject(oldest.mesh);
+      }
+    }
     for (let index = this.effects.length - 1; index >= 0; index -= 1) {
       const effect = this.effects[index];
       effect.life -= dt;
       const progress = 1 - effect.life / effect.maxLife;
-      effect.mesh.scale.setScalar(1 + progress * 3.8);
-      const material = effect.mesh.material as THREE.Material & { opacity?: number };
-      if (typeof material.opacity === "number") material.opacity = Math.max(0, 1 - progress);
+      if (effect.velocity) {
+        effect.mesh.position.addScaledVector(effect.velocity, dt);
+        effect.velocity.y -= dt * (effect.mode === "smoke" ? 0.35 : 5.5);
+        effect.velocity.multiplyScalar(Math.exp(-dt * (effect.mode === "smoke" ? 0.8 : 2.4)));
+      }
+      if (effect.spin) {
+        effect.mesh.rotation.x += effect.spin.x * dt;
+        effect.mesh.rotation.y += effect.spin.y * dt;
+        effect.mesh.rotation.z += effect.spin.z * dt;
+      }
+      if (effect.mode === "expand" || !effect.mode) effect.mesh.scale.setScalar(1 + progress * 3.8);
+      else if (effect.mode === "smoke") effect.mesh.scale.setScalar(1 + progress * 1.8);
+      effect.mesh.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const effectMaterial of materials) {
+          const transparentMaterial = effectMaterial as THREE.Material & { opacity?: number };
+          if (typeof transparentMaterial.opacity === "number") transparentMaterial.opacity = Math.max(0, 1 - progress);
+        }
+      });
       if (effect.life <= 0) {
-        this.scene.remove(effect.mesh);
-        effect.mesh.geometry.dispose();
-        (effect.mesh.material as THREE.Material).dispose();
+        effect.mesh.removeFromParent();
+        this.visuals.disposeObject(effect.mesh);
         this.effects.splice(index, 1);
       }
     }
@@ -953,6 +1070,26 @@ export class GameEngine {
   private step(dt: number) {
     this.hudTimer -= dt;
     this.announcementTimer = Math.max(0, this.announcementTimer - dt);
+    if (this.visualQaMode) {
+      if (this.playerRig) this.visuals.animateCharacter(this.playerRig, dt, 2.4, false, 0);
+      this.visualQaRigs.forEach((rig, index) => this.visuals.animateCharacter(rig, dt, index % 3 === 0 ? 6 : 2.2, index % 4 === 0, 0));
+      const dust = this.scene.getObjectByName("ambient-dust");
+      if (dust) dust.rotation.y += dt * 0.012;
+      this.updatePickups(dt);
+      this.updateEffects(dt);
+      this.emitHud();
+      return;
+    }
+    if (this.stressMode) {
+      if (this.playerRig) this.visuals.animateCharacter(this.playerRig, dt, 2.2, false, 0);
+      this.enemies.forEach((enemy, index) => this.visuals.animateCharacter(enemy.rig, dt, enemy.definition.speed, index % 7 === 0, 0));
+      const dust = this.scene.getObjectByName("ambient-dust");
+      if (dust) dust.rotation.y += dt * 0.012;
+      this.updatePickups(dt);
+      this.updateEffects(dt);
+      this.emitHud();
+      return;
+    }
     this.updateAim();
     this.updatePlayer(dt);
     this.updateWave(dt);
@@ -994,7 +1131,10 @@ export class GameEngine {
     this.performanceSampleTime += delta;
     if (this.performanceSampleTime >= 2) {
       this.performanceSampleTime = 0;
-      const maximum = Math.min(window.devicePixelRatio, 1.5);
+      this.renderer.domElement.dataset.frameTimeMs = (this.frameTimeAverage * 1000).toFixed(2);
+      this.renderer.domElement.dataset.drawCalls = String(this.renderer.info.render.calls);
+      this.renderer.domElement.dataset.triangles = String(this.renderer.info.render.triangles);
+      const maximum = Math.min(window.devicePixelRatio, GRAPHICS_BUDGETS[this.profile.settings.graphicsQuality].maxPixelRatio);
       const nextRatio = this.frameTimeAverage > 0.021
         ? Math.max(1, this.pixelRatio - 0.15)
         : this.frameTimeAverage < 0.0172
@@ -1037,6 +1177,75 @@ export class GameEngine {
     if (this.paused && !this.destroyed) this.renderer.render(this.scene, this.camera);
   };
 
+  private applyGraphicsQuality() {
+    const budget = GRAPHICS_BUDGETS[this.profile.settings.graphicsQuality];
+    this.pixelRatio = Math.min(window.devicePixelRatio, budget.maxPixelRatio);
+    this.renderer.shadowMap.enabled = !this.qaMode;
+    this.visuals.setQuality(this.profile.settings.graphicsQuality);
+    const key = this.scene.getObjectByName("tactical-key-light");
+    if (key instanceof THREE.DirectionalLight) {
+      key.shadow.map?.dispose();
+      key.shadow.mapSize.set(budget.shadowMapSize, budget.shadowMapSize);
+      key.shadow.needsUpdate = true;
+    }
+    this.resize();
+  }
+
+  private setupVisualQaScene() {
+    this.waveActive = false;
+    this.spawnQueue = [];
+    this.announcement = "Visual systems gallery";
+    this.announcementTimer = 4;
+    if (this.playerRig) {
+      this.playerMesh.position.set(-7.5, 0, -4.2);
+      this.playerMesh.rotation.y = 0.35;
+    }
+    const weapons: WeaponId[] = ["smg", "shotgun", "rifle"];
+    weapons.forEach((weapon, index) => {
+      const rig = this.visuals.createPlayer(weapon);
+      rig.root.position.set(-2.5 + index * 3.1, 0, -4.2);
+      rig.root.rotation.y = 0.35;
+      this.scene.add(rig.root);
+      this.visualQaRigs.push(rig);
+    });
+    const enemyIds: EnemyId[] = ["shambler", "runner", "spitter", "brute", "juggernaut"];
+    enemyIds.forEach((id, index) => {
+      const rig = this.visuals.createEnemy(id, ENEMIES[id]);
+      rig.root.position.set(-7.2 + index * 3.45, 0, 3.4);
+      rig.root.rotation.y = Math.PI;
+      this.scene.add(rig.root);
+      this.visualQaRigs.push(rig);
+    });
+    this.createPickup("coin", new THREE.Vector3(-3, 0, 0), 12);
+    this.createPickup("ammo", new THREE.Vector3(0, 0, 0), 1);
+    this.createPickup("health", new THREE.Vector3(3, 0, 0), 25);
+    this.visuals.addBloodDecal(this.scene, new THREE.Vector3(-5.4, 0, 6.1), 0.75);
+    this.visuals.addAcidDecal(this.scene, new THREE.Vector3(0, 0, 6.1), 0.8);
+    this.visuals.addScorchDecal(this.scene, new THREE.Vector3(5.4, 0, 6.1), 0.8);
+    this.emitHud(true);
+  }
+
+  private setupStressScene() {
+    this.startWave(9);
+    while (this.spawnQueue.length && this.enemies.length < MAX_ACTIVE_ENEMIES) {
+      const type = this.spawnQueue.shift();
+      if (type) this.spawnEnemy(type);
+    }
+    this.spawnQueue = [];
+    const replaced = this.enemies.pop();
+    if (replaced) this.visuals.disposeCharacter(replaced.rig);
+    this.spawnEnemy("juggernaut");
+    this.enemies.forEach((enemy, index) => {
+      const column = index % 6;
+      const row = Math.floor(index / 6);
+      enemy.mesh.position.set(-8.75 + column * 3.5, 0, -8.75 + row * 3.5);
+      enemy.mesh.rotation.y = Math.atan2(-enemy.mesh.position.x, -enemy.mesh.position.z);
+    });
+    this.announcement = "36-hostile graphics stress scene";
+    this.announcementTimer = 4;
+    this.emitHud(true);
+  }
+
   private onPointerMove = (event: PointerEvent) => {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouseNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1062,8 +1271,16 @@ export class GameEngine {
     if (event.repeat) return;
     if (event.code === "KeyR") this.reload();
     if (event.code === "KeyQ") this.switchWeapon();
-    if (event.code === "Digit1" && this.loadout[0]) { this.activeWeaponIndex = 0; this.emitHud(true); }
-    if (event.code === "Digit2" && this.loadout[1]) { this.activeWeaponIndex = 1; this.emitHud(true); }
+    if (event.code === "Digit1" && this.loadout[0]) {
+      this.activeWeaponIndex = 0;
+      if (this.playerRig) this.visuals.setPlayerWeapon(this.playerRig, this.loadout[0]);
+      this.emitHud(true);
+    }
+    if (event.code === "Digit2" && this.loadout[1]) {
+      this.activeWeaponIndex = 1;
+      if (this.playerRig) this.visuals.setPlayerWeapon(this.playerRig, this.loadout[1]);
+      this.emitHud(true);
+    }
     if ((event.code === "ShiftLeft" || event.code === "ShiftRight" || event.code === "Space") && this.dashCooldown <= 0) {
       this.dashRemaining = 0.18;
       this.dashCooldown = 2.8;

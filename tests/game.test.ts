@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getWeaponStats, WAVES } from "../game/config";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "../game/economy";
 import { createDefaultProfile, loadProfile, PROFILE_KEY, saveProfile, validateProfile } from "../game/profile";
+import { validateVisualRegistry } from "../game/visual-registry";
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -20,6 +21,12 @@ describe("profile persistence", () => {
     expect(profile.coins).toBe(0);
     expect(profile.ownedWeapons).toEqual(["pistol"]);
     expect(profile.equippedLoadout).toEqual(["pistol"]);
+    expect(profile.settings.graphicsQuality).toBe("medium");
+  });
+
+  it("defaults legacy profiles to medium graphics without losing progress", () => {
+    const profile = validateProfile({ coins: 410, highestWave: 7, settings: { music: false } });
+    expect(profile).toMatchObject({ coins: 410, highestWave: 7, settings: { music: false, graphicsQuality: "medium" } });
   });
 
   it("clamps invalid ranks and restores the starter weapon", () => {
@@ -51,6 +58,12 @@ describe("profile persistence", () => {
     const profile = { ...createDefaultProfile(), coins: 325, highestWave: 6 };
     saveProfile(storage, profile);
     expect(loadProfile(storage)).toMatchObject({ coins: 325, highestWave: 6 });
+  });
+});
+
+describe("visual registry", () => {
+  it("covers every gameplay visual category", () => {
+    expect(validateVisualRegistry()).toEqual({ characters: true, weapons: true, pickups: true, qualities: true });
   });
 });
 
