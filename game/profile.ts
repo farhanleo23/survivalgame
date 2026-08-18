@@ -62,7 +62,10 @@ export function validateProfile(raw: unknown): ProfileV1 {
       : [],
     highestWave: safeInt(value.highestWave, 1, 10, 1),
     // Older saves predate checkpoints; default them to the start.
-    checkpointWave: safeInt(value.checkpointWave, 1, 10, 1),
+    // Not capped at 10: endless checkpoints run past the campaign, and the
+    // old bound silently rewrote a wave-12 checkpoint to 10 on reload while
+    // the in-memory copy still said 12.
+    checkpointWave: safeInt(value.checkpointWave, 1, 9_999, 1),
     bestEndlessWave: safeInt(value.bestEndlessWave, 0, 9_999, 0),
   };
 }

@@ -6,6 +6,7 @@ import {
   getWaveDefinition,
   getWaveScaling,
   getEnemySpeed,
+  getProfilePower,
   getWeaponStats,
   PICKUPS,
   rollWaveModifier,
@@ -315,6 +316,10 @@ export class GameEngine {
 
   start(wave = 1) {
     this.wave = wave;
+    // Resuming a checkpoint past the campaign IS an endless run. Without this
+    // the HUD reported "WAVE 12 / 10 · CAMPAIGN" and wave 10 would have tried
+    // to trigger victory a second time.
+    this.endless = wave > CAMPAIGN_WAVES;
     if (wave === 1) {
       this.activeSynergies.clear();
     }
@@ -763,7 +768,9 @@ export class GameEngine {
 
     // Every archetype scales with wave depth; without this a wave-20 shambler
     // would be identical to a wave-1 one and endless mode would be a formality.
-    const scaling = getWaveScaling(this.wave);
+    // Recomputed per spawn so an armory purchase mid-run takes effect on the
+    // very next wave rather than at the next restart.
+    const scaling = getWaveScaling(this.wave, getProfilePower(this.profile));
     const modHealth = this.waveModifier?.healthMult ?? 1;
     let health = definition.health * scaling.health * modHealth;
     if (type === "juggernaut") {
@@ -2472,7 +2479,9 @@ export class GameEngine {
    * while the panel still gets visibly hotter as the run goes on.
    */
   private updateAtmosphere() {
-    const pressure = (this.wave - 1) / 9;
+    const pressure = Math.min(1, (this.wave - 1) / 9);
+    // Endless keeps climbing past the campaign, so the score keeps tightening.
+    this.audio.setIntensity(this.endless ? 1 : pressure);
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.copy(this.skyCool).lerp(this.skyHot, pressure);
     }

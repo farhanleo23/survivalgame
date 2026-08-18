@@ -273,17 +273,52 @@ export interface WaveScaling {
  * directly outpaces. Speed is capped: past about 1.4x, runners outrun the
  * player's 6.2 move speed and kiting stops being a viable answer to anything.
  */
-export function getWaveScaling(wave: number): WaveScaling {
+export function getWaveScaling(wave: number, power = 0): WaveScaling {
   const step = Math.max(0, wave - 1);
   // Past the campaign the curve steepens, otherwise endless plateaus.
   const overtime = Math.max(0, wave - CAMPAIGN_WAVES);
 
+  // Meta-progression term. Wave number alone cannot balance this game: a maxed
+  // player carries roughly 3.3x the damage of a fresh one before synergy cards
+  // are counted, so scaling only against the wave made the campaign get EASIER
+  // the more you invested. This offsets about 70% of that, which leaves
+  // upgrades clearly worth buying without making them trivialising.
+  const meta = 1 + power * POWER_HEALTH_SCALE;
+
   return {
-    health: 1 + step * 0.15 + overtime * 0.08,
+    health: (1 + step * 0.15 + overtime * 0.08) * meta,
     speed: Math.min(1.4, 1 + step * 0.018),
-    damage: Math.min(2.6, 1 + step * 0.055),
+    damage: Math.min(2.8, (1 + step * 0.055) * (1 + power * 0.3)),
     reward: 1 + step * 0.09,
   };
+}
+
+/** How hard enemy health tracks the player's meta-progression. */
+export const POWER_HEALTH_SCALE = 1.55;
+
+/**
+ * How far a profile has come, from 0 (fresh) to 1 (fully maxed).
+ *
+ * Weapon ranks dominate because they are the largest single damage source;
+ * arsenal breadth and perks contribute less because they buy flexibility and
+ * survivability rather than raw kill speed.
+ */
+export function getProfilePower(profile: {
+  weaponRanks: Record<WeaponId, number>;
+  perkRanks: Record<PerkId, number>;
+  ownedWeapons: WeaponId[];
+}): number {
+  const ranks = WEAPON_IDS.reduce((sum, id) => sum + (profile.weaponRanks[id] ?? 1), 0);
+  // Four weapons at rank 1 is the floor; all at rank 5 is the ceiling.
+  const rankProgress = (ranks - WEAPON_IDS.length) / (WEAPON_IDS.length * 4);
+
+  const perks = PERK_IDS.reduce((sum, id) => sum + (profile.perkRanks[id] ?? 0), 0);
+  const perkProgress = perks / (PERK_IDS.length * 3);
+
+  const arsenalProgress = (profile.ownedWeapons.length - 1) / (WEAPON_IDS.length - 1);
+
+  const blended = rankProgress * 0.5 + perkProgress * 0.3 + arsenalProgress * 0.2;
+  return Math.max(0, Math.min(1, blended));
 }
 
 /**
@@ -463,6 +498,8 @@ export function getEnemySpeed(
   wave: number,
   modifier?: WaveModifier | null,
 ): number {
+  // Speed deliberately ignores meta-progression: the ceiling is about keeping
+  // kiting viable, and that ceiling does not move with the player's wallet.
   const scaled = baseSpeed * getWaveScaling(wave).speed * (modifier?.speedMult ?? 1);
   return Math.min(MAX_ENEMY_SPEED, scaled);
 }

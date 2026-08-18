@@ -5,6 +5,7 @@ import {
   getWaveDefinition,
   getWaveScaling,
   getEnemySpeed,
+  getProfilePower,
   getRandomPerkDraft,
   getWeaponStats,
   PLAYER_BASE_SPEED,
@@ -325,5 +326,60 @@ describe("wave modifiers", () => {
       expect(m.name.length).toBeGreaterThan(2);
       expect(m.blurb.length).toBeGreaterThan(5);
     }
+  });
+});
+
+describe("endless checkpoints", () => {
+  it("preserves a checkpoint past the campaign instead of clamping it to ten", () => {
+    const profile = validateProfile({ checkpointWave: 27 });
+    expect(profile.checkpointWave).toBe(27);
+  });
+
+  it("still rejects nonsense checkpoints", () => {
+    expect(validateProfile({ checkpointWave: -5 }).checkpointWave).toBe(1);
+    expect(validateProfile({ checkpointWave: "x" }).checkpointWave).toBe(1);
+  });
+});
+
+describe("meta-progression scaling", () => {
+  const fresh = createDefaultProfile();
+  const maxed = validateProfile({
+    ownedWeapons: ["pistol", "smg", "shotgun", "rifle"],
+    weaponRanks: { pistol: 5, smg: 5, shotgun: 5, rifle: 5 },
+    perkRanks: { vitality: 3, mobility: 3, magnet: 3 },
+  });
+
+  it("reads a fresh profile as zero power and a maxed one as full", () => {
+    expect(getProfilePower(fresh)).toBe(0);
+    expect(getProfilePower(maxed)).toBe(1);
+  });
+
+  it("rises monotonically as upgrades are bought", () => {
+    const partial = validateProfile({
+      ownedWeapons: ["pistol", "smg"],
+      weaponRanks: { pistol: 3, smg: 2, shotgun: 1, rifle: 1 },
+      perkRanks: { vitality: 1, mobility: 0, magnet: 0 },
+    });
+    expect(getProfilePower(partial)).toBeGreaterThan(getProfilePower(fresh));
+    expect(getProfilePower(partial)).toBeLessThan(getProfilePower(maxed));
+  });
+
+  it("makes enemies tougher for an upgraded player on the same wave", () => {
+    const easy = getWaveScaling(8, getProfilePower(fresh));
+    const hard = getWaveScaling(8, getProfilePower(maxed));
+    expect(hard.health).toBeGreaterThan(easy.health * 2);
+  });
+
+  it("still leaves upgrading clearly worth it", () => {
+    // Maxed weapon ranks alone are x1.72 damage; stack Magnum Overpressure and
+    // crits and a maxed player is ~3.3x. Enemy health must rise by less than
+    // that, or investment is self-defeating.
+    const healthPenalty = getWaveScaling(10, 1).health / getWaveScaling(10, 0).health;
+    expect(healthPenalty).toBeLessThan(3.3);
+    expect(healthPenalty).toBeGreaterThan(1.5);
+  });
+
+  it("never scales enemy speed with the player's wallet", () => {
+    expect(getWaveScaling(10, 0).speed).toBe(getWaveScaling(10, 1).speed);
   });
 });

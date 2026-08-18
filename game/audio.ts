@@ -9,6 +9,8 @@ export class GameAudio {
   private context?: AudioContext;
   private master?: GainNode;
   private musicBus?: GainNode;
+  private intensity = 0;
+  private pulseBeat = 430;
   private sfxBus?: GainNode;
   private musicFilter?: BiquadFilterNode;
   private noiseBuffer?: AudioBuffer;
@@ -359,28 +361,31 @@ export class GameAudio {
     this.musicBus.gain.value = 0;
     this.sfxBus.gain.value = this.sfx ? 0.95 : 0;
     this.musicFilter.type = "lowpass";
-    this.musicFilter.frequency.value = 480;
-    this.musicFilter.Q.value = 0.7;
+    // Opened up from 480Hz. The old bed was a survival-horror pad — three
+    // sub-bass drones under a slow descending minor line — which read as dread
+    // rather than as the pulpy action the visuals now promise.
+    this.musicFilter.frequency.value = 1150;
+    this.musicFilter.Q.value = 0.6;
     this.musicBus.connect(this.musicFilter).connect(this.master);
     this.sfxBus.connect(this.master);
     this.master.connect(this.context.destination);
 
     this.createNoiseBuffer();
-    this.addDrone("sine", 32.7, 0.036);
-    this.addDrone("triangle", 43.65, 0.028);
-    this.addDrone("sine", 65.41, 0.013);
+    // Lighter bed: one low anchor plus a fifth, rather than a wall of sub.
+    this.addDrone("sine", 65.41, 0.026);
+    this.addDrone("triangle", 98.0, 0.016);
     this.addAirLayer();
 
     const lfo = this.context.createOscillator();
     const lfoGain = this.context.createGain();
     lfo.type = "sine";
-    lfo.frequency.value = 0.075;
-    lfoGain.gain.value = 115;
+    lfo.frequency.value = 0.11;
+    lfoGain.gain.value = 220;
     lfo.connect(lfoGain).connect(this.musicFilter.frequency);
     lfo.start();
     this.persistentSources.push(lfo);
 
-    this.pulseTimer = window.setInterval(() => this.playMusicPulse(), 1450);
+    this.schedulePulse();
   }
 
   private addDrone(type: OscillatorType, frequency: number, level: number) {
@@ -415,21 +420,68 @@ export class GameAudio {
     this.persistentSources.push(source);
   }
 
+  /**
+   * Wave pressure, 0 to 1. Drives tempo and brightness so the score tightens
+   * as a run goes deep instead of looping at one mood forever.
+   */
+  setIntensity(value: number) {
+    this.intensity = Math.max(0, Math.min(1, value));
+    if (this.musicFilter && this.context) {
+      this.musicFilter.frequency.setTargetAtTime(
+        950 + this.intensity * 900,
+        this.context.currentTime,
+        1.5,
+      );
+    }
+  }
+
+  private schedulePulse() {
+    if (this.pulseTimer) window.clearInterval(this.pulseTimer);
+    // 430ms at rest down to ~250ms at full pressure: a driving pulse rather
+    // than the old 1450ms funeral march.
+    const beat = 430 - this.intensity * 180;
+    this.pulseTimer = window.setInterval(() => this.playMusicPulse(), beat);
+    this.pulseBeat = beat;
+  }
+
   private playMusicPulse() {
     if (!this.music || this.gameplayPaused || !this.context || !this.musicBus || this.context.state !== "running") return;
-    const notes = [82.41, 73.42, 65.41, 73.42, 87.31, 73.42, 61.74, 65.41];
+
+    // Retime if the pressure has moved enough to matter.
+    const wanted = 430 - this.intensity * 180;
+    if (Math.abs(wanted - this.pulseBeat) > 35) this.schedulePulse();
+
     const now = this.context.currentTime;
+    // Root-fifth-octave riff in a major-leaning mode: forward motion, not dread.
+    const riff = [98.0, 98.0, 146.83, 98.0, 130.81, 98.0, 164.81, 146.83];
+    const step = this.pulseStep % riff.length;
+
     const oscillator = this.context.createOscillator();
     const gain = this.context.createGain();
-    oscillator.type = "triangle";
-    oscillator.frequency.setValueAtTime(notes[this.pulseStep % notes.length], now);
-    oscillator.frequency.exponentialRampToValueAtTime(notes[(this.pulseStep + 1) % notes.length], now + 1.15);
+    oscillator.type = "sawtooth";
+    oscillator.frequency.setValueAtTime(riff[step], now);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.022, now + 0.08);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
+    gain.gain.exponentialRampToValueAtTime(0.02 + this.intensity * 0.012, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
     oscillator.connect(gain).connect(this.musicBus);
     oscillator.start(now);
-    oscillator.stop(now + 1.3);
+    oscillator.stop(now + 0.38);
+
+    // Kick on the downbeat gives the loop a spine you can feel.
+    if (step % 2 === 0) {
+      const kick = this.context.createOscillator();
+      const kickGain = this.context.createGain();
+      kick.type = "sine";
+      kick.frequency.setValueAtTime(120, now);
+      kick.frequency.exponentialRampToValueAtTime(42, now + 0.09);
+      kickGain.gain.setValueAtTime(0.0001, now);
+      kickGain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+      kickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+      kick.connect(kickGain).connect(this.musicBus);
+      kick.start(now);
+      kick.stop(now + 0.2);
+    }
+
     this.pulseStep += 1;
   }
 

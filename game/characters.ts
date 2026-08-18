@@ -48,16 +48,20 @@ export interface CharacterRig {
 
   /** Cloned per rig so a hit flash never bleeds across characters. */
   tintMaterials: THREE.MeshToonMaterial[];
+  /** Untinted colour per material, so a status tint can be undone exactly. */
+  baseColors: number[];
   glowSac?: THREE.Mesh;
   bossCore?: THREE.Mesh;
-  frostShell?: THREE.Mesh;
-  burnShell?: THREE.Mesh;
+  /** Small billboarded marker shown while a status is active. */
+  statusPip?: THREE.Mesh;
 
   kind: CharacterKind;
   spec: ArchetypeSpec;
   phase: number;
   attackBlend: number;
   hitBlend: number;
+  /** Currently applied status colour, or null. Avoids per-frame re-tinting. */
+  activeStatus?: number | null;
   scale: number;
   disposed: boolean;
 }
@@ -181,6 +185,9 @@ const AIM_POSE = {
  * units, so normalisation collapsed most of them to nothing. `SkinnedMesh
  * .computeBoundingBox()` applies the bone transforms and gives the true extent.
  */
+/** Reused for status tinting so the hot path allocates nothing. */
+const SCRATCH_COLOR = new THREE.Color();
+
 function measureCharacter(model: THREE.Object3D): THREE.Box3 {
   model.updateMatrixWorld(true);
   const box = new THREE.Box3();
@@ -264,6 +271,7 @@ export class CharacterFactory {
       recoilPitch: 0,
       actions: {},
       tintMaterials: [],
+      baseColors: [],
       kind,
       spec,
       phase: Math.random() * Math.PI * 2,
@@ -365,6 +373,7 @@ export class CharacterFactory {
 
       child.material = material;
       rig.tintMaterials.push(material);
+      rig.baseColors.push(material.color.getHex());
     });
   }
 
@@ -434,23 +443,28 @@ export class CharacterFactory {
 
     }
 
-    // Status shells wrap the whole body and toggle with chill/burn.
-    const shellGeo = this.own(new THREE.SphereGeometry(h * 0.42, 12, 9));
-    const frost = new THREE.Mesh(shellGeo, this.palette.flat(COMIC.frost, { transparent: true, opacity: 0.4 }));
-    frost.position.y = h * 0.5;
-    frost.scale.z = 0.7;
-    frost.visible = false;
-    frost.raycast = () => {};
-    rig.body.add(frost);
-    rig.frostShell = frost;
-
-    const burn = new THREE.Mesh(shellGeo, this.palette.flat(COMIC.fire, { transparent: true, opacity: 0.4 }));
-    burn.position.y = h * 0.5;
-    burn.scale.z = 0.7;
-    burn.visible = false;
-    burn.raycast = () => {};
-    rig.body.add(burn);
-    rig.burnShell = burn;
+    // Status marker. This used to be a translucent sphere wrapped around the
+    // whole body, which read as a bubble sitting on the character rather than a
+    // state the character was in — and two of them overlapping in a crowd was
+    // unreadable. A tinted body plus one small diamond says the same thing
+    // without covering the silhouette.
+    const pip = new THREE.Mesh(
+      this.own(new THREE.PlaneGeometry(h * 0.22, h * 0.22)),
+      this.palette.flat(COMIC.frost),
+    );
+    pip.position.y = h * 1.08;
+    pip.rotation.z = Math.PI / 4;
+    pip.visible = false;
+    pip.raycast = () => {};
+    // Ink backing: a bare diamond washes out against the bright floor.
+    const pipInk = new THREE.Mesh(
+      this.own(new THREE.PlaneGeometry(h * 0.3, h * 0.3)),
+      this.palette.flat(COMIC.ink),
+    );
+    pipInk.position.z = -0.01;
+    pip.add(pipInk);
+    rig.body.add(pip);
+    rig.statusPip = pip;
   }
 
   /**
@@ -630,10 +644,28 @@ export class CharacterFactory {
       for (const material of rig.tintMaterials) material.emissive.setRGB(0, 0, 0);
     }
 
-    if (rig.frostShell) rig.frostShell.visible = isChilled;
-    if (rig.burnShell) {
-      rig.burnShell.visible = isBurning;
-      if (isBurning) rig.burnShell.scale.setScalar(1 + Math.sin(rig.phase * 6) * 0.05);
+    // Burning outranks chilled when both somehow apply.
+    const statusColor = isBurning ? COMIC.fire : isChilled ? COMIC.frost : null;
+    if (statusColor !== rig.activeStatus) {
+      rig.activeStatus = statusColor;
+      for (let i = 0; i < rig.tintMaterials.length; i += 1) {
+        const material = rig.tintMaterials[i];
+        material.color.setHex(rig.baseColors[i] ?? 0xffffff);
+        // Partial lerp, not a replacement: the archetype's own colour has to
+        // survive so a burning brute still reads as a brute.
+        if (statusColor !== null) material.color.lerp(SCRATCH_COLOR.setHex(statusColor), 0.68);
+      }
+      if (rig.statusPip) {
+        rig.statusPip.visible = statusColor !== null;
+        if (statusColor !== null) {
+          (rig.statusPip.material as THREE.MeshBasicMaterial).color.setHex(statusColor);
+        }
+      }
+    }
+    if (rig.statusPip?.visible) {
+      // Billboard, and pulse gently so it catches the eye without flashing.
+      rig.statusPip.rotation.set(0, -rig.root.rotation.y, Math.PI / 4);
+      rig.statusPip.scale.setScalar(1 + Math.sin(rig.phase * 4) * 0.12);
     }
 
     if (rig.glowSac) {
