@@ -13,6 +13,20 @@ const profileWith = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/**
+ * Clear the current wave in QA mode and land on the armory.
+ *
+ * A cleared wave opens the synergy draft first and only reaches the armory once
+ * a card is taken. These tests predate the draft and asserted the armory
+ * directly, which is why they had been failing.
+ */
+const clearWaveToArmory = async (page: Page) => {
+  await page.keyboard.press("k");
+  const card = page.locator(".draft-perk-card").first();
+  if (await card.count()) await card.click();
+  await expect(page.getByRole("heading", { name: "Field armory" })).toBeVisible();
+};
+
 const seedProfile = async (page: Page, profile: ReturnType<typeof profileWith>) => {
   await page.addInitScript((value) => {
     localStorage.setItem("deadwave.profile.v1", JSON.stringify(value));
@@ -62,8 +76,7 @@ test("does not charge for a refill when equipped ammunition is full", async ({ p
   await page.getByTestId("start-mission").click();
   await page.getByTestId("deploy").click();
   await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
-  await page.keyboard.press("k");
-  await expect(page.getByRole("heading", { name: "Field armory" })).toBeVisible();
+  await clearWaveToArmory(page);
 
   await page.getByRole("button", { name: "Refill all ammo 20" }).click();
   await expect(page.getByText("Equipped weapon ammunition is already full.")).toBeVisible();
@@ -80,8 +93,7 @@ test("persists a purchased third weapon in loadout slot two", async ({ page }) =
   await page.getByTestId("start-mission").click();
   await page.getByTestId("deploy").click();
   await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
-  await page.keyboard.press("k");
-  await expect(page.getByRole("heading", { name: "Field armory" })).toBeVisible();
+  await clearWaveToArmory(page);
 
   await page.getByRole("button", { name: "Acquire 280" }).click();
   await expect(page.getByText("Breach Shotgun added to your loadout.")).toBeVisible();
@@ -109,10 +121,12 @@ test("advances from wave one through the victory and Level 2 teaser", async ({ p
   await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
 
   for (let wave = 1; wave <= 10; wave += 1) {
-    await page.keyboard.press("k");
     if (wave < 10) {
-      await expect(page.getByRole("heading", { name: "Field armory" })).toBeVisible();
+      await clearWaveToArmory(page);
       await page.getByRole("button", { name: `Begin wave ${wave + 1} →` }).click();
+    } else {
+      // The final wave goes straight to victory, with no draft or armory.
+      await page.keyboard.press("k");
     }
   }
 

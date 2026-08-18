@@ -789,6 +789,12 @@ function Hud({
           </span>
           <small>{formattedTime}</small>
         </div>
+        {hud.modifier && (
+          <div className="hud-modifier" title={`Wave modifier: ${hud.modifier.name}`}>
+            <span aria-hidden="true">{hud.modifier.icon}</span>
+            {hud.modifier.name}
+          </div>
+        )}
         <div className="hud-redeploys" title="Redeploys remaining">
           {Array.from({ length: MAX_REDEPLOYS }, (_, index) => (
             <i key={index} className={index < redeploys ? "available" : "spent"} />

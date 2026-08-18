@@ -136,6 +136,8 @@ export interface HudState {
   wave: number;
   /** True once the run has continued past the authored campaign. */
   endless?: boolean;
+  /** Active wave modifier, when the wave rolled one. */
+  modifier?: { name: string; icon: string };
   enemies: number;
   weapon: WeaponId;
   weaponName: string;

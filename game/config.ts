@@ -349,3 +349,120 @@ export const BEHAVIOURS: Record<EnemyId, EnemyBehaviour> = {
   boomer: { windup: 0.55, flankSpread: 0.25 },
   juggernaut: { windup: 0.7, flankSpread: 0 },
 };
+
+export type WaveModifierId = "elite_surge" | "swarm" | "blitz" | "toxic_bloom" | "iron_hide";
+
+/**
+ * Per-wave rule changes.
+ *
+ * Ten-plus waves in one arena against one enemy roster reads as repetitive no
+ * matter how the numbers scale, because every wave is answered the same way.
+ * A modifier changes the question rather than the difficulty: swarm punishes
+ * single-target weapons, iron hide punishes chip damage, blitz removes the
+ * time to reposition. Multipliers stack on top of getWaveScaling.
+ */
+export interface WaveModifier {
+  id: WaveModifierId;
+  name: string;
+  blurb: string;
+  icon: string;
+  countMult: number;
+  healthMult: number;
+  speedMult: number;
+  /** Overrides the default 22% elite roll when set. */
+  eliteChance?: number;
+  /** Seconds between arena hazard blooms, when set. */
+  hazardInterval?: number;
+}
+
+export const WAVE_MODIFIERS: Record<WaveModifierId, WaveModifier> = {
+  elite_surge: {
+    id: "elite_surge",
+    name: "Elite Surge",
+    blurb: "Every hostile is an elite",
+    icon: "🛡️",
+    countMult: 0.7,
+    healthMult: 1,
+    speedMult: 1,
+    eliteChance: 1,
+  },
+  swarm: {
+    id: "swarm",
+    name: "Swarm",
+    blurb: "Twice the bodies, half the meat",
+    icon: "🐝",
+    countMult: 1.8,
+    healthMult: 0.55,
+    speedMult: 1.05,
+  },
+  blitz: {
+    id: "blitz",
+    name: "Blitz",
+    blurb: "They are moving fast",
+    icon: "⚡",
+    countMult: 0.9,
+    healthMult: 0.85,
+    speedMult: 1.35,
+  },
+  toxic_bloom: {
+    id: "toxic_bloom",
+    name: "Toxic Bloom",
+    blurb: "The floor is going bad",
+    icon: "☣️",
+    countMult: 0.85,
+    healthMult: 1,
+    speedMult: 1,
+    hazardInterval: 2.6,
+  },
+  iron_hide: {
+    id: "iron_hide",
+    name: "Iron Hide",
+    blurb: "Armoured and slow",
+    icon: "🪨",
+    countMult: 0.75,
+    healthMult: 1.9,
+    speedMult: 0.78,
+  },
+};
+
+export const WAVE_MODIFIER_IDS = Object.keys(WAVE_MODIFIERS) as WaveModifierId[];
+
+/**
+ * Pick a modifier for a wave, or null for a plain one.
+ *
+ * Waves 1–2 stay clean so the run has a readable baseline, and boss waves stay
+ * clean so the fight is not muddied by a second rule change. Endless leans on
+ * them harder, since that is where repetition actually bites.
+ */
+export function rollWaveModifier(wave: number, random: () => number = Math.random): WaveModifier | null {
+  if (wave < 3) return null;
+  if (wave % 5 === 0) return null;
+
+  const chance = wave > CAMPAIGN_WAVES ? 0.75 : 0.45;
+  if (random() >= chance) return null;
+
+  const index = Math.min(WAVE_MODIFIER_IDS.length - 1, Math.floor(random() * WAVE_MODIFIER_IDS.length));
+  return WAVE_MODIFIERS[WAVE_MODIFIER_IDS[index]];
+}
+
+/** The player's base move speed, before the mobility perk. */
+export const PLAYER_BASE_SPEED = 6.2;
+
+/**
+ * Hard ceiling on enemy speed.
+ *
+ * Wave scaling caps its own multiplier, but a modifier multiplies on top of it,
+ * and the two stacked put a deep-endless Blitz runner at 7.9 against a 6.2
+ * player — at which point nothing can be outrun and kiting, the core answer to
+ * being surrounded, stops working. Every speed path funnels through here.
+ */
+export const MAX_ENEMY_SPEED = PLAYER_BASE_SPEED * 0.95;
+
+export function getEnemySpeed(
+  baseSpeed: number,
+  wave: number,
+  modifier?: WaveModifier | null,
+): number {
+  const scaled = baseSpeed * getWaveScaling(wave).speed * (modifier?.speedMult ?? 1);
+  return Math.min(MAX_ENEMY_SPEED, scaled);
+}

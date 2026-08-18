@@ -650,6 +650,34 @@ export class VisualFactory {
     return rig;
   }
 
+  /**
+   * Floating health bar for an enemy.
+   *
+   * Two flat quads that always face the camera. Only shown once an enemy has
+   * been hurt, so a full-strength crowd stays uncluttered — the bar is there to
+   * answer "is this one nearly down?", which only matters after you shoot it.
+   */
+  createEnemyHealthBar(width: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const back = new THREE.Mesh(
+      this.own(new THREE.PlaneGeometry(width, 0.16)),
+      this.palette.flat(COMIC.ink),
+    );
+    group.add(back);
+
+    const fill = new THREE.Mesh(
+      this.own(new THREE.PlaneGeometry(width - 0.06, 0.1)),
+      this.palette.flat(COMIC.juggernaut),
+    );
+    fill.position.z = 0.001;
+    fill.name = "hp-fill";
+    group.add(fill);
+
+    group.visible = false;
+    return group;
+  }
+
   animateCharacter(
     rig: CharacterRig,
     dt: number,

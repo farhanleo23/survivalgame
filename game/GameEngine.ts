@@ -1,14 +1,16 @@
 import * as THREE from "three";
-import RAPIER from "@dimforge/rapier3d-compat";
 import {
   BEHAVIOURS,
   CAMPAIGN_WAVES,
   ENEMIES,
   getWaveDefinition,
   getWaveScaling,
+  getEnemySpeed,
   getWeaponStats,
   PICKUPS,
+  rollWaveModifier,
   WEAPONS,
+  type WaveModifier,
 } from "./config";
 import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
@@ -57,6 +59,8 @@ interface EnemyEntity {
   unstickSign: number;
   /** Telegraph ring shown during a wind-up. */
   telegraph?: THREE.Object3D;
+  /** Floating health bar, revealed on first damage. */
+  healthBar?: THREE.Group;
   mesh: THREE.Group;
   rig: CharacterRig;
   health: number;
@@ -147,7 +151,6 @@ const MAX_ACTIVE_ENEMIES = 36;
 const MAX_KNOCKBACK_SPEED = 26;
 const CROWD_CELL_SIZE = 2.5;
 
-await RAPIER.init();
 
 export class GameEngine {
   private container: HTMLElement;
@@ -179,8 +182,6 @@ export class GameEngine {
   private performanceSampleTime = 0;
   private qaFramesRendered = 0;
 
-  private physics = new RAPIER.World({ x: 0, y: 0, z: 0 });
-  private playerBody: RAPIER.RigidBody;
   private playerMesh = new THREE.Group();
   private playerRig: CharacterRig | null = null;
   private playerVelocity = new THREE.Vector3();
@@ -234,6 +235,8 @@ export class GameEngine {
   private spawnQueue: EnemyId[] = [];
   private spawnTimer = 0;
   private waveActive = false;
+  private waveModifier: WaveModifier | null = null;
+  private hazardBloomTimer = 0;
   private audio = new GameAudio();
   private enemyCandidate = new THREE.Vector3();
 
@@ -259,6 +262,19 @@ export class GameEngine {
     roughness: 0.35,
     metalness: 0.6,
   });
+  /**
+   * Tracer geometry and materials, cached by weapon and bullet scale.
+   *
+   * Every pellet used to build a fresh CylinderGeometry and MeshBasicMaterial
+   * and dispose them on impact — ten allocations a second on the SMG, six at
+   * once from the shotgun, each one a potential shader lookup. The variants are
+   * fully determined by weapon id, high-caliber rank and tint, so a small cache
+   * covers a whole run.
+   */
+  private tracerGeometries = new Map<string, THREE.CylinderGeometry>();
+  private tracerMaterials = new Map<number, THREE.MeshBasicMaterial>();
+  private needleGeometry = new THREE.CylinderGeometry(0.02, 0.035, 0.35, 6);
+  private needleMaterial = new THREE.MeshBasicMaterial({ color: 0xffe600 });
   private deathBurstGeometry = new THREE.RingGeometry(0.18, 0.48, 16);
   private deathBurstMaterial = new THREE.MeshBasicMaterial({ color: 0x00f5d4, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
 
@@ -287,16 +303,6 @@ export class GameEngine {
     this.timer.connect(document);
     this.visuals = new VisualFactory(this.renderer);
     this.post = new ComicPostProcess(this.renderer);
-
-    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(0, 0.72, 0)
-      .lockRotations()
-      .setLinearDamping(0);
-    this.playerBody = this.physics.createRigidBody(bodyDesc);
-    this.physics.createCollider(
-      RAPIER.ColliderDesc.cylinder(0.7, 0.45).setFriction(0).setRestitution(0),
-      this.playerBody,
-    );
 
     this.applyPerks(profile.perkRanks);
     this.setupScene();
@@ -444,12 +450,18 @@ export class GameEngine {
     this.timer.dispose();
     if (this.playerRig) this.visuals.disposeCharacter(this.playerRig);
     for (const enemy of this.enemies) this.visuals.disposeCharacter(enemy.rig);
+    for (const geometry of this.tracerGeometries.values()) geometry.dispose();
+    for (const material of this.tracerMaterials.values()) material.dispose();
+    this.tracerGeometries.clear();
+    this.tracerMaterials.clear();
+    this.needleGeometry.dispose();
+    this.needleMaterial.dispose();
+    this.deathBurstGeometry.dispose();
     this.visuals.dispose(this.scene);
     this.post.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.floatingLayer.remove();
-    this.physics.free();
   }
 
   private setupScene() {
@@ -538,8 +550,6 @@ export class GameEngine {
     beacon.position.set(x, 0, z);
     this.scene.add(beacon);
     const radius = 0.6;
-    const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, 0.8, z));
-    this.physics.createCollider(RAPIER.ColliderDesc.cylinder(0.8, radius), body);
     this.obstacles.push({ x, z, hx: radius, hz: radius, radius });
   }
 
@@ -550,12 +560,6 @@ export class GameEngine {
     this.scene.add(barricade);
     const hx = 1.2;
     const hz = 0.3;
-    const body = this.physics.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed()
-        .setTranslation(x, 0.39, z)
-        .setRotation({ x: 0, y: Math.sin(rotation / 2), z: 0, w: Math.cos(rotation / 2) }),
-    );
-    this.physics.createCollider(RAPIER.ColliderDesc.cuboid(hx, 0.39, hz), body);
     this.obstacles.push({ x, z, hx, hz });
   }
 
@@ -582,8 +586,6 @@ export class GameEngine {
     vat.position.set(x, 0, z);
     this.scene.add(vat);
     const radius = 1.35;
-    const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, 1.35, z));
-    this.physics.createCollider(RAPIER.ColliderDesc.cylinder(1.35, radius), body);
     this.obstacles.push({ x, z, hx: radius, hz: radius, radius });
   }
 
@@ -593,18 +595,13 @@ export class GameEngine {
     this.scene.add(gen);
     const hx = 1.3;
     const hz = 0.85;
-    const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, 1.0, z));
-    this.physics.createCollider(RAPIER.ColliderDesc.cuboid(hx, 1.0, hz), body);
     this.obstacles.push({ x, z, hx, hz });
   }
 
   private addObstacle(x: number, z: number, width: number, depth: number, color: number) {
-    const height = 2.3;
     const structure = this.visuals.createDepotStructure(width, depth, color);
     structure.position.set(x, 0, z);
     this.scene.add(structure);
-    const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, height / 2, z));
-    this.physics.createCollider(RAPIER.ColliderDesc.cuboid(width / 2, height / 2, depth / 2), body);
     this.obstacles.push({ x, z, hx: width / 2, hz: depth / 2 });
   }
 
@@ -615,12 +612,6 @@ export class GameEngine {
     this.scene.add(barricade);
     const hx = Math.abs(Math.cos(rotation) * width / 2) + Math.abs(Math.sin(rotation) * depth / 2);
     const hz = Math.abs(Math.sin(rotation) * width / 2) + Math.abs(Math.cos(rotation) * depth / 2);
-    const body = this.physics.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed()
-        .setTranslation(x, 0.42, z)
-        .setRotation({ x: 0, y: Math.sin(rotation / 2), z: 0, w: Math.cos(rotation / 2) }),
-    );
-    this.physics.createCollider(RAPIER.ColliderDesc.cuboid(width / 2, 0.42, depth / 2), body);
     this.obstacles.push({ x, z, hx, hz });
   }
 
@@ -699,13 +690,23 @@ export class GameEngine {
     this.extractionTimer = 0;
     if (this.extractionZoneMesh) this.extractionZoneMesh.visible = false;
     this.spawnQueue = [];
-    this.announcement = `Wave ${wave}: ${getWaveDefinition(wave).label}`;
-    this.announcementTimer = 2.6;
-    this.callbacks.onWaveChange(wave);
+    // Rolled exactly once: it is random, so a second call would announce one
+    // modifier and apply a different one.
+    this.waveModifier = rollWaveModifier(wave);
+    this.hazardBloomTimer = this.waveModifier?.hazardInterval ?? 0;
 
     const definition = getWaveDefinition(wave);
+    this.announcement = this.waveModifier
+      ? `Wave ${wave}: ${this.waveModifier.icon} ${this.waveModifier.name.toUpperCase()} — ${this.waveModifier.blurb}`
+      : `Wave ${wave}: ${definition.label}`;
+    this.announcementTimer = this.waveModifier ? 3.4 : 2.6;
+    this.callbacks.onWaveChange(wave);
+    const countMult = this.waveModifier?.countMult ?? 1;
     for (const [id, count] of Object.entries(definition.enemies)) {
-      for (let i = 0; i < (count ?? 0); i += 1) this.spawnQueue.push(id as EnemyId);
+      // Bosses are never multiplied — a swarm wave should not spawn two titans.
+      const total =
+        id === "juggernaut" ? (count ?? 0) : Math.max(1, Math.round((count ?? 0) * countMult));
+      for (let i = 0; i < total; i += 1) this.spawnQueue.push(id as EnemyId);
     }
     this.shuffle(this.spawnQueue);
     this.spawnTimer = 0.2;
@@ -732,7 +733,8 @@ export class GameEngine {
     }
     if (!valid) candidate.set(12, 0, 12);
 
-    const isElite = this.wave >= 4 && type !== "juggernaut" && Math.random() < 0.22;
+    const eliteChance = this.waveModifier?.eliteChance ?? 0.22;
+    const isElite = this.wave >= 4 && type !== "juggernaut" && Math.random() < eliteChance;
     let affix: EliteAffix | undefined;
     let shieldMesh: THREE.Mesh | undefined;
     let shieldHp: number | undefined;
@@ -751,12 +753,19 @@ export class GameEngine {
       }
     }
 
+    const healthBar = this.visuals.createEnemyHealthBar(
+      Math.max(0.9, definition.radius * 1.9),
+    );
+    healthBar.position.y = definition.radius * 2.4 + 1.1;
+    mesh.add(healthBar);
+
     this.scene.add(mesh);
 
     // Every archetype scales with wave depth; without this a wave-20 shambler
     // would be identical to a wave-1 one and endless mode would be a formality.
     const scaling = getWaveScaling(this.wave);
-    let health = definition.health * scaling.health;
+    const modHealth = this.waveModifier?.healthMult ?? 1;
+    let health = definition.health * scaling.health * modHealth;
     if (type === "juggernaut") {
       if (this.wave <= 5) {
         health = 680 * scaling.health; // Wave 5 Prototype Juggernaut (Mk-I)
@@ -770,12 +779,13 @@ export class GameEngine {
         this.audio.playBossPhaseShift();
       }
     } else if (isElite) {
-      health = Math.round(definition.health * scaling.health * 1.4);
+      health = Math.round(definition.health * scaling.health * modHealth * 1.4);
     }
 
     this.enemies.push({
       type,
       definition,
+      healthBar,
       windupTimer: 0,
       // Fixed per spawn so an enemy commits to one approach lane instead of
       // oscillating between them frame to frame.
@@ -783,7 +793,7 @@ export class GameEngine {
       stuckTimer: 0,
       unstickTimer: 0,
       unstickSign: Math.random() < 0.5 ? -1 : 1,
-      speed: definition.speed * scaling.speed,
+      speed: getEnemySpeed(definition.speed, this.wave, this.waveModifier),
       damage: definition.damage * scaling.damage,
       reward: Math.round(definition.reward * scaling.reward),
       mesh,
@@ -852,6 +862,30 @@ export class GameEngine {
     return available[this.activeWeaponIndex % available.length] ?? "pistol";
   }
 
+  private tracerGeometry(id: WeaponId, scale: number): THREE.CylinderGeometry {
+    const key = `${id}:${scale.toFixed(2)}`;
+    const cached = this.tracerGeometries.get(key);
+    if (cached) return cached;
+
+    const length = (id === "rifle" ? 1.0 : id === "shotgun" ? 0.4 : 0.65) * scale;
+    const geometry = new THREE.CylinderGeometry(
+      (id === "shotgun" ? 0.035 : id === "rifle" ? 0.038 : 0.024) * scale,
+      (id === "shotgun" ? 0.05 : id === "rifle" ? 0.048 : 0.032) * scale,
+      length,
+      8,
+    );
+    this.tracerGeometries.set(key, geometry);
+    return geometry;
+  }
+
+  private tracerMaterial(color: number): THREE.MeshBasicMaterial {
+    const cached = this.tracerMaterials.get(color);
+    if (cached) return cached;
+    const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 });
+    this.tracerMaterials.set(color, material);
+    return material;
+  }
+
   private fire() {
     const id = this.getActiveWeaponId();
     const state = this.weaponStates.get(id);
@@ -912,15 +946,10 @@ export class GameEngine {
       const angle = Math.atan2(this.aim.z, this.aim.x) + THREE.MathUtils.randFloatSpread(stats.spread * 2);
       const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
 
-      const tracerLen = (id === "rifle" ? 1.0 : id === "shotgun" ? 0.4 : 0.65) * bulletScale;
-      const tracerGeo = new THREE.CylinderGeometry(
-        (id === "shotgun" ? 0.035 : id === "rifle" ? 0.038 : 0.024) * bulletScale,
-        (id === "shotgun" ? 0.05 : id === "rifle" ? 0.048 : 0.032) * bulletScale,
-        tracerLen,
-        8,
+      const bullet = new THREE.Mesh(
+        this.tracerGeometry(id, bulletScale),
+        this.tracerMaterial(bulletColor),
       );
-      const tracerMat = new THREE.MeshBasicMaterial({ color: bulletColor, transparent: true, opacity: 0.95 });
-      const bullet = new THREE.Mesh(tracerGeo, tracerMat);
       bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
       bullet.position.copy(origin);
       this.scene.add(bullet);
@@ -1072,7 +1101,6 @@ export class GameEngine {
     nextPos.x = THREE.MathUtils.clamp(nextPos.x, -ARENA_LIMIT, ARENA_LIMIT);
     nextPos.z = THREE.MathUtils.clamp(nextPos.z, -ARENA_LIMIT, ARENA_LIMIT);
 
-    this.playerBody.setTranslation({ x: nextPos.x, y: 0.72, z: nextPos.z }, true);
     this.playerMesh.position.set(nextPos.x, 0, nextPos.z);
 
     // Snappy smoothed aim rotation
@@ -1165,6 +1193,24 @@ export class GameEngine {
 
   private updateWave(dt: number) {
     if (!this.waveActive) return;
+
+    // Toxic Bloom seeds hazards away from the player, so the arena itself
+    // shrinks over the wave rather than punishing you where you already stand.
+    const bloom = this.waveModifier?.hazardInterval;
+    if (bloom) {
+      this.hazardBloomTimer -= dt;
+      if (this.hazardBloomTimer <= 0) {
+        this.hazardBloomTimer = bloom;
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          const x = THREE.MathUtils.randFloatSpread(30);
+          const z = THREE.MathUtils.randFloatSpread(30);
+          if (Math.hypot(x - this.playerMesh.position.x, z - this.playerMesh.position.z) < 5) continue;
+          if (this.pointInsideObstacle(x, z, 1.4)) continue;
+          this.spawnHazard(new THREE.Vector3(x, 0, z), 1.9, 26, 9);
+          break;
+        }
+      }
+    }
     if (this.spawnQueue.length > 0) {
       this.spawnTimer -= dt;
       if (this.spawnTimer <= 0 && this.enemies.length < MAX_ACTIVE_ENEMIES) {
@@ -1529,6 +1575,22 @@ export class GameEngine {
         }
       }
 
+      if (enemy.healthBar) {
+        const ratio = Math.max(0, Math.min(1, enemy.health / enemy.maxHealth));
+        // Hidden at full health so an untouched crowd stays readable.
+        enemy.healthBar.visible = ratio < 0.999;
+        if (enemy.healthBar.visible) {
+          const fill = enemy.healthBar.getObjectByName("hp-fill");
+          if (fill) {
+            fill.scale.x = Math.max(0.001, ratio);
+            // Scaling a centred quad shrinks both ends; shift it back to left-align.
+            fill.position.x = -((1 - ratio) * (Math.max(0.9, enemy.definition.radius * 1.9) - 0.06)) / 2;
+          }
+          // Billboard: cancel the parent's yaw so the bar always faces camera.
+          enemy.healthBar.rotation.set(-0.62, -enemy.mesh.rotation.y, 0);
+        }
+      }
+
       if (enemy.telegraph) {
         enemy.telegraph.position.copy(enemy.mesh.position).setY(0.05);
         // Shrink toward the strike so the timing is readable at a glance.
@@ -1805,9 +1867,7 @@ export class GameEngine {
       for (let s = 0; s < 4; s += 1) {
         const sAngle = Math.random() * Math.PI * 2;
         const sDir = new THREE.Vector3(Math.cos(sAngle), 0, Math.sin(sAngle));
-        const needleGeo = new THREE.CylinderGeometry(0.02, 0.035, 0.35, 6);
-        const needleMat = new THREE.MeshBasicMaterial({ color: 0xffe600 });
-        const needle = new THREE.Mesh(needleGeo, needleMat);
+        const needle = new THREE.Mesh(this.needleGeometry, this.needleMaterial);
         needle.position.copy(enemy.mesh.position).setY(1.0);
         needle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sDir);
         this.scene.add(needle);
@@ -2299,6 +2359,9 @@ export class GameEngine {
       maxHealth: this.maxHealth,
       wave: this.wave,
       endless: this.endless,
+      modifier: this.waveModifier
+        ? { name: this.waveModifier.name, icon: this.waveModifier.icon }
+        : undefined,
       enemies: this.enemies.length + this.spawnQueue.length,
       weapon: id,
       weaponName: WEAPONS[id].name,
@@ -2556,7 +2619,6 @@ export class GameEngine {
     this.virtualMove.set(0, 0);
     this.firing = false;
     this.playerVelocity.set(0, 0, 0);
-    this.playerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   }
 
   private startDash() {

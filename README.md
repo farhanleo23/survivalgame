@@ -26,4 +26,7 @@ npm run lint
 npm run build
 ```
 
-The game uses vinext/Vite, React, Three.js, and Rapier 3D. Gameplay configuration lives in `game/config.ts`; rendering, physics, combat, enemies, pickups, and wave progression live in `game/GameEngine.ts`.
+The game uses vinext/Vite, React and Three.js. Collision is hand-rolled against a
+simple obstacle list rather than a physics engine. Gameplay configuration lives in
+`game/config.ts`; rendering, collision, combat, enemies, pickups and wave
+progression live in `game/GameEngine.ts`.

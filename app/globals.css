@@ -1219,6 +1219,21 @@ button:focus-visible {
   opacity: 0.7;
 }
 
+/* Active wave modifier — the rule change in play this wave. */
+.hud-modifier {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+  font: 900 10px ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 /* Redeploy budget: filled pips are lives in hand. */
 .hud-redeploys {
   display: flex;
@@ -1511,7 +1526,9 @@ button:focus-visible {
 /* ── Combo + announcements ── */
 .combo-hud-badge {
   position: absolute;
-  top: 15%;
+  /* Clears the top-right stack (salvage, wave, modifier, redeploys), which
+     grew taller when the wave-modifier chip was added. */
+  top: 32%;
   right: 22px;
   padding: 6px 11px;
   background: var(--c-red);

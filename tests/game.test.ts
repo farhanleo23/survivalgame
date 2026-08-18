@@ -4,10 +4,15 @@ import {
   ENEMIES,
   getWaveDefinition,
   getWaveScaling,
+  getEnemySpeed,
   getRandomPerkDraft,
   getWeaponStats,
+  PLAYER_BASE_SPEED,
   SYNERGY_CARD_IDS,
+  rollWaveModifier,
   SYNERGY_CARDS,
+  WAVE_MODIFIER_IDS,
+  WAVE_MODIFIERS,
   WAVES,
 } from "../game/config";
 import type { SynergyCardId } from "../game/types";
@@ -271,6 +276,54 @@ describe("card definitions", () => {
       const card = SYNERGY_CARDS[id];
       expect(card.maxStacks).toBeGreaterThanOrEqual(1);
       expect(card.description.length).toBeGreaterThan(10);
+    }
+  });
+});
+
+describe("wave modifiers", () => {
+  // Deterministic stand-in for Math.random so rolls are assertable.
+  const fixed = (...values: number[]) => {
+    let i = 0;
+    return () => values[Math.min(i++, values.length - 1)];
+  };
+
+  it("keeps the opening waves clean", () => {
+    for (const wave of [1, 2]) {
+      expect(rollWaveModifier(wave, fixed(0, 0))).toBeNull();
+    }
+  });
+
+  it("never modifies a boss wave", () => {
+    for (const wave of [5, 10, 15, 20, 100]) {
+      expect(rollWaveModifier(wave, fixed(0, 0))).toBeNull();
+    }
+  });
+
+  it("rolls modifiers more often in endless than in the campaign", () => {
+    // 0.5 clears the endless threshold (0.75) but not the campaign one (0.45).
+    expect(rollWaveModifier(4, fixed(0.5, 0))).toBeNull();
+    expect(rollWaveModifier(12, fixed(0.5, 0))).not.toBeNull();
+  });
+
+  it("selects across the whole modifier table", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < WAVE_MODIFIER_IDS.length; i += 1) {
+      const pick = rollWaveModifier(4, fixed(0, i / WAVE_MODIFIER_IDS.length));
+      if (pick) seen.add(pick.id);
+    }
+    expect(seen.size).toBe(WAVE_MODIFIER_IDS.length);
+  });
+
+  it("keeps every modifier's multipliers sane", () => {
+    for (const id of WAVE_MODIFIER_IDS) {
+      const m = WAVE_MODIFIERS[id];
+      expect(m.countMult).toBeGreaterThan(0);
+      expect(m.healthMult).toBeGreaterThan(0);
+      // Enemies must never outrun the player, at any wave, with any modifier.
+      const fastest = getEnemySpeed(ENEMIES.runner.speed, 500, m);
+      expect(fastest).toBeLessThan(PLAYER_BASE_SPEED);
+      expect(m.name.length).toBeGreaterThan(2);
+      expect(m.blurb.length).toBeGreaterThan(5);
     }
   });
 });
