@@ -2,6 +2,8 @@ import * as THREE from "three";
 import RAPIER from "@dimforge/rapier3d-compat";
 import { ENEMIES, getWeaponStats, PICKUPS, WAVES, WEAPONS } from "./config";
 import { GameAudio } from "./audio";
+import { COMIC } from "./comic";
+import { ComicPostProcess } from "./postfx";
 import { VisualFactory, type CharacterRig } from "./visuals";
 import type {
   EliteAffix,
@@ -94,7 +96,12 @@ interface Obstacle {
 
 const FIXED_STEP = 1 / 60;
 const ARENA_LIMIT = 18.5;
+const CAMERA_HEIGHT = 18.5;
+const CAMERA_BACK = 15;
 const MAX_ACTIVE_ENEMIES = 36;
+/** Ceiling on knockback speed in world units/sec. Decay is ~1/14s, so this
+ *  works out to roughly a two-metre shove at full force. */
+const MAX_KNOCKBACK_SPEED = 26;
 const CROWD_CELL_SIZE = 2.5;
 
 await RAPIER.init();
@@ -108,6 +115,7 @@ export class GameEngine {
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 110);
   private renderer: THREE.WebGLRenderer;
   private visuals: VisualFactory;
+  private post: ComicPostProcess;
   private timer = new THREE.Timer();
   private accumulator = 0;
   private frame = 0;
@@ -154,9 +162,8 @@ export class GameEngine {
   private firing = false;
   private virtualMove = new THREE.Vector2();
   private usingTouchControls = false;
-  private alertLights: THREE.PointLight[] = [];
-  private playerKeyLight = new THREE.PointLight(0xffb76f, 12, 17, 2);
-  private playerRimLight = new THREE.PointLight(0x44dce7, 8, 16, 2);
+  private skyCool = new THREE.Color(COMIC.sky);
+  private skyHot = new THREE.Color(0x7a1f3d);
   private qaMode =
     typeof window !== "undefined" &&
     ["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname) &&
@@ -219,8 +226,9 @@ export class GameEngine {
     this.renderer.shadowMap.enabled = !this.qaMode;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.18;
+    // Flat sRGB with no tone curve: filmic roll-off desaturates the highlights
+    // and reintroduces exactly the smooth gradients the cel look removes.
+    this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.domElement.className = "game-canvas";
     this.renderer.domElement.setAttribute("aria-label", "Deadwave evacuation depot combat arena");
 
@@ -230,6 +238,7 @@ export class GameEngine {
 
     this.timer.connect(document);
     this.visuals = new VisualFactory(this.renderer);
+    this.post = new ComicPostProcess(this.renderer);
 
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, 0.72, 0)
@@ -378,6 +387,7 @@ export class GameEngine {
     if (this.playerRig) this.visuals.disposeCharacter(this.playerRig);
     for (const enemy of this.enemies) this.visuals.disposeCharacter(enemy.rig);
     this.visuals.dispose(this.scene);
+    this.post.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.floatingLayer.remove();
@@ -385,62 +395,53 @@ export class GameEngine {
   }
 
   private setupScene() {
-    // Clean, high-contrast tactical atmosphere with crisp directional lighting
-    this.scene.background = new THREE.Color(0x0e131b);
-    this.scene.fog = new THREE.FogExp2(0x0e131b, 0.01);
+    // Comic panel, not a dark room: a saturated sky wash and no fog at all.
+    // Depth comes from ink outlines and flat colour separation instead.
+    this.scene.background = new THREE.Color(COMIC.sky);
+    this.scene.fog = null;
 
-    const ambient = new THREE.HemisphereLight(0x8cb0d8, 0x182028, 1.25);
+    // Cel shading needs the *total* irradiance to land near 1.0. With no tone
+    // curve to roll off the top end, anything hotter clips every saturated
+    // surface to flat white — the palette disappears just as badly as it did
+    // in the dark. Ambient carries the shadow band, the key carries the step.
+    const ambient = new THREE.HemisphereLight(0xdfe8ff, 0x6b7799, 0.5);
     this.scene.add(ambient);
 
-    const key = new THREE.DirectionalLight(0xfff8ee, 2.2);
+    const key = new THREE.DirectionalLight(0xfff6e2, 0.72);
     key.position.set(-14, 26, -10);
     key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
-    key.shadow.camera.left = -24;
-    key.shadow.camera.right = 24;
-    key.shadow.camera.top = 24;
-    key.shadow.camera.bottom = -24;
+    key.shadow.mapSize.set(2048, 2048);
+    // Must enclose the 46-unit ground plus the perimeter walls. Ground outside
+    // the shadow frustum samples as fully shadowed, which darkened the arena
+    // corners and undid the flat lighting exactly where it was least expected.
+    key.shadow.camera.left = -32;
+    key.shadow.camera.right = 32;
+    key.shadow.camera.top = 32;
+    key.shadow.camera.bottom = -32;
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.035;
-    key.shadow.radius = 3;
     this.scene.add(key);
 
-    const coolFill = new THREE.DirectionalLight(0x00e5ff, 1.15);
+    // Cool bounce keeps shadowed sides coloured rather than grey.
+    const coolFill = new THREE.DirectionalLight(0x8ecbff, 0.16);
     coolFill.position.set(14, 12, 16);
     this.scene.add(coolFill);
-
-    const rimLight = new THREE.DirectionalLight(0xff9900, 0.85);
-    rimLight.position.set(0, 15, -20);
-    this.scene.add(rimLight);
 
     this.scene.add(this.visuals.createGround());
     this.visuals.addPerimeter(this.scene);
     this.visuals.addSetDressing(this.scene);
-    this.scene.add(this.playerKeyLight, this.playerRimLight);
 
     // Edge architecture creates 2.5D depth without obstructing combat lanes or creating corner traps.
-    this.addObstacle(-12.8, 8.8, 3.4, 2.4, 0x252924);
-    this.addObstacle(12.8, -8.8, 3.4, 2.4, 0x28302d);
-    this.addObstacle(-12.8, -9.2, 2.8, 2.4, 0x202b2c);
-    this.addObstacle(12.8, 9.2, 2.8, 2.4, 0x302a24);
+    this.addObstacle(-12.8, 8.8, 3.4, 2.4, COMIC.steel);
+    this.addObstacle(12.8, -8.8, 3.4, 2.4, COMIC.concrete);
+    this.addObstacle(-12.8, -9.2, 2.8, 2.4, COMIC.rust);
+    this.addObstacle(12.8, 9.2, 2.8, 2.4, COMIC.steel);
     this.addBarricade(-7.5, 12.0, 3.6, 0.45, 0.14);
     this.addBarricade(7.5, -12.0, 3.6, 0.45, -0.18);
 
-    this.addFloodlight(-15.2, -14.5, 0xff8a36);
-    this.addFloodlight(14.6, 13.9, 0x47c9d3);
-    this.addFloodlight(-14.7, 14.2, 0x45bd9a);
-
-    for (const [x, z, color] of [
-      [-10, -8, 0xff7a24],
-      [10, 8, 0x38c7cf],
-      [-9, 10, 0xff3d2e],
-      [11, -10, 0x37b987],
-    ] as const) {
-      const light = new THREE.PointLight(color, 3.5, 12, 2);
-      light.position.set(x, 2.8, z);
-      this.alertLights.push(light);
-      this.scene.add(light);
-    }
+    this.addFloodlight(-15.2, -14.5, COMIC.hazardStripe);
+    this.addFloodlight(14.6, 13.9, COMIC.electric);
+    this.addFloodlight(-14.7, 14.2, COMIC.hazardYellow);
 
     // 1. Glowing furnace heaters on stands (matching screenshot left & right)
     this.addFurnaceBeacon(-11.5, 5.5);
@@ -566,13 +567,11 @@ export class GameEngine {
   }
 
   private addFloodlight(x: number, z: number, color: number) {
+    // Fixture only. A real spotlight would paint a soft gradient pool on the
+    // floor, which fights the flat cel surfaces; the lens reads as lit on its own.
     const fixture = this.visuals.createFloodlight(color);
     fixture.position.set(x, 0, z);
     this.scene.add(fixture);
-    const light = new THREE.SpotLight(color, 58, 24, Math.PI / 4.8, 0.5, 1.5);
-    light.position.set(x, 5.0, z);
-    light.target.position.set(x * 0.35, 0, z * 0.35);
-    this.scene.add(light, light.target);
   }
 
   private addBarrel(x: number, z: number) {
@@ -660,7 +659,7 @@ export class GameEngine {
     let shieldMesh: THREE.Mesh | undefined;
     let shieldHp: number | undefined;
 
-    const rig = this.visuals.createEnemy(type, definition);
+    const rig = this.visuals.createEnemy(type, definition, isElite);
     const mesh = rig.root;
     mesh.position.copy(candidate);
 
@@ -991,15 +990,13 @@ export class GameEngine {
 
     if (this.playerRig) {
       this.visuals.animateCharacter(this.playerRig, dt, currentSpeed, false, 0);
-      if (this.playerRig.model) {
-        // Dynamic roll/lean during turns and dash
-        const strafeTilt = (this.playerVelocity.x * Math.cos(this.playerMesh.rotation.y) - this.playerVelocity.z * Math.sin(this.playerMesh.rotation.y)) * 0.024;
-        this.playerRig.model.rotation.z = THREE.MathUtils.lerp(
-          this.playerRig.model.rotation.z,
-          strafeTilt + (this.dashRemaining > 0 ? -0.22 : 0),
-          1 - Math.exp(-dt * 18),
-        );
-      }
+      // Dynamic roll/lean during turns and dash
+      const strafeTilt = (this.playerVelocity.x * Math.cos(this.playerMesh.rotation.y) - this.playerVelocity.z * Math.sin(this.playerMesh.rotation.y)) * 0.024;
+      this.playerRig.body.rotation.z = THREE.MathUtils.lerp(
+        this.playerRig.body.rotation.z,
+        strafeTilt + (this.dashRemaining > 0 ? -0.22 : 0),
+        1 - Math.exp(-dt * 18),
+      );
     }
 
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
@@ -1117,7 +1114,10 @@ export class GameEngine {
     }
 
     for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      // Burn damage below can kill a boomer, whose detonation removes several
+      // more enemies, leaving this index past the end of a now-shorter array.
       const enemy = this.enemies[index];
+      if (!enemy) continue;
 
       // Burning Damage-over-time
       if (enemy.burningTimer && enemy.burningTimer > 0) {
@@ -1125,7 +1125,7 @@ export class GameEngine {
         enemy.health -= 22 * dt;
         enemy.hitFlash = Math.max(enemy.hitFlash, 0.06);
         if (enemy.health <= 0) {
-          this.killEnemy(index);
+          this.killEnemy(enemy);
           continue;
         }
       }
@@ -1178,9 +1178,21 @@ export class GameEngine {
         }
       }
 
-      // Apply and decay physical bullet knockback
+      // Apply and decay physical bullet knockback.
+      //
+      // Routed through resolveEnemyPosition like ordinary movement: applying it
+      // straight to the position let shoved enemies pass through obstacles and
+      // leave the arena entirely, which then read as them teleporting when the
+      // chase step clamped them back in.
       if (enemy.knockback.lengthSq() > 0.001) {
-        enemy.mesh.position.addScaledVector(enemy.knockback, dt);
+        this.enemyCandidate.set(
+          enemy.mesh.position.x + enemy.knockback.x * dt,
+          0,
+          enemy.mesh.position.z + enemy.knockback.z * dt,
+        );
+        this.resolveEnemyPosition(this.enemyCandidate, enemy.definition.radius);
+        enemy.mesh.position.x = this.enemyCandidate.x;
+        enemy.mesh.position.z = this.enemyCandidate.z;
         enemy.knockback.lerp(new THREE.Vector3(), 1 - Math.exp(-dt * 14));
       }
 
@@ -1233,7 +1245,6 @@ export class GameEngine {
           }
         } else {
           const isChilled = (enemy.chilledTimer ?? 0) > 0;
-          const isBurning = (enemy.burningTimer ?? 0) > 0;
           const frenzyMult = enemy.affix === "frenzy" ? 1.4 : 1.0;
           const chilledMult = isChilled ? 0.5 : 1.0; // 50% slow when chilled!
           const chargeMult = enemy.chargeRemaining > 0 ? (enemy.bossPhase === 3 ? 3.8 : 3.3) : 1;
@@ -1362,11 +1373,11 @@ export class GameEngine {
     const position = enemy.mesh.position.clone();
     for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
       const other = this.enemies[index];
-      if (other === enemy) continue;
+      if (!other || other === enemy) continue;
       const distance = other.mesh.position.distanceTo(position);
       if (distance < 5.8) {
         const pushDir = other.mesh.position.clone().sub(position).setY(0).normalize();
-        this.damageEnemy(other, 180 * (1 - distance / 7.0), 16, pushDir, index);
+        this.damageEnemy(other, 180 * (1 - distance / 7.0), 16, pushDir);
       }
     }
     if (this.playerMesh.position.distanceTo(position) < 5.8) {
@@ -1443,7 +1454,10 @@ export class GameEngine {
 
       let hit = false;
       for (let enemyIndex = this.enemies.length - 1; enemyIndex >= 0; enemyIndex -= 1) {
+        // One hit can detonate a boomer, whose blast kills several more, so the
+        // array can be shorter than when this loop captured its start index.
         const enemy = this.enemies[enemyIndex];
+        if (!enemy) continue;
         if (projectile.hitEnemies?.has(enemy)) continue;
         const dx = projectile.mesh.position.x - enemy.mesh.position.x;
         const dz = projectile.mesh.position.z - enemy.mesh.position.z;
@@ -1451,7 +1465,7 @@ export class GameEngine {
           if (!projectile.hitEnemies) projectile.hitEnemies = new Set();
           projectile.hitEnemies.add(enemy);
 
-          this.damageEnemy(enemy, projectile.damage, projectile.knockback, projectile.direction, enemyIndex);
+          this.damageEnemy(enemy, projectile.damage, projectile.knockback, projectile.direction);
           projectile.pierceCount = (projectile.pierceCount ?? 0) + 1;
 
           if (projectile.pierceCount > (projectile.maxPierces ?? 0)) {
@@ -1470,7 +1484,6 @@ export class GameEngine {
     damage: number,
     knockbackForce: number,
     bulletDir: THREE.Vector3,
-    index: number,
   ) {
     // Frontal Armor check on Juggernaut Phase 1
     if (enemy.type === "juggernaut" && (enemy.bossPhase ?? 1) === 1) {
@@ -1599,6 +1612,13 @@ export class GameEngine {
           ? knockbackForce * 0.45
           : knockbackForce;
     enemy.knockback.addScaledVector(bulletDir, effectiveKnockback);
+    // Knockback accumulated without limit, so a single shotgun blast — six
+    // pellets, each up to 2.5x from Magnum Overpressure — stacked into a
+    // several-hundred-unit impulse and launched the target across the arena.
+    // Cap the resulting speed so a hit always reads as a shove, never a punt.
+    if (enemy.knockback.lengthSq() > MAX_KNOCKBACK_SPEED * MAX_KNOCKBACK_SPEED) {
+      enemy.knockback.setLength(MAX_KNOCKBACK_SPEED);
+    }
 
     this.createDirectionalHitBurst(hitPos, bulletDir, enemy.type === "spitter" || enemy.type === "boomer");
 
@@ -1610,12 +1630,37 @@ export class GameEngine {
     this.spawnFloatingText(hitPos, isCrit ? `CRIT ${finalDamage}!` : `${finalDamage}`, isCrit ? "crit" : "damage");
     this.audio.playHit(isCrit);
 
-    if (enemy.health <= 0) this.killEnemy(index);
+    if (enemy.health <= 0) this.killEnemy(enemy);
   }
 
-  private killEnemy(index: number) {
-    const enemy = this.enemies[index];
-    if (!enemy) return;
+  /**
+   * Kill anything sitting at or below zero health.
+   *
+   * Chain lightning and the burning-corpse splash subtract health directly
+   * without a death check, because they hit enemies other than the one being
+   * processed and cannot safely splice the array mid-iteration. That left
+   * enemies walking around on negative health until some later bullet happened
+   * to touch them — at which point they died instantly to a single shot, which
+   * looked like they were randomly vanishing. Sweeping once per frame keeps
+   * those indirect damage sources honest without any mid-loop mutation.
+   */
+  private reapDead() {
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      // A reaped boomer detonates and can splice several entries out from
+      // under this loop, so the array may be shorter than when we started.
+      // Anything skipped by the shift is simply caught on the next frame.
+      const enemy = this.enemies[index];
+      if (enemy && enemy.health <= 0) this.killEnemy(enemy);
+    }
+  }
+
+  private killEnemy(enemy: EnemyEntity) {
+    // Look the index up rather than trusting a caller's. Cascading deaths — a
+    // boomer chain, a barrel chain — splice the array between the moment an
+    // index is captured and the moment it is used, so a stale index removes a
+    // live enemy and leaves the dead one walking around.
+    const index = this.enemies.indexOf(enemy);
+    if (index < 0) return;
     const position = enemy.mesh.position.clone();
     this.visuals.disposeCharacter(enemy.rig);
     this.scene.remove(enemy.mesh);
@@ -1687,10 +1732,11 @@ export class GameEngine {
     const position = barrel.mesh.position.clone();
     for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
       const enemy = this.enemies[index];
+      if (!enemy) continue;
       const distance = enemy.mesh.position.distanceTo(position);
       if (distance < 5.6) {
         const pushDir = enemy.mesh.position.clone().sub(position).setY(0).normalize();
-        this.damageEnemy(enemy, 200 * (1 - distance / 6.5), 18, pushDir, index);
+        this.damageEnemy(enemy, 200 * (1 - distance / 6.5), 18, pushDir);
       }
     }
 
@@ -1985,6 +2031,9 @@ export class GameEngine {
     this.updateWave(dt);
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
+    // After projectiles, so indirect damage (chain lightning, burn splash,
+    // explosions) resolves into deaths on the same frame it was dealt.
+    this.reapDead();
     this.updatePickups(dt);
     this.updateEffects(dt);
     this.updateAtmosphere();
@@ -2014,8 +2063,8 @@ export class GameEngine {
     const offsetZ = shake > 0 ? THREE.MathUtils.randFloatSpread(shake) : 0;
 
     const posX = this.cameraLook.x + this.cameraRecoil.x + offsetX;
-    const posZ = this.cameraLook.z + 18.5 + this.cameraRecoil.z + offsetZ;
-    this.camera.position.set(posX, 22.5, posZ);
+    const posZ = this.cameraLook.z + CAMERA_BACK + this.cameraRecoil.z + offsetZ;
+    this.camera.position.set(posX, CAMERA_HEIGHT, posZ);
 
     const targetX = this.cameraLook.x + this.cameraRecoil.x * 0.5;
     const targetZ = this.cameraLook.z + this.cameraRecoil.z * 0.5;
@@ -2027,18 +2076,15 @@ export class GameEngine {
     if (dust) dust.rotation.y += dt * 0.012;
   }
 
+  /**
+   * Wave pressure shifts the backdrop from cool blue toward an angry red sky.
+   * Tinting the background beats dimming the scene: the arena stays readable
+   * while the panel still gets visibly hotter as the run goes on.
+   */
   private updateAtmosphere() {
     const pressure = (this.wave - 1) / 9;
-    const pulse = 0.76 + Math.sin(this.missionElapsed * (1.6 + pressure * 2.2)) * 0.24;
-    this.playerKeyLight.position.set(this.playerMesh.position.x - 2.6, 4.6, this.playerMesh.position.z + 2.2);
-    this.playerRimLight.position.set(this.playerMesh.position.x + 2.8, 3.4, this.playerMesh.position.z - 2.3);
-    this.playerKeyLight.intensity = 11 + pulse * 2;
-    this.playerRimLight.intensity = 7 + pressure;
-    this.alertLights.forEach((light, index) => {
-      light.intensity = 2.8 + pressure * 5.2 + (index % 2 === 0 ? pulse : 1 - pulse) * pressure * 2.5;
-    });
-    if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.density = 0.0125 + pressure * 0.006;
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.copy(this.skyCool).lerp(this.skyHot, pressure);
     }
   }
 
@@ -2074,7 +2120,7 @@ export class GameEngine {
       this.accumulator -= FIXED_STEP;
     }
     if (!this.qaMode || this.qaFramesRendered < 2) {
-      this.renderer.render(this.scene, this.camera);
+      this.post.render(this.scene, this.camera);
       this.qaFramesRendered += 1;
     }
     this.scheduleFrame();
@@ -2087,12 +2133,13 @@ export class GameEngine {
     this.camera.fov = width / height < 0.8 ? 56 : 42;
     this.camera.near = 0.1;
     this.camera.far = 110;
-    this.camera.position.set(0, 22.5, 18.5);
+    this.camera.position.set(0, CAMERA_HEIGHT, CAMERA_BACK);
     this.camera.lookAt(0, 0.42, 0);
     this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(width, height, false);
-    if (this.paused && !this.destroyed) this.renderer.render(this.scene, this.camera);
+    this.post?.setSize(width, height);
+    if (this.paused && !this.destroyed) this.post?.render(this.scene, this.camera);
   };
 
   private onPointerMove = (event: PointerEvent) => {

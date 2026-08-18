@@ -16,6 +16,22 @@
   --muted: #839e95;
   --danger: #ff385c;
   --warning: #ffb703;
+
+  /* Comic tokens — kept in step with COMIC in game/comic.ts so the homepage
+     and the arena are printed from the same palette. */
+  --c-ink: #120d1a;
+  --c-paper: #f4ead6;
+  --c-sky: #2b3f7a;
+  --c-yellow: #ffc61e;
+  --c-red: #e8531f;
+  --c-blue: #35d3ff;
+  --c-green: #6fbf3f;
+
+  /* Hard edges only: a blurred shadow instantly reads as a web card
+     rather than ink on paper. */
+  --ink-line: 4px solid var(--c-ink);
+  --ink-drop: 7px 7px 0 var(--c-ink);
+  --ink-drop-sm: 4px 4px 0 var(--c-ink);
 }
 
 * {
@@ -64,104 +80,10 @@ button:focus-visible {
   text-shadow: 0 0 12px rgba(0, 245, 212, 0.6);
 }
 
-.lobby-background {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 75% 35%, rgba(0, 245, 212, 0.15), transparent 45%),
-    radial-gradient(circle at 25% 65%, rgba(255, 0, 85, 0.12), transparent 40%),
-    linear-gradient(to bottom, rgba(4, 12, 9, 0.3), #040907 90%),
-    linear-gradient(155deg, #0b1c16, #030806 75%);
-}
 
-.lobby-background::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(0, 245, 212, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 245, 212, 0.05) 1px, transparent 1px);
-  background-size: 64px 64px;
-}
-
-.noise {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.25;
-  background-image: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(255, 255, 255, 0.025) 4px);
-}
-
-.horizon-glow {
-  position: absolute;
-  left: 35%;
-  top: 20%;
-  width: 60vw;
-  height: 45vh;
-  border-radius: 50%;
-  background: radial-gradient(ellipse, rgba(0, 245, 212, 0.14), transparent 68%);
-  filter: blur(20px);
-}
-
-.warehouse {
-  position: absolute;
-  bottom: 12vh;
-  background: linear-gradient(155deg, #10251e, #060f0c);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
-  clip-path: polygon(0 18%, 42% 0, 100% 20%, 100% 100%, 0 100%);
-  opacity: 0.85;
-}
-
-.warehouse::after {
-  content: "";
-  position: absolute;
-  inset: 30% 12% 12%;
-  background: repeating-linear-gradient(90deg, #08110e 0 8%, #173328 8% 10%);
-}
-
-.warehouse-one {
-  right: 2%;
-  width: 45vw;
-  height: 38vh;
-  transform: skewY(-2deg);
-}
-.warehouse-two {
-  right: 36%;
-  width: 29vw;
-  height: 25vh;
-  opacity: 0.55;
-}
-.fence-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 12vh;
-  height: 2px;
-  background: rgba(0, 245, 212, 0.35);
-  box-shadow: 0 0 12px rgba(0, 245, 212, 0.5);
-}
-.searchlight {
-  position: absolute;
-  right: 18%;
-  top: 0;
-  width: 14vw;
-  height: 75vh;
-  background: linear-gradient(to bottom, rgba(0, 245, 212, 0.16), transparent 75%);
-  transform: skewX(-18deg);
-  filter: blur(12px);
-  animation: search 9s ease-in-out infinite alternate;
-}
-
-@keyframes search {
-  from {
-    transform: translateX(-8vw) skewX(-18deg);
-  }
-  to {
-    transform: translateX(8vw) skewX(12deg);
-  }
-}
+/* ── Shared shell rules ─────────────────────────────────────────────────────
+   Used by the loadout screen and every modal, so they outlive the lobby
+   restyle. The lobby overrides .menu-shell via .comic-lobby. */
 
 .menu-shell {
   position: relative;
@@ -172,121 +94,12 @@ button:focus-visible {
   padding: 26px clamp(22px, 4vw, 70px) 28px;
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding-bottom: 22px;
-  border-bottom: 1px solid var(--line);
-}
-
-.brand-mark {
-  width: 50px;
-  height: 50px;
-  display: grid;
-  place-items: center;
-  border: 2px solid var(--cyan);
-  color: var(--cyan);
-  font-weight: 900;
-  letter-spacing: -2px;
-  transform: skew(-6deg);
-  background: rgba(0, 245, 212, 0.12);
-  box-shadow: 0 0 18px rgba(0, 245, 212, 0.35);
-}
-
-.topbar h1 {
-  margin: 0;
-  text-transform: uppercase;
-  font-size: 24px;
-  font-weight: 900;
-  letter-spacing: 0.22em;
-  color: var(--paper);
-}
-
 .eyebrow {
   margin: 0 0 7px;
   color: var(--cyan);
   font: 800 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-}
-
-.profile-salvage {
-  margin-left: auto;
-  display: flex;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.profile-salvage span,
-.loadout-count {
-  color: var(--muted);
-  font: 700 10px ui-monospace, monospace;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.profile-salvage strong {
-  color: var(--amber);
-  font: 800 20px ui-monospace, monospace;
-  text-shadow: 0 0 12px rgba(255, 183, 3, 0.45);
-}
-
-.lobby-hero {
-  min-height: calc(100vh - 240px);
-  display: grid;
-  grid-template-columns: minmax(440px, 0.85fr) minmax(440px, 1.15fr);
-  gap: clamp(36px, 6vw, 100px);
-  align-items: center;
-}
-
-.mission-card {
-  max-width: 700px;
-}
-.mission-card h2 {
-  margin: 12px 0 20px;
-  font-size: clamp(44px, 5.2vw, 80px);
-  font-weight: 900;
-  line-height: 0.92;
-  letter-spacing: -0.05em;
-  text-transform: uppercase;
-  color: var(--paper);
-}
-
-.mission-copy {
-  max-width: 610px;
-  margin: 0;
-  color: #b0c9be;
-  font-size: 16px;
-  line-height: 1.7;
-}
-
-.mission-stats {
-  display: flex;
-  gap: 36px;
-  margin: 28px 0 32px;
-  padding: 16px 20px;
-  border-left: 3px solid var(--cyan);
-  background: rgba(0, 245, 212, 0.05);
-}
-
-.mission-stats div {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.mission-stats strong {
-  color: var(--paper);
-  font: 900 24px ui-monospace, monospace;
-}
-
-.mission-stats span {
-  color: var(--muted);
-  font: 700 10px ui-monospace, monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
 }
 
 .primary-action {
@@ -305,14 +118,12 @@ button:focus-visible {
   box-shadow: 0 0 24px rgba(0, 245, 212, 0.35);
   transition: all 0.18s ease;
 }
-
 .primary-action:hover {
   background: var(--cyan);
   color: #040907;
   box-shadow: 0 0 36px rgba(0, 245, 212, 0.65);
   transform: translateY(-2px);
 }
-
 .primary-action span {
   font-size: 16px;
   transition: transform 0.18s ease;
@@ -321,373 +132,439 @@ button:focus-visible {
   transform: translateX(4px);
 }
 
-.control-hint {
-  margin-top: 14px;
-  color: var(--muted);
-  font: 700 10px ui-monospace, monospace;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+/* ── Comic homepage ─────────────────────────────────────────────────────────
+   Paper stock, halftone, and heavy ink. Panel borders are hard-edged with
+   solid offset shadows rather than blurred ones — a blur immediately reads as
+   a web card instead of printed art. Colours mirror COMIC in game/comic.ts so
+   the page and the arena stay in step. */
+
+.lobby-background {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--c-paper);
 }
 
-/* Split Homescreen Layout */
-.lobby-shell-split {
-  max-width: 1280px;
-  width: 92vw;
-  margin: 0 auto;
-  padding: 24px 0 40px;
-  display: flex;
-  flex-direction: column;
-}
-
-.lobby-split-grid {
-  display: grid;
-  grid-template-columns: 1.15fr 1fr;
-  gap: 32px;
-  align-items: stretch;
-  margin-top: 18px;
-}
-
-/* Left Column: Game Glimpse & Live Surveillance Feed */
-.glimpse-panel {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line-bright);
-  background: rgba(6, 16, 13, 0.85);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(8px);
-  overflow: hidden;
-  position: relative;
-}
-
-.glimpse-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 18px;
-  background: rgba(0, 245, 212, 0.05);
-  border-bottom: 1px solid var(--line);
-  font: 800 11px ui-monospace, monospace;
-}
-
-.live-tag {
-  color: var(--cyan);
-  letter-spacing: 0.16em;
-  animation: blink-live 1.6s ease infinite alternate;
-}
-
-@keyframes blink-live {
-  0% { opacity: 1; }
-  100% { opacity: 0.45; }
-}
-
-.cam-id {
-  color: var(--muted);
-  letter-spacing: 0.14em;
-}
-
-.glimpse-arena-viewport {
-  position: relative;
-  flex: 1;
-  min-height: 380px;
-  background: radial-gradient(circle at center, rgba(0, 245, 212, 0.08), rgba(2, 8, 6, 0.98)), #040907;
-  overflow: hidden;
-}
-
-.arena-grid-lines {
+/* Fibrous stock: two offset speckle layers so the noise never tiles visibly. */
+.paper-grain {
   position: absolute;
   inset: 0;
-  background-size: 32px 32px;
-  background-image: 
-    linear-gradient(to right, rgba(0, 245, 212, 0.07) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 245, 212, 0.07) 1px, transparent 1px);
+  opacity: 0.5;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(18, 13, 26, 0.05) 0 1px, transparent 1px),
+    radial-gradient(circle at 70% 60%, rgba(18, 13, 26, 0.04) 0 1px, transparent 1px);
+  background-size: 7px 7px, 11px 11px;
 }
 
-.glimpse-radar-sweep {
+/* Ben-Day dots, densest at the corners so the middle stays readable. */
+.halftone-wash {
   position: absolute;
   inset: 0;
-  background: conic-gradient(from 0deg at 50% 50%, rgba(0, 245, 212, 0.35), transparent 75deg);
-  animation: radar-spin 5s linear infinite;
-  pointer-events: none;
+  opacity: 0.4;
+  background-image: radial-gradient(circle, rgba(43, 63, 122, 0.35) 0 1.4px, transparent 1.6px);
+  background-size: 9px 9px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 45%, transparent 30%, #000 95%);
+  mask-image: radial-gradient(ellipse at 50% 45%, transparent 30%, #000 95%);
 }
 
-.glimpse-overlay-scanlines {
+/* Action rays behind the masthead. */
+.speed-rays {
   position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    rgba(0, 0, 0, 0.15),
-    rgba(0, 0, 0, 0.15) 1px,
-    transparent 1px,
-    transparent 3px
+  inset: -20% -10% auto -10%;
+  height: 70%;
+  opacity: 0.15;
+  background: repeating-conic-gradient(
+    from 0deg at 50% 0%,
+    var(--c-sky) 0deg 2deg,
+    transparent 2deg 9deg
   );
-  pointer-events: none;
 }
 
-/* Tactical Markers on Glimpse Viewport */
-.tactical-marker {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  pointer-events: none;
-}
-
-.tactical-player {
-  left: 48%;
-  top: 52%;
-}
-.tactical-ring {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--cyan);
-  border: 2px solid #fff;
-  box-shadow: 0 0 20px var(--cyan);
-}
-.tactical-player span {
-  font: 900 10px ui-monospace, monospace;
-  color: var(--cyan);
-  letter-spacing: 0.14em;
-  text-shadow: 0 0 8px rgba(0, 245, 212, 0.8);
-}
-
-.tactical-enemy i {
-  display: block;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--crimson);
-  box-shadow: 0 0 14px var(--crimson);
-}
-.tactical-enemy small {
-  font: 800 9px ui-monospace, monospace;
-  color: var(--crimson);
-  letter-spacing: 0.1em;
-}
-
-.enemy-runner-1 { left: 74%; top: 32%; animation: bob-enemy 2.2s ease-in-out infinite alternate; }
-.enemy-shambler-1 { left: 24%; top: 68%; animation: bob-enemy 3s ease-in-out infinite alternate-reverse; }
-.enemy-spitter-1 { left: 76%; top: 78%; animation: bob-enemy 2.6s ease-in-out infinite alternate; }
-
-@keyframes bob-enemy {
-  0% { transform: translateY(-4px); }
-  100% { transform: translateY(4px); }
-}
-
-.tactical-hazard {
-  padding: 4px 8px;
-  border: 1px dashed rgba(255, 183, 3, 0.6);
-  background: rgba(255, 183, 3, 0.1);
-  font: 800 8px ui-monospace, monospace;
-  color: var(--amber);
-}
-.vat-left { left: 20%; top: 25%; }
-.vat-right { right: 18%; bottom: 22%; }
-
-.tactical-beacon {
-  left: 48%;
-  top: 28%;
-}
-.beacon-pulse {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2px dashed var(--cyan);
-  background: rgba(0, 245, 212, 0.2);
-  animation: pulse-beacon 1.8s ease infinite;
-}
-@keyframes pulse-beacon {
-  0% { transform: scale(0.8); opacity: 0.5; }
-  50% { transform: scale(1.3); opacity: 1; }
-  100% { transform: scale(0.8); opacity: 0.5; }
-}
-.tactical-beacon span {
-  font: 800 9px ui-monospace, monospace;
-  color: var(--cyan);
-  letter-spacing: 0.12em;
-}
-
-.glimpse-footer-intel {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  padding: 14px 18px;
-  background: rgba(4, 12, 9, 0.95);
-  border-top: 1px solid var(--line);
-}
-.intel-item small {
-  display: block;
-  font: 800 8px ui-monospace, monospace;
-  color: var(--muted);
-  letter-spacing: 0.14em;
-  margin-bottom: 2px;
-}
-.intel-item strong {
-  display: block;
-  font: 900 12px ui-monospace, monospace;
-  color: var(--paper);
-  letter-spacing: 0.08em;
-}
-.intel-item .threat-high {
-  color: var(--amber);
-}
-
-/* Right Column: Start Game Launch Hub */
-.launch-panel {
+.comic-lobby {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 36px 32px;
-  background: rgba(8, 20, 16, 0.88);
-  border: 1px solid var(--line-bright);
-  border-top: 4px solid var(--cyan);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(8px);
+  min-height: 100vh;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px 24px 32px;
+  color: var(--c-ink);
 }
 
-.launch-content h2 {
-  margin: 6px 0 12px;
-  font-size: 34px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-  color: var(--paper);
-  text-transform: uppercase;
-}
-
-.launch-description {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-  margin-bottom: 24px;
-}
-
-.launch-stats-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 26px;
-}
-
-.launch-stat-box {
-  padding: 12px 14px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--line);
-}
-.launch-stat-box span {
-  display: block;
-  font: 800 9px ui-monospace, monospace;
-  color: var(--muted);
-  letter-spacing: 0.14em;
-  margin-bottom: 4px;
-}
-.launch-stat-box strong {
-  font: 900 18px ui-monospace, monospace;
-  color: var(--paper);
-}
-.launch-stat-box strong i {
-  font-size: 11px;
-  color: var(--muted);
-  font-style: normal;
-}
-
-.launch-action-group {
+/* ── Masthead ── */
+.masthead {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.start-game-btn {
-  width: 100%;
-  padding: 18px 24px;
-  font-size: 16px;
-  font-weight: 900;
-  letter-spacing: 0.2em;
-  background: linear-gradient(180deg, #00f5d4, #00bfa5);
-  color: #040a08;
-  box-shadow: 0 0 32px rgba(0, 245, 212, 0.55);
-}
-.start-game-btn:hover {
-  background: #ffffff;
-  color: #040a08;
-  box-shadow: 0 0 44px rgba(0, 245, 212, 0.85);
-  transform: translateY(-2px);
-}
-
-.secondary-action.loadout-btn {
-  width: 100%;
-  padding: 12px 18px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--line-bright);
-  color: var(--paper);
-  font: 800 11px ui-monospace, monospace;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
-.secondary-action.loadout-btn:hover {
-  border-color: var(--cyan);
-  color: var(--cyan);
-  background: rgba(0, 245, 212, 0.08);
-}
-
-.launch-controls-guide {
-  padding: 14px 16px;
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid var(--line);
-  margin-bottom: 20px;
-}
-.guide-title {
-  display: block;
-  font: 800 9px ui-monospace, monospace;
-  color: var(--cyan);
-  letter-spacing: 0.16em;
-  margin-bottom: 8px;
-}
-.guide-keys {
-  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
   flex-wrap: wrap;
-  gap: 12px 16px;
-  font: 700 11px ui-monospace, monospace;
-  color: var(--muted);
-}
-.guide-keys span b {
-  color: var(--paper);
-  background: rgba(255, 255, 255, 0.08);
-  padding: 2px 5px;
-  margin-right: 4px;
-  border-radius: 2px;
 }
 
-.quick-settings-bar {
+.masthead-brand {
   display: flex;
   align-items: center;
+  gap: 14px;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+  font: 900 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  transform: rotate(-4deg);
+}
+
+.comic-title {
+  margin: 0;
+  line-height: 0.86;
+}
+
+/* Layered offset copies fake a screen-printed misregistration. */
+.comic-title-ink {
+  display: block;
+  font: 900 clamp(44px, 7vw, 82px) / 0.86 "Arial Black", "Helvetica Neue", Impact, sans-serif;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  color: var(--c-paper);
+  -webkit-text-stroke: 3px var(--c-ink);
+  paint-order: stroke fill;
+  text-shadow:
+    4px 4px 0 var(--c-red),
+    8px 8px 0 var(--c-ink);
+}
+
+.masthead-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.issue-tag {
+  padding: 7px 12px;
+  background: var(--c-yellow);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop-sm);
+  font: 900 11px ui-monospace, monospace;
+  letter-spacing: 0.14em;
+  transform: rotate(2deg);
+}
+
+.salvage-chip {
+  padding: 8px 14px;
+  background: var(--c-ink);
+  color: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop-sm);
+}
+.salvage-chip small {
+  display: block;
+  font: 800 8px ui-monospace, monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.salvage-chip strong {
+  font: 900 19px ui-monospace, monospace;
+  color: var(--c-yellow);
+}
+
+/* Hazard tape, same stripe angle as the barriers in the arena. */
+.hazard-rule {
+  height: 16px;
+  margin: 18px 0 22px;
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop-sm);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--c-yellow) 0 14px,
+    var(--c-ink) 14px 28px
+  );
+}
+
+/* ── Panels ── */
+.comic-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 22px;
+  align-items: stretch;
+}
+
+.comic-panel {
+  position: relative;
+  background: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+}
+
+.cover-panel {
+  overflow: hidden;
+  min-height: 520px;
+  display: flex;
+}
+
+.briefing-panel {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Yellow caption box, the comic narration device. */
+.panel-caption {
+  margin: 0;
+  align-self: flex-start;
+  padding: 6px 11px;
+  background: var(--c-yellow);
+  border: 3px solid var(--c-ink);
+  font: 900 11px ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.caption-top {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  max-width: 78%;
+}
+
+/* Sound-effect word, bottom-right of the cover. */
+.panel-sfx {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  z-index: 2;
+  margin: 0;
+  font: 900 clamp(26px, 3.4vw, 42px) / 1 "Arial Black", Impact, sans-serif;
+  color: var(--c-yellow);
+  -webkit-text-stroke: 3px var(--c-ink);
+  paint-order: stroke fill;
+  transform: rotate(-8deg);
+  text-shadow: 4px 4px 0 var(--c-red);
+  pointer-events: none;
+}
+
+/* ── Live hero ── */
+.hero-stage {
+  position: relative;
+  flex: 1;
+  min-height: 520px;
+}
+.hero-canvas,
+.hero-canvas canvas {
+  width: 100%;
+  height: 100%;
+}
+.hero-canvas {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+}
+.hero-stage.is-live .hero-canvas {
+  opacity: 1;
+}
+
+.hero-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  background: var(--c-sky);
+  transition: opacity 0.45s ease;
+}
+.hero-stage.is-live .hero-fallback {
+  opacity: 0;
+  pointer-events: none;
+}
+.hero-fallback-mark {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  border: var(--ink-line);
+  font: 900 22px ui-monospace, monospace;
+  transform: rotate(-4deg);
+}
+.hero-fallback-text {
+  font: 800 10px ui-monospace, monospace;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--c-paper);
+}
+
+/* ── Briefing content ── */
+.briefing-title {
+  margin: 0;
+  font: 900 clamp(28px, 3.6vw, 42px) / 0.94 "Arial Black", Impact, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  color: var(--c-ink);
+}
+
+.briefing-copy {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #3a3350;
+}
+
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  font: 800 10px ui-monospace, monospace;
-  color: var(--muted);
 }
-.quick-settings-bar button {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--line);
-  padding: 6px 10px;
-  color: var(--muted);
+
+.stat-chip {
+  padding: 10px;
+  background: var(--c-sky);
+  color: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop-sm);
+}
+.stat-chip small {
+  display: block;
+  font: 800 8px ui-monospace, monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+.stat-chip strong {
+  font: 900 22px ui-monospace, monospace;
+  color: var(--c-yellow);
+}
+.stat-chip strong i {
   font: 800 10px ui-monospace, monospace;
+  font-style: normal;
+  opacity: 0.8;
+}
+
+.cta-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Starburst sits behind the button and spins slowly — the one moving element. */
+.comic-cta {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+  font: 900 20px "Arial Black", Impact, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.quick-settings-bar button.active {
-  border-color: var(--cyan);
-  color: var(--cyan);
-  background: rgba(0, 245, 212, 0.1);
+.comic-cta:hover {
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 var(--c-ink);
+}
+.comic-cta:active {
+  transform: translate(6px, 6px);
+  box-shadow: 0 0 0 var(--c-ink);
+}
+
+.comic-secondary {
+  padding: 12px 16px;
+  background: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop-sm);
+  font: 900 12px ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.comic-secondary:hover {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--c-ink);
+  background: var(--c-yellow);
+}
+
+.block-label {
+  display: block;
+  margin-bottom: 7px;
+  font: 900 9px ui-monospace, monospace;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #6b6486;
+}
+
+.keycap-row,
+.toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.keycap {
+  padding: 5px 9px;
+  background: var(--c-ink);
+  color: var(--c-paper);
+  border: 2px solid var(--c-ink);
+  box-shadow: 2px 2px 0 var(--c-blue);
+  font: 900 10px ui-monospace, monospace;
+}
+.keycap-row em {
+  margin-right: 8px;
+  font: 700 11px ui-monospace, monospace;
+  font-style: normal;
+  color: #6b6486;
+  text-transform: uppercase;
+}
+
+.toggle-chip {
+  padding: 7px 11px;
+  background: var(--c-paper);
+  border: 2px solid var(--c-ink);
+  box-shadow: 2px 2px 0 var(--c-ink);
+  font: 900 10px ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: all 0.12s ease;
+}
+.toggle-chip.on {
+  background: var(--c-green);
+  opacity: 1;
+}
+.toggle-chip:hover {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--c-ink);
 }
 
 @media (max-width: 980px) {
-  .lobby-split-grid {
+  .comic-grid {
     grid-template-columns: 1fr;
   }
+  .cover-panel,
+  .hero-stage {
+    min-height: 320px;
+  }
 }
+
 
 .level-card {
   display: flex;
@@ -757,74 +634,94 @@ button:focus-visible {
   background: rgba(0, 245, 212, 0.1);
 }
 
-/* Loadout Screen */
+/* ── Loadout screen (comic) ─────────────────────────────────────────────────
+   Shares the paper background with the lobby, so it is inked to match: cards
+   are printed panels, not translucent dark glass. */
+
 .loadout-shell {
   display: flex;
   flex-direction: column;
+  color: var(--c-ink);
 }
+
 .screen-heading {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 24px;
-  padding-bottom: 22px;
-  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+.screen-heading .eyebrow {
+  color: var(--c-red);
 }
 .screen-heading h2 {
   margin: 4px 0 0;
-  font-size: 28px;
-  font-weight: 900;
+  font: 900 clamp(26px, 3.4vw, 40px) / 0.95 "Arial Black", Impact, sans-serif;
   text-transform: uppercase;
-  color: var(--paper);
+  color: var(--c-ink);
 }
+
 .back-button {
-  border: 1px solid var(--line);
-  padding: 10px 18px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--muted);
-  font: 800 11px ui-monospace, monospace;
+  padding: 9px 14px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+  color: var(--c-ink);
+  font: 900 10px ui-monospace, monospace;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 .back-button:hover {
-  color: var(--paper);
-  border-color: var(--line-bright);
+  background: var(--c-yellow);
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--c-ink);
+}
+
+.loadout-count {
+  padding: 7px 12px;
+  background: var(--c-ink);
+  color: var(--c-yellow);
+  border: 3px solid var(--c-ink);
+  font: 900 10px ui-monospace, monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .loadout-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 18px;
-  margin: 32px 0;
+  margin: 22px 0;
 }
 
 .weapon-card {
-  position: relative;
   display: flex;
   flex-direction: column;
-  padding: 22px;
-  border: 1px solid var(--line);
-  background: rgba(10, 24, 20, 0.7);
+  gap: 10px;
+  padding: 16px;
   text-align: left;
+  background: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+  color: var(--c-ink);
   cursor: pointer;
-  transition: all 0.18s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-
 .weapon-card:hover:not(:disabled) {
-  border-color: var(--cyan);
-  transform: translateY(-4px);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 var(--c-ink);
 }
-
 .weapon-card.equipped {
-  border-color: var(--cyan);
-  border-top: 3px solid var(--cyan);
-  background: linear-gradient(180deg, rgba(0, 245, 212, 0.12), rgba(10, 24, 20, 0.85));
+  background: var(--c-yellow);
 }
-
 .weapon-card.unowned {
-  opacity: 0.55;
+  /* Locked stock: greyed but still legible on paper, never washed out. */
+  background: #d9d0bd;
+  color: #6b6486;
   cursor: not-allowed;
+  box-shadow: var(--ink-drop-sm);
 }
 
 .weapon-card-header {
@@ -833,56 +730,87 @@ button:focus-visible {
   align-items: center;
 }
 .weapon-rank {
-  color: var(--amber);
-  font: 800 12px ui-monospace, monospace;
+  font: 900 12px ui-monospace, monospace;
+  color: var(--c-red);
 }
 .equipped-badge {
-  color: var(--cyan);
-  font: 800 10px ui-monospace, monospace;
+  padding: 3px 7px;
+  background: var(--c-ink);
+  color: var(--c-paper);
+  font: 900 9px ui-monospace, monospace;
   letter-spacing: 0.12em;
 }
 
 .weapon-card-body h3 {
   margin: 6px 0 8px;
-  font-size: 18px;
-  font-weight: 800;
+  font: 900 19px "Arial Black", Impact, sans-serif;
   text-transform: uppercase;
-  color: var(--paper);
+  color: inherit;
 }
 .weapon-card-body p {
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.5;
+  color: inherit;
+  opacity: 0.85;
+}
+.weapon-card-body .eyebrow {
+  color: var(--c-red);
 }
 
 .weapon-mini-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  font: 700 10px ui-monospace, monospace;
-  color: var(--muted);
+  gap: 5px 12px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 3px solid var(--c-ink);
+  font: 800 10px ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.9;
 }
 .weapon-mini-stats b {
-  color: var(--paper);
-  margin-left: 4px;
+  font: 900 12px ui-monospace, monospace;
+  color: var(--c-red);
 }
 
 .deploy-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
   margin-top: auto;
-  padding-top: 24px;
-  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  border-top: 4px solid var(--c-ink);
 }
 .deploy-bar p {
   margin: 0;
-  color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
+  color: #6b6486;
+}
+
+/* The loadout's deploy button borrows the lobby's inked CTA treatment. */
+.deploy-bar .primary-action {
+  padding: 15px 26px;
+  background: var(--c-red);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+  color: var(--c-paper);
+  font: 900 14px "Arial Black", Impact, sans-serif;
+  letter-spacing: 0.06em;
+}
+.deploy-bar .primary-action:hover {
+  background: var(--c-red);
+  color: var(--c-paper);
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 var(--c-ink);
+}
+
+/* Silhouettes are drawn in ink on the light card. */
+.weapon-card .weapon-svg-silhouette {
+  color: var(--c-ink);
 }
 
 /* Weapon Glyphs */

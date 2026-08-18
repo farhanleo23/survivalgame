@@ -16,6 +16,7 @@ import {
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
 import { createDefaultProfile, loadProfile, saveProfile } from "@/game/profile";
 import type { GameScreen, HudState, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
+import { LobbyHero } from "./LobbyHero";
 
 const initialHud: HudState = {
   health: 100,
@@ -378,12 +379,9 @@ export function Deadwave() {
 function LobbyBackground() {
   return (
     <div className="lobby-background" aria-hidden="true">
-      <div className="noise" />
-      <div className="horizon-glow" />
-      <div className="warehouse warehouse-one" />
-      <div className="warehouse warehouse-two" />
-      <div className="fence-line" />
-      <div className="searchlight" />
+      <div className="paper-grain" />
+      <div className="halftone-wash" />
+      <div className="speed-rays" />
     </div>
   );
 }
@@ -402,156 +400,102 @@ function Lobby({
   const showArmoryOption = profile.highestWave >= 2 || profile.ownedWeapons.length > 1;
 
   return (
-    <div className="menu-shell lobby-shell-split">
-      <header className="topbar lobby-topbar">
-        <div className="brand-mark">DW</div>
-        <div>
-          <p className="eyebrow">EVACUATION PROTOCOL // SECTOR 01</p>
-          <h1>DEADWAVE</h1>
+    <div className="menu-shell comic-lobby">
+      <header className="masthead">
+        <div className="masthead-brand">
+          <span className="brand-mark">DW</span>
+          <h1 className="comic-title">
+            <span className="comic-title-ink">DEADWAVE</span>
+          </h1>
         </div>
-        <div className="profile-salvage">
-          <span>Banked Salvage</span>
-          <strong>◆ {profile.coins}</strong>
+        <div className="masthead-meta">
+          <span className="issue-tag">ISSUE #01</span>
+          <div className="salvage-chip">
+            <small>Banked salvage</small>
+            <strong>◆ {profile.coins.toLocaleString()}</strong>
+          </div>
         </div>
       </header>
 
-      <div className="lobby-split-grid">
-        {/* Left Side: Glimpse of the Game */}
-        <section className="glimpse-panel" aria-label="Game Preview">
-          <div className="glimpse-header">
-            <span className="live-tag">● LIVE DEPOT FEED</span>
-            <span className="cam-id">CAM-01 // SECTOR 7A</span>
-          </div>
+      <div className="hazard-rule" aria-hidden="true" />
 
-          <div className="glimpse-arena-viewport">
-            <div className="arena-grid-lines" />
-            <div className="glimpse-radar-sweep" />
-
-            {/* Tactical Arena Elements */}
-            <div className="tactical-marker tactical-player">
-              <div className="tactical-ring" />
-              <span>OPERATOR</span>
-            </div>
-
-            <div className="tactical-marker tactical-enemy enemy-runner-1">
-              <i />
-              <small>RUNNER</small>
-            </div>
-            <div className="tactical-marker tactical-enemy enemy-shambler-1">
-              <i />
-              <small>SHAMBLER</small>
-            </div>
-            <div className="tactical-marker tactical-enemy enemy-spitter-1">
-              <i />
-              <small>SPITTER</small>
-            </div>
-            <div className="tactical-marker tactical-hazard vat-left">
-              <span>BIO-VAT</span>
-            </div>
-            <div className="tactical-marker tactical-hazard vat-right">
-              <span>BIO-VAT</span>
-            </div>
-            <div className="tactical-marker tactical-beacon">
-              <div className="beacon-pulse" />
-              <span>EXTRACTION BEACON</span>
-            </div>
-
-            <div className="glimpse-overlay-scanlines" />
-          </div>
-
-          <div className="glimpse-footer-intel">
-            <div className="intel-item">
-              <small>ARENA</small>
-              <strong>QUARANTINE DEPOT</strong>
-            </div>
-            <div className="intel-item">
-              <small>THREAT LEVEL</small>
-              <strong className="threat-high">10 HOSTILE WAVES</strong>
-            </div>
-            <div className="intel-item">
-              <small>TARGET</small>
-              <strong>JUGGERNAUT BOSS</strong>
-            </div>
-          </div>
+      <div className="comic-grid">
+        <section className="comic-panel cover-panel" aria-label="Operator">
+          <LobbyHero reducedMotion={profile.settings.reducedMotion} />
+          <p className="panel-caption caption-top">SECTOR 01 — THE DEPOT HAS GONE QUIET.</p>
+          <p className="panel-sfx" aria-hidden="true">KRAAKOOM!</p>
         </section>
 
-        {/* Right Side: Start the Game */}
-        <section className="launch-panel">
-          <div className="launch-content">
-            <p className="eyebrow">MISSION READY // SECTOR 01</p>
-            <h2>QUARANTINE DEPOT</h2>
-            <p className="launch-description">
-              Survive 10 escalating waves of infected hostiles in the industrial depot. Defend against Shamblers, Runners, Spitters, Brutes, and the Juggernaut titan.
-            </p>
+        <section className="comic-panel briefing-panel">
+          <p className="panel-caption">MISSION BRIEFING</p>
+          <h2 className="briefing-title">QUARANTINE DEPOT</h2>
+          <p className="briefing-copy">
+            Ten waves of infected between you and extraction. Shamblers, Runners, Spitters, Brutes —
+            and something the size of a truck waiting at the end.
+          </p>
 
-            <div className="launch-stats-row">
-              <div className="launch-stat-box">
-                <span>BEST WAVE</span>
-                <strong>{profile.highestWave}<i>/10</i></strong>
-              </div>
-              <div className="launch-stat-box">
-                <span>ARSENAL</span>
-                <strong>{profile.ownedWeapons.length}<i> WEAPONS</i></strong>
-              </div>
-              <div className="launch-stat-box">
-                <span>SALVAGE</span>
-                <strong>{profile.coins}<i> BANKED</i></strong>
-              </div>
+          <div className="stat-strip">
+            <div className="stat-chip">
+              <small>Best wave</small>
+              <strong>{profile.highestWave}<i>/10</i></strong>
             </div>
+            <div className="stat-chip">
+              <small>Arsenal</small>
+              <strong>{profile.ownedWeapons.length}<i> guns</i></strong>
+            </div>
+            <div className="stat-chip">
+              <small>Salvage</small>
+              <strong>{profile.coins.toLocaleString()}</strong>
+            </div>
+          </div>
 
-            <div className="launch-action-group">
-              <button
-                className="primary-action start-game-btn"
-                data-testid="start-mission"
-                onClick={onStart}
-              >
-                START GAME <span>→</span>
+          <div className="cta-block">
+            <button className="comic-cta" data-testid="start-mission" onClick={onStart}>
+              START GAME
+              <span aria-hidden="true">▶</span>
+            </button>
+            {showArmoryOption && (
+              <button className="comic-secondary" onClick={onOpenArmory}>
+                Field armory · {profile.ownedWeapons.length} owned
               </button>
+            )}
+          </div>
 
-              {showArmoryOption && (
-                <button
-                  className="secondary-action loadout-btn"
-                  onClick={onOpenArmory}
-                >
-                  FIELD ARMORY & GUN SELECTION ({profile.ownedWeapons.length} Owned)
-                </button>
-              )}
+          <div className="controls-block">
+            <span className="block-label">Controls</span>
+            <div className="keycap-row">
+              <span className="keycap">WASD</span><em>move</em>
+              <span className="keycap">MOUSE</span><em>aim</em>
+              <span className="keycap">CLICK</span><em>fire</em>
+              <span className="keycap">SPACE</span><em>dash</em>
+              <span className="keycap">R</span><em>reload</em>
+              <span className="keycap">Q</span><em>swap</em>
             </div>
+          </div>
 
-            <div className="launch-controls-guide">
-              <span className="guide-title">COMBAT CONTROLS</span>
-              <div className="guide-keys">
-                <span><b>WASD</b> Move</span>
-                <span><b>MOUSE</b> Aim</span>
-                <span><b>CLICK</b> Fire</span>
-                <span><b>SPACE</b> Dash</span>
-                <span><b>Q / 1-4</b> Swap Gun</span>
-                <span><b>R</b> Reload</span>
-              </div>
-            </div>
-
-            <div className="quick-settings-bar">
-              <span>SETTINGS:</span>
+          <div className="settings-block">
+            <span className="block-label">Settings</span>
+            <div className="toggle-row">
               <button
-                className={profile.settings.music ? "active" : ""}
+                className={`toggle-chip ${profile.settings.music ? "on" : ""}`}
                 onClick={() => onToggleSetting("music")}
                 aria-pressed={profile.settings.music}
               >
-                ♫ Music: {profile.settings.music ? "ON" : "OFF"}
+                ♫ Music
               </button>
               <button
-                className={profile.settings.sfx ? "active" : ""}
+                className={`toggle-chip ${profile.settings.sfx ? "on" : ""}`}
                 onClick={() => onToggleSetting("sfx")}
                 aria-pressed={profile.settings.sfx}
               >
-                SFX: {profile.settings.sfx ? "ON" : "OFF"}
+                ◈ SFX
               </button>
               <button
-                className={profile.settings.reducedMotion ? "active" : ""}
+                className={`toggle-chip ${profile.settings.reducedMotion ? "on" : ""}`}
                 onClick={() => onToggleSetting("reducedMotion")}
                 aria-pressed={profile.settings.reducedMotion}
               >
-                Motion: {profile.settings.reducedMotion ? "REDUCED" : "FULL"}
+                ◐ Reduced motion
               </button>
             </div>
           </div>
