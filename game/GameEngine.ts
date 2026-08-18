@@ -1,6 +1,15 @@
 import * as THREE from "three";
 import RAPIER from "@dimforge/rapier3d-compat";
-import { ENEMIES, getWeaponStats, PICKUPS, WAVES, WEAPONS } from "./config";
+import {
+  BEHAVIOURS,
+  CAMPAIGN_WAVES,
+  ENEMIES,
+  getWaveDefinition,
+  getWaveScaling,
+  getWeaponStats,
+  PICKUPS,
+  WEAPONS,
+} from "./config";
 import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
 import { ComicPostProcess } from "./postfx";
@@ -30,7 +39,24 @@ interface EngineCallbacks {
 
 interface EnemyEntity {
   type: EnemyId;
+  /** Shared, immutable archetype stats. Never mutate. */
   definition: EnemyDefinition;
+  /** Wave-scaled copies of the stats that vary per spawn. */
+  speed: number;
+  damage: number;
+  reward: number;
+  /** Counts down through a telegraphed swing; damage lands at zero. */
+  windupTimer: number;
+  /** Bearing this enemy circles to before closing, in radians. */
+  flankAngle: number;
+  /** Seconds spent trying to move without actually moving. */
+  stuckTimer: number;
+  /** Seconds left of an active sidestep manoeuvre. */
+  unstickTimer: number;
+  /** Which way this enemy sidesteps when wedged; fixed so it commits. */
+  unstickSign: number;
+  /** Telegraph ring shown during a wind-up. */
+  telegraph?: THREE.Object3D;
   mesh: THREE.Group;
   rig: CharacterRig;
   health: number;
@@ -45,7 +71,11 @@ interface EnemyEntity {
   shieldHp?: number;
   shieldMesh?: THREE.Mesh;
   burningTimer?: number;
+  /** Burn damage per second, captured from the igniting card's rank. */
+  burnDps?: number;
   chilledTimer?: number;
+  /** Slow multiplier from the chilling card's rank; lower is slower. */
+  chillMult?: number;
   bossPhase?: number;
   bossAttackState?: "idle" | "telegraph_charge" | "charging" | "telegraph_slam" | "slamming";
   bossStateTimer?: number;
@@ -77,6 +107,19 @@ interface PickupEntity {
 interface BarrelEntity {
   mesh: THREE.Group;
   active: boolean;
+}
+
+/** Lingering ground zone that damages enemies standing in it. */
+interface HazardEntity {
+  mesh: THREE.Object3D;
+  x: number;
+  z: number;
+  radius: number;
+  dps: number;
+  life: number;
+  maxLife: number;
+  /** Damage accrues between ticks so DPS is frame-rate independent. */
+  tickTimer: number;
 }
 
 interface EffectEntity {
@@ -145,6 +188,8 @@ export class GameEngine {
   private cameraRecoil = new THREE.Vector3();
   private cameraShake = 0;
   private playerHealth = 100;
+  /** False until the first applyPerks call has seeded health. */
+  private perksInitialised = false;
   private maxHealth = 100;
   private missionElapsed = 0;
   private moveSpeed = 6.2;
@@ -174,6 +219,7 @@ export class GameEngine {
   private pickups: PickupEntity[] = [];
   private barrels: BarrelEntity[] = [];
   private effects: EffectEntity[] = [];
+  private hazards: HazardEntity[] = [];
   private activeSynergies = new Map<SynergyCardId, number>();
   private bulletCount = 0;
   private acidTrailTimer = 0;
@@ -183,6 +229,8 @@ export class GameEngine {
   private activeWeaponIndex = 0;
 
   private wave = 1;
+  /** Once set, wave 10 no longer ends the run. */
+  private endless = false;
   private spawnQueue: EnemyId[] = [];
   private spawnTimer = 0;
   private waveActive = false;
@@ -311,13 +359,23 @@ export class GameEngine {
   }
 
   startNextWave() {
-    this.wave = Math.min(10, this.wave + 1);
+    this.wave = this.endless ? this.wave + 1 : Math.min(CAMPAIGN_WAVES, this.wave + 1);
     this.startWave(this.wave);
     this.resume();
   }
 
   getWave() {
     return this.wave;
+  }
+
+  /** Continue past the campaign into scaling endless waves. */
+  continueEndless() {
+    this.endless = true;
+    this.startNextWave();
+  }
+
+  isEndless() {
+    return this.endless;
   }
 
   setProfile(profile: ProfileV1) {
@@ -608,8 +666,28 @@ export class GameEngine {
   private applyPerks(perks: Record<PerkId, number>) {
     const previousMax = this.maxHealth;
     this.maxHealth = 100 + perks.vitality * 20;
-    if (this.playerHealth === previousMax || !this.playerHealth) this.playerHealth = this.maxHealth;
-    else this.playerHealth = Math.min(this.maxHealth, this.playerHealth + Math.max(0, this.maxHealth - previousMax));
+
+    if (this.playerHealth <= 0 && this.perksInitialised) {
+      // Dead stays dead. This runs on every profile commit — including the one
+      // that banks a checkpoint on death — and the old `!this.playerHealth`
+      // guard treated 0 HP as "uninitialised" and silently healed the corpse
+      // back to full, so the death screen reported 100% health.
+      this.moveSpeed = 6.2 * (1 + perks.mobility * 0.06);
+      this.pickupRadius = 2.2 + perks.magnet * 1.3;
+      return;
+    }
+
+    if (!this.perksInitialised || this.playerHealth === previousMax) {
+      this.playerHealth = this.maxHealth;
+    } else {
+      // A mid-run vitality purchase grants the new headroom immediately.
+      this.playerHealth = Math.min(
+        this.maxHealth,
+        this.playerHealth + Math.max(0, this.maxHealth - previousMax),
+      );
+    }
+
+    this.perksInitialised = true;
     this.moveSpeed = 6.2 * (1 + perks.mobility * 0.06);
     this.pickupRadius = 2.2 + perks.magnet * 1.3;
   }
@@ -621,11 +699,11 @@ export class GameEngine {
     this.extractionTimer = 0;
     if (this.extractionZoneMesh) this.extractionZoneMesh.visible = false;
     this.spawnQueue = [];
-    this.announcement = `Wave ${wave}: ${WAVES[wave - 1].label}`;
+    this.announcement = `Wave ${wave}: ${getWaveDefinition(wave).label}`;
     this.announcementTimer = 2.6;
     this.callbacks.onWaveChange(wave);
 
-    const definition = WAVES[wave - 1];
+    const definition = getWaveDefinition(wave);
     for (const [id, count] of Object.entries(definition.enemies)) {
       for (let i = 0; i < (count ?? 0); i += 1) this.spawnQueue.push(id as EnemyId);
     }
@@ -675,31 +753,43 @@ export class GameEngine {
 
     this.scene.add(mesh);
 
-    // Wave 5 vs Wave 10 boss health scaling
-    let health = definition.health;
+    // Every archetype scales with wave depth; without this a wave-20 shambler
+    // would be identical to a wave-1 one and endless mode would be a formality.
+    const scaling = getWaveScaling(this.wave);
+    let health = definition.health * scaling.health;
     if (type === "juggernaut") {
       if (this.wave <= 5) {
-        health = 680; // Wave 5 Prototype Juggernaut (Mk-I)
+        health = 680 * scaling.health; // Wave 5 Prototype Juggernaut (Mk-I)
         this.announcement = "⚠️ PROTOTYPE JUGGERNAUT DETECTED!";
         this.announcementTimer = 3.5;
         this.audio.playBossPhaseShift();
       } else {
-        health = 1850; // Wave 10 Titan Dreadnought Prime
+        health = 1850 * scaling.health; // Wave 10 Titan Dreadnought Prime
         this.announcement = "🔥 TITAN DREADNOUGHT PRIME HAS ARRIVED!";
         this.announcementTimer = 4.0;
         this.audio.playBossPhaseShift();
       }
     } else if (isElite) {
-      health = Math.round(definition.health * 1.4);
+      health = Math.round(definition.health * scaling.health * 1.4);
     }
 
     this.enemies.push({
       type,
       definition,
+      windupTimer: 0,
+      // Fixed per spawn so an enemy commits to one approach lane instead of
+      // oscillating between them frame to frame.
+      flankAngle: THREE.MathUtils.randFloatSpread(2) * BEHAVIOURS[type].flankSpread,
+      stuckTimer: 0,
+      unstickTimer: 0,
+      unstickSign: Math.random() < 0.5 ? -1 : 1,
+      speed: definition.speed * scaling.speed,
+      damage: definition.damage * scaling.damage,
+      reward: Math.round(definition.reward * scaling.reward),
       mesh,
       rig,
-      health,
-      maxHealth: health,
+      health: Math.round(health),
+      maxHealth: Math.round(health),
       attackCooldown: Math.random() * 0.5,
       specialCooldown: 2 + Math.random() * 2,
       chargeRemaining: 0,
@@ -777,9 +867,8 @@ export class GameEngine {
     this.bulletCount += 1;
 
     // Adrenaline Surge synergy: +40% fire rate when below 45% HP
-    const isAdrenaline =
-      this.activeSynergies.has("adrenaline_surge") && this.playerHealth / this.maxHealth <= 0.45;
-    const fireRateMult = isAdrenaline ? 1.4 : 1.0;
+    const adrenalineRank = this.adrenalineRank();
+    const fireRateMult = 1 + 0.3 * adrenalineRank;
     state.cooldown = 1 / (stats.fireRate * fireRateMult);
 
     // Multi-layered audio gunshot
@@ -861,6 +950,12 @@ export class GameEngine {
     if (state.magazine === 0 && state.reserve > 0) this.reloadWeapon(id);
   }
 
+  /** Adrenaline Surge rank, or 0 while above the health threshold. */
+  private adrenalineRank() {
+    if (this.playerHealth / this.maxHealth > 0.45) return 0;
+    return this.activeSynergies.get("adrenaline_surge") ?? 0;
+  }
+
   private reload() {
     const id = this.getActiveWeaponId();
     this.reloadWeapon(id);
@@ -871,9 +966,7 @@ export class GameEngine {
     if (!state) return;
     const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
     if (state.reloading > 0 || state.magazine >= stats.magazine || state.reserve <= 0) return;
-    const isAdrenaline =
-      this.activeSynergies.has("adrenaline_surge") && this.playerHealth / this.maxHealth <= 0.45;
-    const reloadMult = isAdrenaline ? 0.7 : 1.0;
+    const reloadMult = Math.max(0.4, 1 - 0.2 * this.adrenalineRank());
     state.reloading = stats.reload * reloadMult;
     this.audio.playReload();
   }
@@ -916,7 +1009,9 @@ export class GameEngine {
     if (hasInput) inputDir.normalize();
 
     // Natural responsive acceleration & deceleration friction
-    const targetSpeed = this.dashRemaining > 0 ? 18.5 : this.moveSpeed;
+    // +12% move speed per Adrenaline stack while wounded, as advertised.
+    const adrenalineSpeed = 1 + 0.12 * this.adrenalineRank();
+    const targetSpeed = this.dashRemaining > 0 ? 18.5 : this.moveSpeed * adrenalineSpeed;
     const targetVelocity = hasInput
       ? (this.dashRemaining > 0 ? this.dashDirection : inputDir).clone().multiplyScalar(targetSpeed)
       : new THREE.Vector3(0, 0, 0);
@@ -1001,7 +1096,24 @@ export class GameEngine {
 
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     if (this.dashRemaining > 0) {
+      const wasDashing = this.dashRemaining;
       this.dashRemaining = Math.max(0, this.dashRemaining - dt);
+
+      // Caustic Jet: lay a damaging trail along the dash path.
+      const acidRank = this.activeSynergies.get("acid_dash") ?? 0;
+      if (acidRank > 0) {
+        this.acidTrailTimer -= dt;
+        if (this.acidTrailTimer <= 0) {
+          this.acidTrailTimer = 0.05;
+          this.spawnHazard(this.playerMesh.position, 1.15, 40 * acidRank, 3.2);
+        }
+      }
+
+      // Seismic Surge: the blast fires as the dash ends, not as it begins.
+      const kineticRank = this.activeSynergies.get("kinetic_impact") ?? 0;
+      if (kineticRank > 0 && wasDashing > 0 && this.dashRemaining === 0) {
+        this.detonateSeismicSurge(kineticRank);
+      }
       if (Math.random() < 0.75) {
         const ghost = this.visuals.createDashGhost(this.playerMesh);
         this.scene.add(ghost);
@@ -1058,10 +1170,10 @@ export class GameEngine {
       if (this.spawnTimer <= 0 && this.enemies.length < MAX_ACTIVE_ENEMIES) {
         const type = this.spawnQueue.shift();
         if (type) this.spawnEnemy(type);
-        this.spawnTimer = WAVES[this.wave - 1].spawnInterval;
+        this.spawnTimer = getWaveDefinition(this.wave).spawnInterval;
       }
     } else if (this.enemies.length === 0) {
-      if (this.wave >= 10) {
+      if (this.wave >= CAMPAIGN_WAVES && !this.endless) {
         this.waveActive = false;
         this.pause();
         this.callbacks.onVictory();
@@ -1122,7 +1234,7 @@ export class GameEngine {
       // Burning Damage-over-time
       if (enemy.burningTimer && enemy.burningTimer > 0) {
         enemy.burningTimer -= dt;
-        enemy.health -= 22 * dt;
+        enemy.health -= (enemy.burnDps ?? 22) * dt;
         enemy.hitFlash = Math.max(enemy.hitFlash, 0.06);
         if (enemy.health <= 0) {
           this.killEnemy(enemy);
@@ -1206,7 +1318,25 @@ export class GameEngine {
       let facingX = towardX;
       let facingZ = towardZ;
 
-      if (enemy.type === "spitter" && distance < enemy.definition.attackRange && distance > 3.8) {
+      const standoff = BEHAVIOURS[enemy.type].standoff;
+      // Ranged types hold their range and retreat when crowded, so ignoring a
+      // spitter costs you rather than letting you walk it down at leisure.
+      if (standoff !== undefined && distance < standoff * 0.62 && enemy.windupTimer <= 0) {
+        const retreat = enemy.speed * ((enemy.chilledTimer ?? 0) > 0 ? 0.5 : 1) * 0.85;
+        this.enemyCandidate.set(
+          enemy.mesh.position.x - towardX * retreat * dt,
+          0,
+          enemy.mesh.position.z - towardZ * retreat * dt,
+        );
+        this.resolveEnemyPosition(this.enemyCandidate, enemy.definition.radius);
+        enemy.mesh.position.x = this.enemyCandidate.x;
+        enemy.mesh.position.z = this.enemyCandidate.z;
+        if (enemy.attackCooldown <= 0) {
+          this.enemyCandidate.set(towardX, 0, towardZ);
+          this.spawnEnemyProjectile(enemy, this.enemyCandidate);
+          enemy.attackCooldown = enemy.definition.attackCooldown;
+        }
+      } else if (enemy.type === "spitter" && distance < enemy.definition.attackRange && distance > 3.8) {
         if (enemy.attackCooldown <= 0) {
           this.enemyCandidate.set(towardX, 0, towardZ);
           this.spawnEnemyProjectile(enemy, this.enemyCandidate);
@@ -1238,17 +1368,37 @@ export class GameEngine {
           }
         }
 
-        if (distance <= enemy.definition.attackRange) {
-          if (enemy.attackCooldown <= 0) {
-            this.damagePlayer(enemy.definition.damage);
+        const behaviour = BEHAVIOURS[enemy.type];
+
+        if (enemy.windupTimer > 0) {
+          // Committed to a swing: hold position and resolve when it lands.
+          enemy.windupTimer -= dt;
+          if (enemy.windupTimer <= 0) {
+            this.clearTelegraph(enemy);
+            // The swing can be dodged — stepping or dashing out of range
+            // between the tell and the landing makes it whiff.
+            if (distance <= enemy.definition.attackRange + 0.35) {
+              this.damagePlayer(Math.round(enemy.damage));
+            } else {
+              this.spawnFloatingText(
+                enemy.mesh.position.clone().setY(1.6 * enemy.rig.scale),
+                "MISS!",
+                "ammo",
+              );
+            }
             enemy.attackCooldown = enemy.definition.attackCooldown;
+          }
+        } else if (distance <= enemy.definition.attackRange) {
+          if (enemy.attackCooldown <= 0) {
+            enemy.windupTimer = behaviour.windup;
+            this.showTelegraph(enemy);
           }
         } else {
           const isChilled = (enemy.chilledTimer ?? 0) > 0;
           const frenzyMult = enemy.affix === "frenzy" ? 1.4 : 1.0;
-          const chilledMult = isChilled ? 0.5 : 1.0; // 50% slow when chilled!
+          const chilledMult = isChilled ? (enemy.chillMult ?? 0.7) : 1.0;
           const chargeMult = enemy.chargeRemaining > 0 ? (enemy.bossPhase === 3 ? 3.8 : 3.3) : 1;
-          const speed = enemy.definition.speed * frenzyMult * chilledMult * chargeMult;
+          const speed = enemy.speed * frenzyMult * chilledMult * chargeMult;
 
           let separationX = 0;
           let separationZ = 0;
@@ -1305,22 +1455,86 @@ export class GameEngine {
             cornerNudgeZ = -Math.sign(enemy.mesh.position.z) * 0.9;
           }
 
-          let directionX = towardX + separationX * 0.78 + obstacleAvoidX * 0.85 + cornerNudgeX;
-          let directionZ = towardZ + separationZ * 0.78 + obstacleAvoidZ * 0.85 + cornerNudgeZ;
+          // Flanking: approach along a rotated bearing rather than straight at
+          // the player, converging only once close. Without this every enemy
+          // steered at the same point and the horde arrived as one clump from
+          // a single direction, trivially kited in a circle.
+          let approachX = towardX;
+          let approachZ = towardZ;
+          if (enemy.flankAngle !== 0) {
+            // Blend the offset out as they close, so the final commit is direct.
+            const closing = THREE.MathUtils.clamp((distance - 2.2) / 7, 0, 1);
+            const angle = enemy.flankAngle * closing;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            approachX = towardX * cos - towardZ * sin;
+            approachZ = towardX * sin + towardZ * cos;
+          }
+
+          // Sidestep while wedged: steer across the blockage instead of into
+          // it, and stop fighting the obstacle-avoidance push so the enemy can
+          // slide along a surface rather than being held against it.
+          if (enemy.unstickTimer > 0) {
+            enemy.unstickTimer -= dt;
+            const across = enemy.unstickSign * 1.35;
+            const cos = Math.cos(across);
+            const sin = Math.sin(across);
+            const sx = approachX * cos - approachZ * sin;
+            const sz = approachX * sin + approachZ * cos;
+            approachX = sx;
+            approachZ = sz;
+            obstacleAvoidX *= 0.25;
+            obstacleAvoidZ *= 0.25;
+          }
+
+          let directionX = approachX + separationX * 0.78 + obstacleAvoidX * 0.85 + cornerNudgeX;
+          let directionZ = approachZ + separationZ * 0.78 + obstacleAvoidZ * 0.85 + cornerNudgeZ;
           const directionLength = Math.hypot(directionX, directionZ) || 1;
           directionX /= directionLength;
           directionZ /= directionLength;
           facingX = directionX;
           facingZ = directionZ;
+
+          const beforeX = enemy.mesh.position.x;
+          const beforeZ = enemy.mesh.position.z;
+          const intended = speed * dt;
           this.enemyCandidate.set(
-            enemy.mesh.position.x + directionX * speed * dt,
+            beforeX + directionX * intended,
             0,
-            enemy.mesh.position.z + directionZ * speed * dt,
+            beforeZ + directionZ * intended,
           );
           this.resolveEnemyPosition(this.enemyCandidate, enemy.definition.radius);
           enemy.mesh.position.x = this.enemyCandidate.x;
           enemy.mesh.position.z = this.enemyCandidate.z;
+
+          // Wedge detection. Collision resolution can pin a body at a fixed
+          // point between two obstacles: every step is pushed straight back, so
+          // the enemy "walks" forever without moving. It bites the juggernaut
+          // in particular because its 1.55 radius is the largest, so it fits
+          // gaps the smaller archetypes pass straight through. Rather than
+          // enumerate problem geometry, detect the symptom — trying to move and
+          // not moving — and sidestep out.
+          const movedX = enemy.mesh.position.x - beforeX;
+          const movedZ = enemy.mesh.position.z - beforeZ;
+          const moved = Math.hypot(movedX, movedZ);
+          if (intended > 0.0001 && moved < intended * 0.3) {
+            enemy.stuckTimer += dt;
+            if (enemy.stuckTimer > 0.45 && enemy.unstickTimer <= 0) {
+              enemy.unstickTimer = 1.1;
+              enemy.stuckTimer = 0;
+            }
+          } else if (enemy.unstickTimer <= 0) {
+            enemy.stuckTimer = 0;
+          }
         }
+      }
+
+      if (enemy.telegraph) {
+        enemy.telegraph.position.copy(enemy.mesh.position).setY(0.05);
+        // Shrink toward the strike so the timing is readable at a glance.
+        const behaviour = BEHAVIOURS[enemy.type];
+        const progress = 1 - enemy.windupTimer / Math.max(0.0001, behaviour.windup);
+        enemy.telegraph.scale.setScalar(1 - progress * 0.45);
       }
 
       const isChilled = (enemy.chilledTimer ?? 0) > 0;
@@ -1335,8 +1549,10 @@ export class GameEngine {
       this.visuals.animateCharacter(
         enemy.rig,
         dt,
-        distance > enemy.definition.attackRange ? enemy.definition.speed * (enemy.chargeRemaining > 0 ? 2.2 : 1) : 0,
-        distance <= enemy.definition.attackRange,
+        distance > enemy.definition.attackRange ? enemy.speed * (enemy.chargeRemaining > 0 ? 2.2 : 1) : 0,
+        // Swing animation runs during the wind-up, not on mere proximity —
+        // the animation IS the tell the player reads.
+        enemy.windupTimer > 0,
         enemy.hitFlash,
         isChilled,
         isBurning,
@@ -1361,7 +1577,7 @@ export class GameEngine {
       mesh: group,
       velocity: direction.clone().multiplyScalar(9.0),
       direction: direction.clone(),
-      damage: enemy.definition.damage,
+      damage: Math.round(enemy.damage),
       knockback: 4,
       life: 2.2,
       enemy: true,
@@ -1526,16 +1742,21 @@ export class GameEngine {
     const hitPos = enemy.mesh.position.clone().setY(1.05 * enemy.rig.scale);
 
     // Status synergies
-    if (this.activeSynergies.has("incendiary")) {
+    const incendiaryRank = this.activeSynergies.get("incendiary") ?? 0;
+    if (incendiaryRank > 0) {
       const wasBurning = (enemy.burningTimer ?? 0) > 0;
       enemy.burningTimer = 3.8;
+      enemy.burnDps = 22 * incendiaryRank;
       if (!wasBurning || isCrit) {
         this.spawnFloatingText(hitPos.clone().add(new THREE.Vector3(0, 0.3, 0)), "IGNITE! 🔥", "comic-boom");
       }
     }
-    if (this.activeSynergies.has("cryo_frost")) {
+    const cryoRank = this.activeSynergies.get("cryo_frost") ?? 0;
+    if (cryoRank > 0) {
       const wasChilled = (enemy.chilledTimer ?? 0) > 0;
       enemy.chilledTimer = 4.2;
+      // -30% speed per stack, floored so a chilled enemy never fully freezes.
+      enemy.chillMult = Math.max(0.25, 1 - 0.3 * cryoRank);
       if (!wasChilled || isCrit) {
         this.spawnFloatingText(hitPos.clone().add(new THREE.Vector3(0, 0.3, 0)), "FREEZE! ❄️", "comic-zap");
         this.audio.playFreeze();
@@ -1550,8 +1771,9 @@ export class GameEngine {
     }
 
     // Phantom Reflex reset on elite/boss hit
-    if (this.activeSynergies.has("phantom_reflex") && (enemy.isElite || enemy.type === "juggernaut")) {
-      this.dashCooldown = Math.max(0, this.dashCooldown - 0.7);
+    const phantomRank = this.activeSynergies.get("phantom_reflex") ?? 0;
+    if (phantomRank > 0 && (enemy.isElite || enemy.type === "juggernaut")) {
+      this.dashCooldown = Math.max(0, this.dashCooldown - 0.7 * phantomRank);
     }
 
     // Tesla Arcs Chain Lightning
@@ -1654,6 +1876,23 @@ export class GameEngine {
     }
   }
 
+  /** Ring under an enemy that is mid-swing — the cue the player reads. */
+  private showTelegraph(enemy: EnemyEntity) {
+    if (enemy.telegraph) return;
+    const ring = this.visuals.createTelegraphCircle(enemy.definition.attackRange + 0.35);
+    ring.position.copy(enemy.mesh.position).setY(0.05);
+    this.scene.add(ring);
+    enemy.telegraph = ring;
+    this.audio.tone(190, 0.07, 0.03, "square");
+  }
+
+  private clearTelegraph(enemy: EnemyEntity) {
+    if (!enemy.telegraph) return;
+    this.scene.remove(enemy.telegraph);
+    this.visuals.disposeObject(enemy.telegraph);
+    enemy.telegraph = undefined;
+  }
+
   private killEnemy(enemy: EnemyEntity) {
     // Look the index up rather than trusting a caller's. Cascading deaths — a
     // boomer chain, a barrel chain — splice the array between the moment an
@@ -1661,6 +1900,7 @@ export class GameEngine {
     // live enemy and leaves the dead one walking around.
     const index = this.enemies.indexOf(enemy);
     if (index < 0) return;
+    this.clearTelegraph(enemy);
     const position = enemy.mesh.position.clone();
     this.visuals.disposeCharacter(enemy.rig);
     this.scene.remove(enemy.mesh);
@@ -1711,7 +1951,7 @@ export class GameEngine {
       this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), `${this.comboCount}x UNSTOPPABLE!`, "combo");
     }
 
-    this.createPickup("coin", position, enemy.definition.reward);
+    this.createPickup("coin", position, enemy.reward);
     if (Math.random() < 0.18 || (this.activeAmmoTotal() < 5 && Math.random() < 0.75)) {
       this.createPickup("ammo", position.clone().add(new THREE.Vector3(0.55, 0, 0)), 1);
     }
@@ -1808,6 +2048,91 @@ export class GameEngine {
         this.scene.remove(pickup.mesh);
         this.visuals.disposeObject(pickup.mesh);
         this.pickups.splice(index, 1);
+      }
+    }
+  }
+
+  /** Drop a lingering damage zone on the ground. */
+  private spawnHazard(position: THREE.Vector3, radius: number, dps: number, life: number) {
+    const pool = this.visuals.createSlimePool(radius);
+    pool.position.set(position.x, 0.03, position.z);
+    this.scene.add(pool);
+    this.hazards.push({
+      mesh: pool,
+      x: position.x,
+      z: position.z,
+      radius,
+      dps,
+      life,
+      maxLife: life,
+      tickTimer: 0,
+    });
+    // Cap the trail so a long dash-heavy run cannot accumulate unbounded zones.
+    while (this.hazards.length > 40) {
+      const oldest = this.hazards.shift();
+      if (oldest) {
+        this.scene.remove(oldest.mesh);
+        this.visuals.disposeObject(oldest.mesh);
+      }
+    }
+  }
+
+  /** Seismic Surge: a 360 degree shove-and-damage burst around the player. */
+  private detonateSeismicSurge(rank: number) {
+    const radius = 5.4;
+    const origin = this.playerMesh.position.clone();
+
+    const shock = this.visuals.createShockwaveMesh(radius, COMIC.electric);
+    shock.position.copy(origin).setY(0.08);
+    this.scene.add(shock);
+    this.effects.push({ mesh: shock, life: 0.42, maxLife: 0.42 });
+    this.audio.playGroundSlam();
+    this.cameraShake = Math.max(this.cameraShake, 0.4);
+    this.spawnFloatingText(origin.clone().setY(1.5), "SEISMIC SURGE! 💫", "comic-slam");
+
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      const enemy = this.enemies[index];
+      if (!enemy) continue;
+      const dx = enemy.mesh.position.x - origin.x;
+      const dz = enemy.mesh.position.z - origin.z;
+      const distance = Math.hypot(dx, dz);
+      if (distance > radius) continue;
+      const push = new THREE.Vector3(dx, 0, dz).normalize();
+      this.damageEnemy(enemy, 85 * rank, 15, push);
+      // Stagger: interrupt any wind-up so the burst buys real breathing room.
+      enemy.windupTimer = 0;
+      this.clearTelegraph(enemy);
+    }
+  }
+
+  private updateHazards(dt: number) {
+    for (let index = this.hazards.length - 1; index >= 0; index -= 1) {
+      const hazard = this.hazards[index];
+      hazard.life -= dt;
+      hazard.tickTimer -= dt;
+
+      const fade = Math.max(0, hazard.life / hazard.maxLife);
+      hazard.mesh.scale.setScalar(0.6 + fade * 0.4);
+
+      // Tick at 5Hz rather than per frame: cheaper, and damage numbers stay
+      // readable instead of spraying sixty popups a second.
+      if (hazard.tickTimer <= 0) {
+        hazard.tickTimer = 0.2;
+        for (let e = this.enemies.length - 1; e >= 0; e -= 1) {
+          const enemy = this.enemies[e];
+          if (!enemy) continue;
+          const dx = enemy.mesh.position.x - hazard.x;
+          const dz = enemy.mesh.position.z - hazard.z;
+          if (dx * dx + dz * dz > (hazard.radius + enemy.definition.radius) ** 2) continue;
+          enemy.health -= hazard.dps * 0.2;
+          enemy.hitFlash = Math.max(enemy.hitFlash, 0.05);
+        }
+      }
+
+      if (hazard.life <= 0) {
+        this.scene.remove(hazard.mesh);
+        this.visuals.disposeObject(hazard.mesh);
+        this.hazards.splice(index, 1);
       }
     }
   }
@@ -1973,6 +2298,7 @@ export class GameEngine {
       health: this.playerHealth,
       maxHealth: this.maxHealth,
       wave: this.wave,
+      endless: this.endless,
       enemies: this.enemies.length + this.spawnQueue.length,
       weapon: id,
       weaponName: WEAPONS[id].name,
@@ -2031,6 +2357,7 @@ export class GameEngine {
     this.updateWave(dt);
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
+    this.updateHazards(dt);
     // After projectiles, so indirect damage (chain lightning, burn splash,
     // explosions) resolves into deaths on the same frame it was dealt.
     this.reapDead();
@@ -2197,6 +2524,9 @@ export class GameEngine {
     if (code === "ShiftLeft" || code === "ShiftRight" || code === "Space") this.startDash();
     if (code === "KeyK" && this.qaMode) {
       for (const enemy of this.enemies) {
+        // Telegraph rings live in the scene, not on the rig, so clearing the
+        // enemy list without this leaves them orphaned on the floor.
+        this.clearTelegraph(enemy);
         this.visuals.disposeCharacter(enemy.rig);
         this.scene.remove(enemy.mesh);
       }
@@ -2205,7 +2535,7 @@ export class GameEngine {
       this.waveActive = false;
       this.pause();
       this.emitHud(true);
-      if (this.wave >= 10) this.callbacks.onVictory();
+      if (this.wave >= CAMPAIGN_WAVES && !this.endless) this.callbacks.onVictory();
       else this.callbacks.onWaveComplete(this.wave);
     }
   };
@@ -2238,7 +2568,10 @@ export class GameEngine {
     );
     this.dashDirection = inputDir.lengthSq() > 0 ? inputDir.normalize() : this.aim.clone();
     this.dashRemaining = this.dashTotal;
-    this.dashCooldown = 2.8;
+    // Phantom Reflex shortens the cooldown itself — the card advertised this
+    // and only the elite-hit refund was ever implemented.
+    const phantomRank = this.activeSynergies.get("phantom_reflex") ?? 0;
+    this.dashCooldown = 2.8 * Math.max(0.4, 1 - 0.18 * phantomRank);
     this.cameraShake = Math.max(this.cameraShake, 0.18);
     this.audio.playDash();
 

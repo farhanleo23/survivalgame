@@ -484,6 +484,34 @@ button:focus-visible {
   box-shadow: 0 0 0 var(--c-ink);
 }
 
+/* Resume sits between the primary CTA and the secondary link in weight. */
+.victory-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.comic-resume {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 13px 18px;
+  background: var(--c-yellow);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+  font: 900 14px "Arial Black", Impact, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.comic-resume:hover {
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 var(--c-ink);
+}
+
 .comic-secondary {
   padding: 12px 16px;
   background: var(--c-paper);
@@ -947,8 +975,7 @@ button:focus-visible {
   inset: 0;
   pointer-events: none;
   z-index: 3;
-  background: radial-gradient(ellipse at 50% 46%, transparent 58%, rgba(1, 7, 8, 0.26) 82%, rgba(1, 5, 6, 0.62) 100%);
-  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.36);
+  background: radial-gradient(ellipse at 50% 46%, transparent 66%, rgba(18, 13, 26, 0.12) 88%, rgba(18, 13, 26, 0.28) 100%);
 }
 
 .canvas-mount.is-hit::after {
@@ -966,662 +993,595 @@ button:focus-visible {
   }
 }
 
+/* ── In-game HUD (comic) ────────────────────────────────────────────────────
+   Printed instrument panels over the arena. Ink borders and hard offset
+   shadows match the homepage; fills stay opaque so readouts survive against a
+   bright floor, which translucent dark glass did not. */
+
 .combat-reticle {
   position: absolute;
   z-index: 5;
   left: var(--aim-x);
   top: var(--aim-y);
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
   pointer-events: none;
-  transform: translate(-50%, -50%);
-  border: 1.5px solid rgba(0, 245, 212, 0.85);
-  border-radius: 50%;
-  box-shadow: 0 0 10px rgba(0, 245, 212, 0.4);
-}
-.combat-reticle::before {
-  content: "";
-  position: absolute;
-  inset: 11px;
-  border-radius: 50%;
-  background: var(--cyan);
 }
 .combat-reticle i,
 .combat-reticle b {
   position: absolute;
-  display: block;
-  background: rgba(0, 245, 212, 0.9);
+  background: var(--c-ink);
 }
+/* Cross-hair drawn as four ink ticks with a gap at the centre. */
 .combat-reticle i {
-  left: 13px;
-  top: -5px;
-  width: 1px;
-  height: 38px;
+  left: 50%;
+  top: 0;
+  width: 3px;
+  height: 10px;
+  margin-left: -1.5px;
+  box-shadow: 0 20px 0 var(--c-ink);
 }
 .combat-reticle b {
-  left: -5px;
-  top: 13px;
-  width: 38px;
-  height: 1px;
+  top: 50%;
+  left: 0;
+  width: 10px;
+  height: 3px;
+  margin-top: -1.5px;
+  box-shadow: 20px 0 0 var(--c-ink);
+}
+.combat-reticle::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 3px solid var(--c-yellow);
+  border-radius: 50%;
 }
 
-/* Comic / Graphic-Novel In-Game HUD (Matching Screenshot) */
 .comic-hud {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 6;
   pointer-events: none;
-  font-family: "Arial Narrow", "Roboto Condensed", ui-monospace, monospace;
-  text-transform: uppercase;
+  color: var(--c-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* 1. Top-Left: Kai HP, Dash Bar & Isometric Radar Mini-Map */
 .comic-hud-top-left {
   position: absolute;
-  left: 24px;
-  top: 24px;
+  top: 14px;
+  left: 14px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .operator-vitals-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 238px;
-  padding: 10px 16px 12px 12px;
-  border-left: 3px solid rgba(255, 49, 80, 0.9);
-  background: linear-gradient(100deg, rgba(4, 10, 13, 0.9), rgba(4, 10, 13, 0.38) 82%, transparent);
-  clip-path: polygon(0 0, 94% 0, 100% 22%, 100% 100%, 0 100%);
+  width: 244px;
+  padding: 9px 11px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
 }
 
 .operator-title-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  margin-bottom: 6px;
 }
-
 .heart-icon {
-  width: 17px;
-  height: 17px;
   display: grid;
   place-items: center;
-  border: 1px solid #ff3154;
-  color: #ff3154;
-  font: 900 14px/1 ui-monospace, monospace;
-  filter: drop-shadow(0 0 7px #ff0055);
+  width: 17px;
+  height: 17px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  font: 900 12px ui-monospace, monospace;
 }
-
 .operator-name {
-  color: #ff5f66;
-  font: 900 13px ui-monospace, monospace;
-  letter-spacing: 0.12em;
-  text-shadow: 0 0 10px rgba(255, 0, 85, 0.6);
+  font: 900 11px ui-monospace, monospace;
+  letter-spacing: 0.08em;
 }
 
 .vital-bar {
   position: relative;
-  width: 100%;
-  background: rgba(0, 0, 0, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  height: 13px;
+  margin-top: 4px;
+  background: #d9d0bd;
+  border: 3px solid var(--c-ink);
   overflow: hidden;
 }
-
-.health-bar {
-  height: 14px;
-  border-color: rgba(255, 0, 85, 0.4);
+.vital-fill {
+  height: 100%;
+  transition: width 0.16s linear;
 }
-
 .health-fill-bar {
-  height: 100%;
-  background: #ff2a4b;
-  box-shadow: 0 0 14px #ff2a4b;
-  transition: width 0.12s ease;
+  background: var(--c-red);
 }
-
-.low-health-warning .health-fill-bar {
-  animation: pulse-health 0.5s ease-in-out infinite alternate;
-}
-
-@keyframes pulse-health {
-  from { opacity: 0.6; }
-  to { opacity: 1; }
-}
-
 .energy-bar {
-  height: 8px;
-  border-color: rgba(0, 245, 212, 0.4);
-  display: flex;
-  align-items: center;
+  height: 9px;
 }
-
-.energy-icon {
-  position: absolute;
-  left: 2px;
-  font-size: 8px;
-  color: #00f5d4;
-  z-index: 2;
-}
-
 .energy-fill-bar {
-  height: 100%;
-  background: #00f5d4;
-  box-shadow: 0 0 10px #00f5d4;
-  transition: width 0.1s linear;
+  background: var(--c-blue);
+}
+.energy-icon {
+  display: none;
 }
 
-/* Isometric Angled Mini-Map */
+/* Low health flashes the bar rather than dimming the screen. */
+.low-health-warning .health-fill-bar {
+  animation: hud-flash 0.6s steps(2, end) infinite;
+}
+@keyframes hud-flash {
+  50% {
+    background: var(--c-yellow);
+  }
+}
+
 .isometric-minimap {
   position: relative;
-  width: 130px;
-  height: 130px;
-  background: linear-gradient(145deg, rgba(4, 16, 20, 0.92), rgba(2, 9, 12, 0.8));
-  border: 1px solid rgba(75, 220, 224, 0.68);
-  border-left-width: 3px;
-  box-shadow: 0 0 20px rgba(0, 245, 212, 0.25);
-  backdrop-filter: blur(6px);
-  transform: perspective(300px) rotateX(10deg) rotateZ(-1deg);
-  clip-path: polygon(0 0, 88% 0, 100% 12%, 100% 100%, 0 100%);
+  width: 152px;
+  height: 152px;
+  background: var(--c-sky);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
   overflow: hidden;
 }
-
 .minimap-grid-lines {
   position: absolute;
   inset: 0;
-  background-size: 16px 16px;
   background-image:
-    linear-gradient(to right, rgba(0, 245, 212, 0.15) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 245, 212, 0.15) 1px, transparent 1px);
+    linear-gradient(rgba(244, 234, 214, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(244, 234, 214, 0.16) 1px, transparent 1px);
+  background-size: 19px 19px;
 }
-
 .minimap-player-blip {
   position: absolute;
   left: 50%;
   top: 50%;
   width: 0;
   height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-bottom: 10px solid #00f5d4;
-  filter: drop-shadow(0 0 6px #00f5d4);
-  z-index: 3;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 11px solid var(--c-blue);
 }
-
 .minimap-enemy-blip {
   position: absolute;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #ff3366;
-  box-shadow: 0 0 8px #ff3366;
-  transform: translate(-50%, -50%);
-  z-index: 2;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  background: var(--c-red);
+  border: 1px solid var(--c-ink);
 }
 .minimap-enemy-blip.enemy-spitter {
-  background: #39ff14;
-  box-shadow: 0 0 8px #39ff14;
+  background: var(--c-green);
 }
 .minimap-enemy-blip.enemy-brute {
-  width: 8px;
-  height: 8px;
-  background: #ffaa00;
-  box-shadow: 0 0 10px #ffaa00;
+  background: #8f6bd6;
+  width: 9px;
+  height: 9px;
 }
 .minimap-enemy-blip.enemy-juggernaut {
-  width: 10px;
-  height: 10px;
-  background: #ff0055;
-  box-shadow: 0 0 14px #ff0055;
+  background: var(--c-yellow);
+  width: 12px;
+  height: 12px;
 }
 
-/* 2. Top-Right: Salvage Score & Wave Timer Badge */
 .comic-hud-top-right {
   position: absolute;
-  right: 28px;
-  top: 24px;
+  top: 14px;
+  right: 14px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
-  min-width: 190px;
-  padding: 10px 14px 12px 34px;
-  border-right: 3px solid rgba(56, 211, 218, 0.9);
-  background: linear-gradient(270deg, rgba(4, 10, 13, 0.9), rgba(4, 10, 13, 0.38) 82%, transparent);
-  clip-path: polygon(10% 0, 100% 0, 100% 100%, 0 100%, 0 20%);
+  gap: 7px;
 }
 
 .hud-score-display {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
+  padding: 6px 12px;
+  background: var(--c-ink);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+  text-align: right;
 }
-
 .hud-score-display span {
-  color: rgba(213, 233, 228, 0.58);
+  display: block;
   font: 800 8px ui-monospace, monospace;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.18em;
+  color: rgba(244, 234, 214, 0.66);
 }
-
 .hud-score-display strong {
-  font: 900 28px ui-monospace, monospace;
-  color: #ffffff;
-  letter-spacing: 0.06em;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+  font: 900 21px ui-monospace, monospace;
+  color: var(--c-yellow);
 }
 
 .hud-wave-status {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  padding: 6px 12px;
+  background: var(--c-yellow);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+  text-align: right;
 }
 .hud-wave-status span {
-  font: 900 14px ui-monospace, monospace;
-  color: #00f5d4;
-  letter-spacing: 0.16em;
-  text-shadow: 0 0 8px rgba(0, 245, 212, 0.7);
+  display: block;
+  font: 900 13px ui-monospace, monospace;
+  letter-spacing: 0.06em;
 }
-.hud-wave-status small {
-  font: 800 13px ui-monospace, monospace;
-  color: rgba(255, 255, 255, 0.8);
-  letter-spacing: 0.08em;
+/* Names what the counter is counting — without it "/10" implied the whole
+   game ended at wave ten, which stopped being true once endless landed. */
+.wave-mode {
+  display: block;
+  font: 900 8px ui-monospace, monospace;
+  font-style: normal;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.7;
 }
 
-/* 3. Bottom-Left: Deadwave Logo Brand Mark */
+/* Redeploy budget: filled pips are lives in hand. */
+.hud-redeploys {
+  display: flex;
+  gap: 4px;
+}
+.hud-redeploys i {
+  width: 15px;
+  height: 15px;
+  background: #d9d0bd;
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+}
+.hud-redeploys i.available {
+  background: var(--c-green);
+}
+
+/* Endless waves flip the chip red so depth reads as danger, not progress. */
+.hud-wave-status.is-endless {
+  background: var(--c-red);
+  color: var(--c-paper);
+}
+
+.hud-wave-status small {
+  font: 800 10px ui-monospace, monospace;
+  opacity: 0.72;
+}
+
 .comic-hud-bottom-left {
   position: absolute;
-  left: 24px;
-  bottom: 24px;
+  bottom: 14px;
+  left: 16px;
 }
 .deadwave-watermark {
-  font: 900 20px ui-monospace, monospace;
-  letter-spacing: 0.22em;
-  color: rgba(255, 255, 255, 0.85);
-  text-transform: uppercase;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+  font: 900 15px "Arial Black", Impact, sans-serif;
+  letter-spacing: 0.24em;
+  color: var(--c-paper);
+  -webkit-text-stroke: 2px var(--c-ink);
+  paint-order: stroke fill;
+  opacity: 0.85;
 }
 
-/* 4. Bottom-Right: Active Weapon Silhouette, Ammo & Cooldown Box */
 .comic-hud-bottom-right {
   position: absolute;
-  right: 24px;
-  bottom: 24px;
+  right: 14px;
+  /* The weapon-name tag hangs 9px below the card; clear it or it clips. */
+  bottom: 26px;
   display: flex;
   align-items: flex-end;
-  gap: 16px;
+  gap: 9px;
 }
 
 .ability-cooldown-box {
-  width: 58px;
-  height: 58px;
-  border: 2px solid #ffb703;
-  background: linear-gradient(145deg, rgba(11, 25, 29, 0.94), rgba(2, 9, 12, 0.9));
-  box-shadow: 0 0 16px rgba(255, 183, 3, 0.4);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   gap: 2px;
-  backdrop-filter: blur(4px);
+  width: 60px;
+  padding: 7px 4px;
+  background: #d9d0bd;
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
 }
 .ability-cooldown-box.ready {
-  border-color: #00f5d4;
-  box-shadow: 0 0 20px rgba(0, 245, 212, 0.6);
+  background: var(--c-green);
 }
-.ability-icon {
-  width: 26px;
-  height: 26px;
-  color: #00f5d4;
+.ability-icon svg {
+  width: 19px;
+  height: 19px;
+  color: var(--c-ink);
 }
 .ability-label {
-  font: 900 8px ui-monospace, monospace;
-  color: #ffb703;
-  letter-spacing: 0.12em;
-}
-.ability-cooldown-box.ready .ability-label {
-  color: #00f5d4;
+  font: 900 7px ui-monospace, monospace;
+  letter-spacing: 0.1em;
 }
 
 .comic-weapon-card {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 6px 12px;
-  border-bottom: 2px solid rgba(255, 183, 3, 0.75);
-  background: linear-gradient(270deg, rgba(3, 9, 12, 0.86), rgba(3, 9, 12, 0.22));
-  clip-path: polygon(8% 0, 100% 0, 100% 100%, 0 100%, 0 34%);
+  gap: 11px;
+  padding: 9px 13px 9px 11px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
 }
-
-.active-weapon-name {
-  position: absolute;
-  right: 12px;
-  bottom: -15px;
-  color: rgba(221, 241, 236, 0.72);
-  font: 800 8px ui-monospace, monospace;
-  letter-spacing: 0.16em;
-  white-space: nowrap;
-}
-
 .weapon-silhouette-container {
-  width: 90px;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 68px;
+  color: var(--c-ink);
 }
-
-.weapon-svg-silhouette {
-  width: 100%;
-  height: 100%;
-  color: #ffffff;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
-}
-.weapon-svg-silhouette.compact {
-  width: 60px;
-  height: 22px;
-}
-
 .ammo-numbers {
   display: flex;
   align-items: baseline;
   gap: 2px;
 }
 .ammo-numbers strong {
-  font: 900 36px ui-monospace, monospace;
-  color: #ffffff;
-  line-height: 1;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+  font: 900 26px ui-monospace, monospace;
+  color: var(--c-ink);
 }
 .ammo-numbers small {
-  font: 800 16px ui-monospace, monospace;
-  color: rgba(255, 255, 255, 0.7);
+  font: 800 12px ui-monospace, monospace;
+  color: #6b6486;
 }
-
-.weapon-swap-key-tag {
-  background: rgba(0, 245, 212, 0.15);
-  border: 1px solid #00f5d4;
-  color: #00f5d4;
-  font: 900 10px ui-monospace, monospace;
-  padding: 2px 6px;
-  border-radius: 2px;
-}
-
-.weapon-rank-tag-mini {
-  color: #ffb703;
-  font: 900 11px ui-monospace, monospace;
-  letter-spacing: 1px;
-}
-
 .comic-weapon-card.reloading .ammo-numbers strong {
-  font-size: 20px;
-  color: #ffb703;
+  font-size: 15px;
+  color: var(--c-red);
+  animation: hud-flash 0.5s steps(2, end) infinite;
+}
+.weapon-swap-key-tag {
+  position: absolute;
+  top: -9px;
+  right: 32px;
+  padding: 1px 5px;
+  background: var(--c-ink);
+  color: var(--c-paper);
+  font: 900 9px ui-monospace, monospace;
+}
+.weapon-rank-tag-mini {
+  position: absolute;
+  top: -9px;
+  right: 6px;
+  padding: 1px 5px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  font: 900 9px ui-monospace, monospace;
+}
+.active-weapon-name {
+  position: absolute;
+  left: 11px;
+  bottom: -9px;
+  padding: 1px 6px;
+  background: var(--c-sky);
+  color: var(--c-paper);
+  font: 800 8px ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-/* Multi-Phase Boss Health Bar */
+/* ── Synergy tray ── */
+.hud-synergy-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: 244px;
+}
+.hud-synergy-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  pointer-events: auto;
+}
+.hud-synergy-badge.rarity-common {
+  background: var(--c-paper);
+}
+.hud-synergy-badge.rarity-rare {
+  background: var(--c-blue);
+}
+.hud-synergy-badge.rarity-epic {
+  background: var(--c-yellow);
+}
+.hud-synergy-icon {
+  font-size: 12px;
+}
+.hud-synergy-rank {
+  font: 900 9px ui-monospace, monospace;
+}
+
+/* ── Boss bar ── */
 .boss-hud {
   position: absolute;
-  top: 88px;
+  top: 16px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(560px, 78vw);
-  text-align: center;
-  padding: 12px 18px;
-  background: linear-gradient(135deg, rgba(24, 4, 10, 0.94), rgba(10, 2, 4, 0.96));
-  border: 2px solid var(--crimson);
-  box-shadow: 0 0 30px rgba(255, 0, 85, 0.4), inset 0 0 20px rgba(255, 0, 85, 0.15);
-  border-radius: 4px;
-  z-index: 10;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  width: min(560px, 56vw);
+  padding: 8px 12px;
+  background: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
 }
 .boss-hud.phase-2 {
-  border-color: #ff9900;
-  box-shadow: 0 0 36px rgba(255, 153, 0, 0.45), inset 0 0 20px rgba(255, 153, 0, 0.2);
+  background: var(--c-yellow);
 }
-.boss-hud.phase-3, .boss-hud.is-enraged {
-  border-color: #ff0055;
-  box-shadow: 0 0 45px rgba(255, 0, 85, 0.7), inset 0 0 25px rgba(255, 0, 85, 0.35);
-  animation: boss-berserk-pulse 0.9s infinite alternate ease-in-out;
+.boss-hud.phase-3,
+.boss-hud.is-enraged {
+  background: var(--c-red);
+  color: var(--c-paper);
 }
-@keyframes boss-berserk-pulse {
-  0% { transform: translateX(-50%) scale(1); box-shadow: 0 0 30px rgba(255, 0, 85, 0.5); }
-  100% { transform: translateX(-50%) scale(1.02); box-shadow: 0 0 55px rgba(255, 0, 85, 0.9); }
-}
-
 .boss-title {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
-  color: var(--crimson);
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
+  gap: 10px;
+  margin-bottom: 6px;
 }
 .boss-nameplate {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  font: 900 12px ui-monospace, monospace;
+  letter-spacing: 0.06em;
 }
 .boss-phase-badge {
-  font-size: 10px;
-  padding: 2px 8px;
-  background: rgba(255, 0, 85, 0.2);
-  border: 1px solid var(--crimson);
-  border-radius: 2px;
-  color: #ffffff;
-  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  background: var(--c-ink);
+  color: var(--c-paper);
+  font: 900 8px ui-monospace, monospace;
+  letter-spacing: 0.08em;
 }
 .boss-phase-badge.berserk {
-  background: #ff0055;
-  color: #000000;
-  font-weight: 900;
-  animation: pulse-badge 0.6s infinite alternate;
+  background: var(--c-paper);
+  color: var(--c-red);
 }
-@keyframes pulse-badge {
-  from { opacity: 0.8; }
-  to { opacity: 1; }
+.boss-title strong {
+  font: 900 14px ui-monospace, monospace;
 }
-
 .boss-track {
   position: relative;
-  height: 12px;
-  border: 1px solid rgba(255, 0, 85, 0.6);
-  background: rgba(0, 0, 0, 0.75);
-  padding: 2px;
+  height: 15px;
+  background: #d9d0bd;
+  border: 3px solid var(--c-ink);
   overflow: hidden;
+}
+.boss-track i {
+  display: block;
+  height: 100%;
+  background: var(--c-red);
+  transition: width 0.2s linear;
+}
+.boss-hud.phase-3 .boss-track i,
+.boss-hud.is-enraged .boss-track i {
+  background: var(--c-ink);
 }
 .boss-phase-divider {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
-  background: rgba(255, 255, 255, 0.7);
+  width: 3px;
+  background: var(--c-ink);
   z-index: 2;
-  box-shadow: 0 0 4px #ffffff;
-}
-.boss-track i {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, #ff0055, #ff5c8a, #ffd166);
-  box-shadow: 0 0 16px rgba(255, 0, 85, 0.9);
-  transition: width 0.14s cubic-bezier(0.2, 0, 0.38, 0.9);
 }
 
-/* Active Roguelite Synergies HUD Tray */
-.hud-synergy-tray {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-  max-width: 280px;
-}
-.hud-synergy-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  background: rgba(4, 14, 10, 0.88);
-  border: 1.5px solid var(--line-bright);
-  border-radius: 3px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  transition: transform 0.15s ease;
-}
-.hud-synergy-badge:hover {
-  transform: translateY(-2px) scale(1.08);
-}
-.hud-synergy-badge.rarity-common {
-  border-color: #00f5d4;
-  color: #00f5d4;
-  box-shadow: 0 0 10px rgba(0, 245, 212, 0.25);
-}
-.hud-synergy-badge.rarity-rare {
-  border-color: #a855f7;
-  color: #c084fc;
-  box-shadow: 0 0 12px rgba(168, 85, 247, 0.35);
-}
-.hud-synergy-badge.rarity-epic {
-  border-color: #ffb703;
-  color: #ffb703;
-  box-shadow: 0 0 14px rgba(255, 183, 3, 0.45);
-}
-.hud-synergy-icon {
-  font-size: 13px;
-  line-height: 1;
-}
-.hud-synergy-rank {
-  font-weight: 900;
-  font-size: 10px;
-  opacity: 0.9;
-}
-
-/* Extraction / Inter-Wave Beacon HUD Widget */
+/* ── Extraction beacon ── */
 .extraction-hud-card {
   position: absolute;
-  top: 92px;
+  bottom: 74px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(540px, 86vw);
-  padding: 14px 20px;
-  background: rgba(6, 18, 14, 0.92);
-  border: 1px solid var(--line-bright);
-  border-top: 3px solid var(--cyan);
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(8px);
-  animation: pop-badge 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  pointer-events: none;
+  width: min(430px, 62vw);
+  padding: 10px 13px;
+  background: var(--c-yellow);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
 }
-
 .extraction-hud-card.is-charging {
-  border-top-color: var(--amber);
-  background: linear-gradient(180deg, rgba(255, 183, 3, 0.14), rgba(6, 18, 14, 0.95));
-  box-shadow: 0 0 30px rgba(255, 183, 3, 0.35);
+  background: var(--c-green);
 }
-
 .extraction-hud-header {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 10px;
+  gap: 9px;
+  margin-bottom: 7px;
 }
-
 .beacon-icon {
-  font-size: 24px;
-  color: var(--cyan);
-  text-shadow: 0 0 14px var(--cyan);
+  font-size: 17px;
 }
-.extraction-hud-card.is-charging .beacon-icon {
-  color: var(--amber);
-  text-shadow: 0 0 14px var(--amber);
-}
-
 .extraction-hud-header strong {
   display: block;
-  font-size: 13px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--paper);
+  font: 900 12px ui-monospace, monospace;
+  letter-spacing: 0.06em;
 }
-
 .extraction-hud-header p {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.4;
+  margin: 1px 0 0;
+  font: 700 10px ui-monospace, monospace;
+  opacity: 0.8;
 }
-
 .extraction-progress-track {
-  height: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(0, 0, 0, 0.6);
-  padding: 1px;
+  height: 11px;
+  background: #d9d0bd;
+  border: 3px solid var(--c-ink);
+  overflow: hidden;
 }
-
 .extraction-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #ffb703, #ff0055);
-  box-shadow: 0 0 14px rgba(255, 183, 3, 0.8);
-  transition: width 0.08s linear;
+  background: var(--c-ink);
+  transition: width 0.1s linear;
+}
+
+/* ── Combo + announcements ── */
+.combo-hud-badge {
+  position: absolute;
+  top: 15%;
+  right: 22px;
+  padding: 6px 11px;
+  background: var(--c-red);
+  color: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+  text-align: center;
+  transform: rotate(-5deg);
+}
+.combo-number {
+  display: block;
+  font: 900 22px "Arial Black", Impact, sans-serif;
+  color: var(--c-yellow);
+}
+.combo-label {
+  font: 900 7px ui-monospace, monospace;
+  letter-spacing: 0.12em;
 }
 
 .wave-announcement {
   position: absolute;
-  top: 22%;
+  top: 20%;
   left: 50%;
-  transform: translateX(-50%);
-  color: var(--paper);
+  padding: 9px 26px;
+  background: var(--c-paper);
+  border: var(--ink-line);
+  box-shadow: var(--ink-drop);
+  font: 900 clamp(14px, 1.7vw, 22px) "Arial Black", Impact, sans-serif;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  font-size: clamp(15px, 1.8vw, 24px);
-  font-weight: 900;
-  letter-spacing: 0.18em;
-  padding: 10px 40px;
-  border-top: 1px solid rgba(98, 236, 239, 0.68);
-  border-bottom: 1px solid rgba(98, 236, 239, 0.32);
-  background: linear-gradient(90deg, transparent, rgba(3, 12, 15, 0.78) 20% 80%, transparent);
-  text-shadow:
-    0 0 20px rgba(0, 245, 212, 0.6),
-    0 4px 30px #000;
-  animation: announce 2.6s ease both;
   white-space: nowrap;
+  animation: announce 2.6s ease both;
 }
 
 @keyframes announce {
   0% {
     opacity: 0;
-    transform: translate(-50%, -15px) scale(0.9);
+    transform: translate(-50%, -15px) scale(0.9) rotate(-2deg);
   }
   15%,
   75% {
     opacity: 1;
-    transform: translate(-50%, 0) scale(1);
+    transform: translate(-50%, 0) scale(1) rotate(-2deg);
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, 10px) scale(1.05);
+    transform: translate(-50%, 10px) scale(1.05) rotate(-2deg);
   }
 }
 
 .game-controls {
   position: absolute;
   z-index: 4;
-  bottom: 12px;
+  bottom: 10px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 16px;
-  color: rgba(180, 215, 200, 0.7);
-  font: 700 9px ui-monospace, monospace;
+  gap: 13px;
+  padding: 5px 12px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  color: #6b6486;
+  font: 800 9px ui-monospace, monospace;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   white-space: nowrap;
   pointer-events: none;
 }
 .game-controls b {
-  color: var(--cyan);
+  color: var(--c-ink);
 }
 
 .mobile-combat-controls {
@@ -1775,7 +1735,10 @@ button:focus-visible {
   font-size: 15px;
   transform: translate(-50%, -50%);
   animation: float-up 0.65s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+  /* Hard ink outline instead of a soft drop shadow: a blurred shadow vanishes
+     against the bright comic floor, where the old dark arena hid the problem. */
+  -webkit-text-stroke: 3px var(--c-ink);
+  paint-order: stroke fill;
   white-space: nowrap;
 }
 

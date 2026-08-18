@@ -1,4 +1,5 @@
 import type {
+  CardRarity,
   EnemyDefinition,
   EnemyId,
   PerkId,
@@ -99,7 +100,7 @@ export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
     id: "incendiary",
     name: "Dragon's Breath",
     rarity: "rare",
-    description: "Bullets ignite enemies for 3s burn damage. Burning foes burst into flame on death.",
+    description: "Bullets ignite enemies for 22 burn damage/sec per stack. Burning foes detonate on death.",
     flavorText: "White phosphorus paste engineered for bio-containment.",
     icon: "🔥",
     maxStacks: 2,
@@ -108,7 +109,7 @@ export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
     id: "cryo_frost",
     name: "Cryo Core",
     rarity: "common",
-    description: "Bullets chill targets, slowing movement by 35% and granting +15% critical vulnerability.",
+    description: "Bullets chill targets: -30% enemy speed per stack, +15% critical vulnerability.",
     flavorText: "Sub-zero flash-freezing halts charging runners in their tracks.",
     icon: "❄️",
     maxStacks: 2,
@@ -117,7 +118,7 @@ export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
     id: "acid_dash",
     name: "Caustic Jet",
     rarity: "rare",
-    description: "Dashing spews a caustic chemical slime path dealing 45 acid damage/sec to pursuers.",
+    description: "Dashing lays a caustic trail dealing 40 acid damage/sec per stack to pursuers.",
     flavorText: "Never evade without leaving a lethal wake.",
     icon: "🧪",
     maxStacks: 2,
@@ -126,7 +127,7 @@ export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
     id: "kinetic_impact",
     name: "Seismic Surge",
     rarity: "epic",
-    description: "Dash release triggers an inked 360° comic blast, dealing 85 damage and staggering crowds.",
+    description: "Dash release detonates a 360° blast for 85 damage per stack, staggering the crowd.",
     flavorText: "Instantaneous pressure wave clears immediate personal space.",
     icon: "💫",
     maxStacks: 2,
@@ -135,7 +136,7 @@ export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
     id: "phantom_reflex",
     name: "Phantom Reflex",
     rarity: "common",
-    description: "Dash cooldown reduced by 30%. Hitting an elite or boss immediately restores 50% dash.",
+    description: "Dash cooldown -18% per stack. Hitting an elite or boss refunds 0.7s more per stack.",
     flavorText: "Blink through hostile swarms without breaking your stride.",
     icon: "👟",
     maxStacks: 3,
@@ -153,7 +154,7 @@ export const SYNERGY_CARDS: Record<SynergyCardId, SynergyCardDefinition> = {
     id: "adrenaline_surge",
     name: "Adrenaline Surge",
     rarity: "common",
-    description: "When below 45% HP, gain +40% fire rate, +30% reload speed, and +15% movement speed.",
+    description: "Below 45% HP: +30% fire rate, +20% reload speed and +12% move speed, per stack.",
     flavorText: "Redline your vitals when cornered against the wall.",
     icon: "⚡",
     maxStacks: 2,
@@ -206,17 +207,145 @@ export function getPerkUpgradeCost(id: PerkId, currentRank: number) {
   return PERKS[id].baseCost + currentRank * 85;
 }
 
+/** Relative draw weight per rarity. Higher means offered more often. */
+export const RARITY_WEIGHT: Record<CardRarity, number> = {
+  common: 10,
+  rare: 5,
+  epic: 2,
+};
+
+/**
+ * Weighted draw without replacement.
+ *
+ * The previous implementation was `[...available].sort(() => Math.random() -
+ * 0.5).slice(0, count)`, which has two faults. A random comparator is not a
+ * uniform shuffle, so offer rates tracked a card's index in the array —
+ * measured over 180,000 draws, the first card appeared 12.7% of the time
+ * against 5.7% for the ninth. And despite the "weighted rarity" comment,
+ * rarity was never consulted, so epics dropped as freely as commons.
+ */
 export function getRandomPerkDraft(
   activeCards: Partial<Record<SynergyCardId, number>>,
   count = 3,
 ): SynergyCardDefinition[] {
-  const available = SYNERGY_CARD_IDS.filter((id) => {
-    const current = activeCards[id] ?? 0;
-    return current < SYNERGY_CARDS[id].maxStacks;
-  });
+  const pool = SYNERGY_CARD_IDS.filter((id) => (activeCards[id] ?? 0) < SYNERGY_CARDS[id].maxStacks);
+  const picked: SynergyCardDefinition[] = [];
 
-  // Shuffle available cards with weighted rarity
-  const weighted = [...available].sort(() => Math.random() - 0.5);
-  return weighted.slice(0, count).map((id) => SYNERGY_CARDS[id]);
+  while (picked.length < count && pool.length > 0) {
+    const total = pool.reduce((sum, id) => sum + RARITY_WEIGHT[SYNERGY_CARDS[id].rarity], 0);
+    let roll = Math.random() * total;
+    let index = pool.length - 1;
+    for (let i = 0; i < pool.length; i += 1) {
+      roll -= RARITY_WEIGHT[SYNERGY_CARDS[pool[i]].rarity];
+      if (roll <= 0) {
+        index = i;
+        break;
+      }
+    }
+    const [id] = pool.splice(index, 1);
+    picked.push(SYNERGY_CARDS[id]);
+  }
+
+  return picked;
 }
 
+
+/** How far the authored campaign runs before endless takes over. */
+export const CAMPAIGN_WAVES = WAVES.length;
+
+export interface WaveScaling {
+  health: number;
+  speed: number;
+  damage: number;
+  reward: number;
+}
+
+/**
+ * Per-wave stat multipliers for the infected.
+ *
+ * Before this existed, enemy stats were completely flat: a wave-9 shambler was
+ * identical to a wave-1 one, while the player gained weapon ranks, perks and a
+ * stacking synergy deck. The curves crossed — brutal at the start, trivial by
+ * the end. Scaling the enemies is what lets difficulty track the player, and
+ * it is also what makes endless mode possible at all.
+ *
+ * Health climbs fastest because it is the stat the player's damage growth
+ * directly outpaces. Speed is capped: past about 1.4x, runners outrun the
+ * player's 6.2 move speed and kiting stops being a viable answer to anything.
+ */
+export function getWaveScaling(wave: number): WaveScaling {
+  const step = Math.max(0, wave - 1);
+  // Past the campaign the curve steepens, otherwise endless plateaus.
+  const overtime = Math.max(0, wave - CAMPAIGN_WAVES);
+
+  return {
+    health: 1 + step * 0.15 + overtime * 0.08,
+    speed: Math.min(1.4, 1 + step * 0.018),
+    damage: Math.min(2.6, 1 + step * 0.055),
+    reward: 1 + step * 0.09,
+  };
+}
+
+/**
+ * Wave composition for any wave number. Authored waves 1–10 are returned as
+ * written; beyond that the mix is generated, leaning harder on the fast and
+ * heavy archetypes and dropping a juggernaut every fifth wave.
+ */
+export function getWaveDefinition(wave: number): WaveDefinition {
+  if (wave <= CAMPAIGN_WAVES) return WAVES[wave - 1];
+
+  const over = wave - CAMPAIGN_WAVES;
+  const scale = 1 + over * 0.12;
+  const count = (base: number) => Math.max(1, Math.round(base * scale));
+
+  const enemies: Partial<Record<EnemyId, number>> = {
+    shambler: count(10),
+    runner: count(8),
+    spitter: count(4),
+    brute: count(2),
+    boomer: count(3),
+  };
+  // A titan every fifth endless wave keeps the rhythm from flattening out.
+  if (over % 5 === 0) enemies.juggernaut = 1 + Math.floor(over / 15);
+
+  return {
+    wave,
+    label: `Endless surge ${over}`,
+    enemies,
+    // Spawn pressure tightens but never outruns the active-enemy cap.
+    spawnInterval: Math.max(0.24, 0.46 - over * 0.012),
+  };
+}
+
+export interface EnemyBehaviour {
+  /**
+   * Seconds of wind-up before a melee hit lands. Damage used to apply the
+   * instant an enemy entered range, with no animation to read — survivable
+   * only because early enemies hit softly. Once damage scales past 2x that
+   * becomes unreadable, so every melee attack now telegraphs.
+   */
+  windup: number;
+  /**
+   * How far around the player this archetype circles before closing, in
+   * radians. Zero beelines. Without it every enemy converged on the same
+   * point and the horde arrived as a single clump from one bearing.
+   */
+  flankSpread: number;
+  /** Preferred engagement distance; ranged types back off below it. */
+  standoff?: number;
+}
+
+export const BEHAVIOURS: Record<EnemyId, EnemyBehaviour> = {
+  // Slow and stupid on purpose: the baseline the others are read against.
+  shambler: { windup: 0.5, flankSpread: 0.35 },
+  // Circles wide and comes in from the side — the archetype that punishes
+  // standing still and tunnel-visioning on one direction.
+  runner: { windup: 0.28, flankSpread: 1.15 },
+  // Hangs back and kites; closing the gap has to be the player's job.
+  spitter: { windup: 0.42, flankSpread: 0.8, standoff: 7.2 },
+  // Heavy, slow tell. Telegraph is long enough to reliably dash out of.
+  brute: { windup: 0.75, flankSpread: 0.15 },
+  // Waddles straight in; the threat is the corpse, not the swing.
+  boomer: { windup: 0.55, flankSpread: 0.25 },
+  juggernaut: { windup: 0.7, flankSpread: 0 },
+};

@@ -796,15 +796,39 @@ export class VisualFactory {
     return line;
   }
 
+  /**
+   * Attack telegraph. Read at a glance from the top-down camera over a busy
+   * floor, so it is a filled warning disc under a heavy ink rim rather than a
+   * thin translucent hoop — the first version was invisible in a crowd.
+   */
   createTelegraphCircle(radius = 4.5): THREE.Group {
     const group = new THREE.Group();
-    const ring = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(radius * 0.9, radius, 36)),
-      this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
+
+    const fill = new THREE.Mesh(
+      this.own(new THREE.CircleGeometry(radius, 32)),
+      // Kept low: a dozen overlapping discs in a swarm must not become a soup.
+      this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.19, side: THREE.DoubleSide }),
     );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.06;
-    group.add(ring);
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.y = 0.05;
+    group.add(fill);
+
+    const rim = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(radius * 0.82, radius, 32)),
+      this.palette.flat(COMIC.hazardYellow, { transparent: true, opacity: 0.95, side: THREE.DoubleSide }),
+    );
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = 0.06;
+    group.add(rim);
+
+    const ink = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(radius, radius * 1.09, 32)),
+      this.palette.flat(COMIC.ink, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+    );
+    ink.rotation.x = -Math.PI / 2;
+    ink.position.y = 0.061;
+    group.add(ink);
+
     return group;
   }
 

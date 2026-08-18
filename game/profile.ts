@@ -13,6 +13,8 @@ export function createDefaultProfile(): ProfileV1 {
     settings: { music: true, sfx: true, reducedMotion: false },
     completedLevels: [],
     highestWave: 1,
+    checkpointWave: 1,
+    bestEndlessWave: 0,
   };
 }
 
@@ -59,6 +61,9 @@ export function validateProfile(raw: unknown): ProfileV1 {
       ? [...new Set(value.completedLevels.filter((level) => Number.isInteger(level) && level >= 1 && level <= 50))]
       : [],
     highestWave: safeInt(value.highestWave, 1, 10, 1),
+    // Older saves predate checkpoints; default them to the start.
+    checkpointWave: safeInt(value.checkpointWave, 1, 10, 1),
+    bestEndlessWave: safeInt(value.bestEndlessWave, 0, 9_999, 0),
   };
 }
 

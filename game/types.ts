@@ -124,12 +124,18 @@ export interface ProfileV1 {
   settings: GameSettings;
   completedLevels: number[];
   highestWave: number;
+  /** Furthest wave reached in a failed run; offered as a redeploy point. */
+  checkpointWave: number;
+  /** Deepest endless wave ever reached, for the lobby record. */
+  bestEndlessWave: number;
 }
 
 export interface HudState {
   health: number;
   maxHealth: number;
   wave: number;
+  /** True once the run has continued past the authored campaign. */
+  endless?: boolean;
   enemies: number;
   weapon: WeaponId;
   weaponName: string;

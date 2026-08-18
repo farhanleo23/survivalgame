@@ -36,6 +36,10 @@ const initialHud: HudState = {
 
 type EngineStatus = "idle" | "loading" | "ready" | "error";
 
+/** Redeploys granted at the start of a run, and the ceiling you can bank to. */
+const STARTING_REDEPLOYS = 2;
+const MAX_REDEPLOYS = 3;
+
 export function Deadwave() {
   const [profile, setProfile] = useState<ProfileV1>(() => createDefaultProfile());
   const [screen, setScreen] = useState<GameScreen>("lobby");
@@ -45,6 +49,16 @@ export function Deadwave() {
   const [runToken, setRunToken] = useState(0);
   const [draftCards, setDraftCards] = useState<SynergyCardDefinition[]>([]);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("idle");
+  /** Wave the next run begins on, and the deck it carries in. */
+  const [runStartWave, setRunStartWave] = useState(1);
+  const [carriedSynergies, setCarriedSynergies] = useState<Partial<Record<SynergyCardId, number>>>({});
+  const [deathWave, setDeathWave] = useState(1);
+  /**
+   * In-run redeploys. Spending one resumes the wave with your synergy deck
+   * intact; running out ends the run and the deck with it. Salvage, weapons
+   * and perks are meta-progression and are never lost either way.
+   */
+  const [redeploys, setRedeploys] = useState(STARTING_REDEPLOYS);
   const stageRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngineType | null>(null);
 
@@ -77,8 +91,15 @@ export function Deadwave() {
         engine = new GameEngine(mount, profile, {
           onHud: setHud,
           onCoins: (amount) => commitProfile((current) => ({ ...current, coins: current.coins + amount })),
-          onWaveChange: (wave) => commitProfile((current) => ({ ...current, highestWave: Math.max(current.highestWave, wave) })),
-          onWaveComplete: () => {
+          onWaveChange: (wave) =>
+            commitProfile((current) => ({
+              ...current,
+              highestWave: Math.max(current.highestWave, Math.min(10, wave)),
+              bestEndlessWave: Math.max(current.bestEndlessWave, wave > 10 ? wave : 0),
+            })),
+          onWaveComplete: (wave) => {
+            // Boss waves (5, 10, and every fifth endless surge) bank a redeploy.
+            if (wave % 5 === 0) setRedeploys((left) => Math.min(MAX_REDEPLOYS, left + 1));
             const nextCards = getRandomPerkDraft(engineRef.current?.getSynergies() ?? {}, 3);
             if (nextCards.length > 0) {
               setDraftCards(nextCards);
@@ -87,7 +108,18 @@ export function Deadwave() {
               setScreen("armory");
             }
           },
-          onDeath: () => setScreen("dead"),
+          onDeath: () => {
+            const wave = engineRef.current?.getWave() ?? 1;
+            const deck = engineRef.current?.getSynergies() ?? {};
+            setDeathWave(wave);
+            setCarriedSynergies(deck);
+            // Bank the checkpoint so it survives a refresh, not just this session.
+            commitProfile((current) => ({
+              ...current,
+              checkpointWave: Math.max(current.checkpointWave ?? 1, wave),
+            }));
+            setScreen("dead");
+          },
           onVictory: () => {
             commitProfile((current) => ({
               ...current,
@@ -111,7 +143,12 @@ export function Deadwave() {
           },
         });
         engineRef.current = engine;
-        engine.start(1);
+        engine.start(runStartWave);
+        // start() only clears synergies on wave 1, but the engine itself was
+        // rebuilt, so the deck has to be re-applied for a checkpoint retry.
+        for (const [id, stacks] of Object.entries(carriedSynergies)) {
+          for (let i = 0; i < (stacks ?? 0); i += 1) engine.addSynergy(id as SynergyCardId);
+        }
         if (!cancelled) setEngineStatus("ready");
       } catch {
         engine?.destroy();
@@ -122,19 +159,26 @@ export function Deadwave() {
     return () => {
       cancelled = true;
     };
-  }, [screen, runToken, profile, commitProfile]);
+  }, [screen, runToken, profile, commitProfile, runStartWave, carriedSynergies]);
 
   useEffect(() => () => engineRef.current?.destroy(), []);
 
   const gameVisible = ["playing", "paused", "armory", "draft", "dead", "victory"].includes(screen);
   const healthPercent = Math.max(0, Math.min(100, (hud.health / hud.maxHealth) * 100));
 
-  const startNewRun = () => {
+  const startNewRun = (
+    wave = 1,
+    deck: Partial<Record<SynergyCardId, number>> = {},
+    budget = STARTING_REDEPLOYS,
+  ) => {
     engineRef.current?.destroy();
     engineRef.current = null;
     setHud(initialHud);
     setNotice("");
     setEngineStatus("loading");
+    setRunStartWave(wave);
+    setCarriedSynergies(deck);
+    setRedeploys(budget);
     setRunToken((token) => token + 1);
     setScreen("playing");
   };
@@ -235,6 +279,7 @@ export function Deadwave() {
           profile={profile}
           onStart={() => setScreen("loadout")}
           onOpenArmory={() => setScreen("loadout")}
+          onResume={() => startNewRun(profile.checkpointWave, {})}
           onToggleSetting={toggleSetting}
         />
       )}
@@ -244,7 +289,7 @@ export function Deadwave() {
           profile={profile}
           onToggleWeapon={toggleLoadoutWeapon}
           onBack={() => setScreen("lobby")}
-          onDeploy={startNewRun}
+          onDeploy={() => startNewRun(1, {})}
         />
       )}
 
@@ -264,6 +309,7 @@ export function Deadwave() {
           {engineStatus === "ready" && (
             <Hud
               hud={hud}
+              redeploys={redeploys}
               coins={profile.coins}
               healthPercent={healthPercent}
               weaponRank={profile.weaponRanks[hud.weapon] ?? 1}
@@ -301,7 +347,7 @@ export function Deadwave() {
               <h2>The depot arena could not be initialized.</h2>
               <span>WebGL or a required game shader may be unavailable. Retry deployment or return to lobby.</span>
               <div className="engine-error-actions">
-                <button className="primary-action" onClick={startNewRun}>Retry deployment <span>→</span></button>
+                <button className="primary-action" onClick={() => startNewRun(runStartWave, carriedSynergies)}>Retry deployment <span>→</span></button>
                 <button className="text-action" onClick={returnToLobby}>Return to lobby</button>
               </div>
             </div>
@@ -343,11 +389,46 @@ export function Deadwave() {
       )}
 
       {screen === "dead" && (
-        <Modal eyebrow="Vital Signs Lost" title="M.I.A. IN SECTOR 01" wide={false}>
-          <p className="modal-copy">The quarantine depot claimed another survivor. Your unlocked weapons, upgrade ranks, and <strong>{profile.coins} salvage</strong> are permanently safe.</p>
+        <Modal
+          eyebrow={redeploys > 0 ? "Vital Signs Lost" : "Run Terminated"}
+          title={redeploys > 0 ? "M.I.A. IN SECTOR 01" : "NO REDEPLOYS LEFT"}
+          wide={false}
+        >
+          <p className="modal-copy">
+            {redeploys > 0 ? (
+              <>
+                Redeploy to wave {deathWave} with your synergy deck intact. Your
+                weapons, ranks and <strong>{profile.coins} salvage</strong> are safe
+                either way.
+              </>
+            ) : (
+              <>
+                The run is over and the synergy deck with it. Your weapons, ranks and{" "}
+                <strong>{profile.coins} salvage</strong> carry over, and wave{" "}
+                {profile.checkpointWave} stays unlocked — you just start the next run
+                building a new deck.
+              </>
+            )}
+          </p>
           <div className="result-actions">
-            <button className="primary-action" onClick={startNewRun}>Deploy Again (Wave 1) <span>→</span></button>
-            <button className="text-action" onClick={returnToLobby}>Return to Command</button>
+            {redeploys > 0 ? (
+              <button
+                className="primary-action"
+                data-testid="redeploy"
+                onClick={() => startNewRun(deathWave, carriedSynergies, redeploys - 1)}
+              >
+                Redeploy to wave {deathWave} · {redeploys} left <span>→</span>
+              </button>
+            ) : (
+              <button className="primary-action" onClick={returnToLobby}>
+                Return to Command <span>→</span>
+              </button>
+            )}
+            {redeploys > 0 && (
+              <button className="text-action" onClick={returnToLobby}>
+                End the run and return to Command
+              </button>
+            )}
           </div>
         </Modal>
       )}
@@ -369,7 +450,19 @@ export function Deadwave() {
               <span className="status-tag">Next Milestone</span>
             </article>
           </div>
-          <button className="primary-action victory-button" onClick={returnToLobby}>Return to Command <span>→</span></button>
+          <div className="victory-actions">
+            <button
+              className="primary-action victory-button"
+              data-testid="continue-endless"
+              onClick={() => {
+                engineRef.current?.continueEndless();
+                setScreen("playing");
+              }}
+            >
+              Push into the endless surge <span>→</span>
+            </button>
+            <button className="text-action" onClick={returnToLobby}>Return to Command</button>
+          </div>
         </Modal>
       )}
     </main>
@@ -390,14 +483,18 @@ function Lobby({
   profile,
   onStart,
   onOpenArmory,
+  onResume,
   onToggleSetting,
 }: {
   profile: ProfileV1;
   onStart: () => void;
   onOpenArmory: () => void;
+  onResume: () => void;
   onToggleSetting: (key: "music" | "sfx" | "reducedMotion") => void;
 }) {
   const showArmoryOption = profile.highestWave >= 2 || profile.ownedWeapons.length > 1;
+  // A banked checkpoint outlives the browser session, so offer it up front.
+  const canResume = profile.checkpointWave > 1;
 
   return (
     <div className="menu-shell comic-lobby">
@@ -451,9 +548,15 @@ function Lobby({
 
           <div className="cta-block">
             <button className="comic-cta" data-testid="start-mission" onClick={onStart}>
-              START GAME
+              {canResume ? "NEW RUN" : "START GAME"}
               <span aria-hidden="true">▶</span>
             </button>
+            {canResume && (
+              <button className="comic-resume" data-testid="resume-run" onClick={onResume}>
+                Redeploy to wave {profile.checkpointWave}
+                <span aria-hidden="true">▶</span>
+              </button>
+            )}
             {showArmoryOption && (
               <button className="comic-secondary" onClick={onOpenArmory}>
                 Field armory · {profile.ownedWeapons.length} owned
@@ -576,12 +679,14 @@ function Loadout({
 
 function Hud({
   hud,
+  redeploys,
   coins,
   healthPercent,
   weaponRank,
   loadoutCount,
 }: {
   hud: HudState;
+  redeploys: number;
   coins: number;
   healthPercent: number;
   weaponRank: number;
@@ -673,9 +778,21 @@ function Hud({
           <span>SALVAGE</span>
           <strong>{coins.toLocaleString()}</strong>
         </div>
-        <div className="hud-wave-status" data-testid="hud-wave">
-          <span>WAVE {String(hud.wave).padStart(2, "0")} / 10</span>
+        <div
+          className={`hud-wave-status ${hud.endless ? "is-endless" : ""}`}
+          data-testid="hud-wave"
+        >
+          <em className="wave-mode">{hud.endless ? "Endless" : "Campaign"}</em>
+          <span>
+            WAVE {String(hud.wave).padStart(2, "0")}
+            {hud.endless ? "" : " / 10"}
+          </span>
           <small>{formattedTime}</small>
+        </div>
+        <div className="hud-redeploys" title="Redeploys remaining">
+          {Array.from({ length: MAX_REDEPLOYS }, (_, index) => (
+            <i key={index} className={index < redeploys ? "available" : "spent"} />
+          ))}
         </div>
       </div>
 
