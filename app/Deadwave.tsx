@@ -98,19 +98,34 @@ export function Deadwave() {
       });
     };
 
+    const addMediaListener = (mql: MediaQueryList, listener: () => void) => {
+      if (typeof mql.addEventListener === "function") {
+        mql.addEventListener("change", listener);
+      } else if (typeof (mql as unknown as { addListener: (cb: () => void) => void }).addListener === "function") {
+        (mql as unknown as { addListener: (cb: () => void) => void }).addListener(listener);
+      }
+    };
+    const removeMediaListener = (mql: MediaQueryList, listener: () => void) => {
+      if (typeof mql.removeEventListener === "function") {
+        mql.removeEventListener("change", listener);
+      } else if (typeof (mql as unknown as { removeListener: (cb: () => void) => void }).removeListener === "function") {
+        (mql as unknown as { removeListener: (cb: () => void) => void }).removeListener(listener);
+      }
+    };
+
     syncCapabilities();
-    coarsePointer.addEventListener("change", syncCapabilities);
-    noHover.addEventListener("change", syncCapabilities);
-    portrait.addEventListener("change", syncCapabilities);
-    compact.addEventListener("change", syncCapabilities);
+    addMediaListener(coarsePointer, syncCapabilities);
+    addMediaListener(noHover, syncCapabilities);
+    addMediaListener(portrait, syncCapabilities);
+    addMediaListener(compact, syncCapabilities);
     window.visualViewport?.addEventListener("resize", syncCapabilities);
     window.addEventListener("resize", syncCapabilities);
     window.addEventListener("orientationchange", syncCapabilities);
     return () => {
-      coarsePointer.removeEventListener("change", syncCapabilities);
-      noHover.removeEventListener("change", syncCapabilities);
-      portrait.removeEventListener("change", syncCapabilities);
-      compact.removeEventListener("change", syncCapabilities);
+      removeMediaListener(coarsePointer, syncCapabilities);
+      removeMediaListener(noHover, syncCapabilities);
+      removeMediaListener(portrait, syncCapabilities);
+      removeMediaListener(compact, syncCapabilities);
       window.visualViewport?.removeEventListener("resize", syncCapabilities);
       window.removeEventListener("resize", syncCapabilities);
       window.removeEventListener("orientationchange", syncCapabilities);

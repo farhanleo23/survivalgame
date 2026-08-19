@@ -148,90 +148,111 @@ export interface ComicPostOptions {
 }
 
 export class ComicPostProcess {
-  private target: THREE.WebGLRenderTarget;
-  private material: THREE.ShaderMaterial;
+  private target?: THREE.WebGLRenderTarget;
+  private material?: THREE.ShaderMaterial;
   private quadScene = new THREE.Scene();
   private quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  private quad: THREE.Mesh;
+  private quad?: THREE.Mesh;
   private halftoneCssScale: number;
   private disposed = false;
+  private fallbackDirect = false;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
     options: ComicPostOptions = {},
   ) {
-    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     this.halftoneCssScale = options.halftoneScale ?? 4.5;
+    try {
+      const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
-    const depthTexture = new THREE.DepthTexture(size.x, size.y);
-    depthTexture.type = THREE.UnsignedIntType;
-    depthTexture.minFilter = THREE.NearestFilter;
-    depthTexture.magFilter = THREE.NearestFilter;
+      const depthTexture = new THREE.DepthTexture(size.x, size.y);
+      depthTexture.type = THREE.UnsignedIntType;
+      depthTexture.minFilter = THREE.NearestFilter;
+      depthTexture.magFilter = THREE.NearestFilter;
 
-    this.target = new THREE.WebGLRenderTarget(size.x, size.y, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      depthTexture,
-      depthBuffer: true,
-      stencilBuffer: false,
-    });
-    // Three always writes linear into a non-XR render target — `outputColorSpace`
-    // only applies to the default framebuffer — so the pass reads linear values
-    // and has to encode to sRGB itself before writing to the canvas.
-    this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
+      this.target = new THREE.WebGLRenderTarget(size.x, size.y, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        depthTexture,
+        depthBuffer: true,
+        stencilBuffer: false,
+      });
+      // Three always writes linear into a non-XR render target — `outputColorSpace`
+      // only applies to the default framebuffer — so the pass reads linear values
+      // and has to encode to sRGB itself before writing to the canvas.
+      this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
 
-    this.material = new THREE.ShaderMaterial({
-      vertexShader: COMIC_SHADER.vertex,
-      fragmentShader: COMIC_SHADER.fragment,
-      depthTest: false,
-      depthWrite: false,
-      uniforms: {
-        tDiffuse: { value: this.target.texture },
-        tDepth: { value: depthTexture },
-        uResolution: { value: new THREE.Vector2(size.x, size.y) },
-        uCameraNear: { value: 0.1 },
-        uCameraFar: { value: 110 },
-        uOutlineStrength: { value: options.outlineStrength ?? 1.0 },
-        uOutlineWidth: { value: 2.0 },
-        uHalftoneScale: { value: this.halftoneCssScale * renderer.getPixelRatio() },
-        uHalftoneStrength: { value: options.halftoneStrength ?? 0.5 },
-        uGrainStrength: { value: options.grainStrength ?? 0.045 },
-        uPosterSteps: { value: options.posterSteps ?? 10 },
-        uInkColor: { value: new THREE.Color(options.inkColor ?? 0x140f1e) },
-      },
-    });
+      this.material = new THREE.ShaderMaterial({
+        vertexShader: COMIC_SHADER.vertex,
+        fragmentShader: COMIC_SHADER.fragment,
+        depthTest: false,
+        depthWrite: false,
+        uniforms: {
+          tDiffuse: { value: this.target.texture },
+          tDepth: { value: depthTexture },
+          uResolution: { value: new THREE.Vector2(size.x, size.y) },
+          uCameraNear: { value: 0.1 },
+          uCameraFar: { value: 110 },
+          uOutlineStrength: { value: options.outlineStrength ?? 1.0 },
+          uOutlineWidth: { value: 2.0 },
+          uHalftoneScale: { value: this.halftoneCssScale * renderer.getPixelRatio() },
+          uHalftoneStrength: { value: options.halftoneStrength ?? 0.5 },
+          uGrainStrength: { value: options.grainStrength ?? 0.045 },
+          uPosterSteps: { value: options.posterSteps ?? 10 },
+          uInkColor: { value: new THREE.Color(options.inkColor ?? 0x140f1e) },
+        },
+      });
 
-    // Fullscreen triangle-ish quad; the vertex shader ignores the projection.
-    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
-    this.quad.frustumCulled = false;
-    this.quadScene.add(this.quad);
+      // Fullscreen triangle-ish quad; the vertex shader ignores the projection.
+      this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
+      this.quad.frustumCulled = false;
+      this.quadScene.add(this.quad);
+    } catch {
+      this.fallbackDirect = true;
+    }
   }
 
   setSize(width: number, height: number) {
-    const pixelRatio = this.renderer.getPixelRatio();
-    const w = Math.max(1, Math.floor(width * pixelRatio));
-    const h = Math.max(1, Math.floor(height * pixelRatio));
-    this.target.setSize(w, h);
-    this.material.uniforms.uResolution.value.set(w, h);
-    this.material.uniforms.uOutlineWidth.value = 1.6 * pixelRatio;
-    this.material.uniforms.uHalftoneScale.value = this.halftoneCssScale * pixelRatio;
+    if (this.disposed || this.fallbackDirect || !this.target || !this.material) return;
+    try {
+      const pixelRatio = this.renderer.getPixelRatio();
+      const w = Math.max(1, Math.floor(width * pixelRatio));
+      const h = Math.max(1, Math.floor(height * pixelRatio));
+      this.target.setSize(w, h);
+      this.material.uniforms.uResolution.value.set(w, h);
+      this.material.uniforms.uOutlineWidth.value = 1.6 * pixelRatio;
+      this.material.uniforms.uHalftoneScale.value = this.halftoneCssScale * pixelRatio;
+    } catch {
+      this.fallbackDirect = true;
+    }
   }
 
   /** Set once per frame so the depth linearisation matches the live camera. */
   render(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     if (this.disposed) return;
-    this.material.uniforms.uCameraNear.value = camera.near;
-    this.material.uniforms.uCameraFar.value = camera.far;
+    if (this.fallbackDirect || !this.target || !this.material) {
+      this.renderer.render(scene, camera);
+      return;
+    }
+    try {
+      this.material.uniforms.uCameraNear.value = camera.near;
+      this.material.uniforms.uCameraFar.value = camera.far;
 
-    this.renderer.setRenderTarget(this.target);
-    this.renderer.clear();
-    this.renderer.render(scene, camera);
+      this.renderer.setRenderTarget(this.target);
+      this.renderer.clear();
+      this.renderer.render(scene, camera);
 
-    this.renderer.setRenderTarget(null);
-    this.renderer.render(this.quadScene, this.quadCamera);
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.quadScene, this.quadCamera);
+    } catch {
+      this.fallbackDirect = true;
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(scene, camera);
+    }
   }
 
   setUniform(name: string, value: number) {
+    if (!this.material) return;
     const uniform = this.material.uniforms[name];
     if (uniform) uniform.value = value;
   }
@@ -239,9 +260,13 @@ export class ComicPostProcess {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    this.target.depthTexture?.dispose();
-    this.target.dispose();
-    this.material.dispose();
-    this.quad.geometry.dispose();
+    try {
+      this.target?.depthTexture?.dispose();
+      this.target?.dispose();
+      this.material?.dispose();
+      this.quad?.geometry.dispose();
+    } catch {
+      // Ignore cleanup error
+    }
   }
 }

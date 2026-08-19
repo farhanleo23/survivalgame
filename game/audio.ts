@@ -351,7 +351,23 @@ export class GameAudio {
   }
 
   private createGraph() {
-    this.context = new AudioContext({ latencyHint: "interactive" });
+    try {
+      const AudioCtx =
+        typeof window !== "undefined"
+          ? window.AudioContext ||
+            (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+          : null;
+      if (!AudioCtx) return;
+      try {
+        this.context = new AudioCtx({ latencyHint: "interactive" });
+      } catch {
+        this.context = new AudioCtx();
+      }
+    } catch {
+      return;
+    }
+
+    if (!this.context) return;
     this.master = this.context.createGain();
     this.musicBus = this.context.createGain();
     this.sfxBus = this.context.createGain();

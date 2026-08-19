@@ -93,14 +93,16 @@ export function LobbyHero({ reducedMotion = false }: { reducedMotion?: boolean }
         const post = new ComicPostProcess(renderer);
         post.setSize(width, height);
 
-        const clock = new THREE.Clock();
+        const timer = new THREE.Timer();
+        timer.connect(document);
         let revealed = false;
 
         const animate = () => {
           if (disposed) return;
           frame = requestAnimationFrame(animate);
-          const dt = Math.min(0.05, clock.getDelta());
-          const t = clock.getElapsedTime();
+          timer.update();
+          const dt = Math.min(0.05, timer.getDelta());
+          const t = timer.getElapsed();
 
           // Slow turntable so the silhouette reads from every angle.
           rig.root.rotation.y = reducedMotion ? 0.35 : Math.sin(t * 0.28) * 0.85;
@@ -128,6 +130,7 @@ export function LobbyHero({ reducedMotion = false }: { reducedMotion?: boolean }
 
         cleanup = () => {
           window.removeEventListener("resize", onResize);
+          timer.dispose();
           post.dispose();
           factory.dispose();
           palette.dispose();
