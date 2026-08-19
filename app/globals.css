@@ -126,16 +126,24 @@ button:focus-visible {
   box-shadow: var(--ink-drop);
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.primary-action:hover {
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+/* Every hover state in this file is gated on a real hovering pointer. A phone
+   latches :hover onto whatever you last tapped and holds it until you tap
+   somewhere else, which left buttons and cards sitting 3px out of position
+   with the wrong side of their ink shadow showing. */
+@media (hover: hover) {
+  .primary-action:hover {
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 .primary-action span {
   font-size: 16px;
   transition: transform 0.18s ease;
 }
-.primary-action:hover span {
-  transform: translateX(4px);
+@media (hover: hover) {
+  .primary-action:hover span {
+    transform: translateX(4px);
+  }
 }
 
 /* ── Comic homepage ─────────────────────────────────────────────────────────
@@ -481,9 +489,11 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.comic-cta:hover {
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+@media (hover: hover) {
+  .comic-cta:hover {
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 .comic-cta:active {
   transform: translate(6px, 6px);
@@ -513,9 +523,11 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.comic-resume:hover {
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+@media (hover: hover) {
+  .comic-resume:hover {
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 
 .comic-secondary {
@@ -529,10 +541,12 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.comic-secondary:hover {
-  transform: translate(2px, 2px);
-  box-shadow: 2px 2px 0 var(--c-ink);
-  background: var(--c-yellow);
+@media (hover: hover) {
+  .comic-secondary:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 var(--c-ink);
+    background: var(--c-yellow);
+  }
 }
 
 .block-label {
@@ -584,9 +598,11 @@ button:focus-visible {
   background: var(--c-green);
   opacity: 1;
 }
-.toggle-chip:hover {
-  transform: translate(1px, 1px);
-  box-shadow: 1px 1px 0 var(--c-ink);
+@media (hover: hover) {
+  .toggle-chip:hover {
+    transform: translate(1px, 1px);
+    box-shadow: 1px 1px 0 var(--c-ink);
+  }
 }
 
 .touch-control-summary {
@@ -762,10 +778,12 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.back-button:hover {
-  background: var(--c-yellow);
-  transform: translate(2px, 2px);
-  box-shadow: 2px 2px 0 var(--c-ink);
+@media (hover: hover) {
+  .back-button:hover {
+    background: var(--c-yellow);
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 var(--c-ink);
+  }
 }
 
 .loadout-count {
@@ -798,9 +816,11 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.weapon-card:hover:not(:disabled) {
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+@media (hover: hover) {
+  .weapon-card:hover:not(:disabled) {
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 .weapon-card.equipped {
   background: var(--c-yellow);
@@ -890,11 +910,13 @@ button:focus-visible {
   font: 900 14px "Arial Black", Impact, sans-serif;
   letter-spacing: 0.06em;
 }
-.deploy-bar .primary-action:hover {
-  background: var(--c-red);
-  color: var(--c-paper);
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+@media (hover: hover) {
+  .deploy-bar .primary-action:hover {
+    background: var(--c-red);
+    color: var(--c-paper);
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 
 /* Silhouettes are drawn in ink on the light card. */
@@ -1831,6 +1853,10 @@ button:focus-visible {
   transform: scale(0.76);
   transform-origin: right bottom;
 }
+/* There is no Q on a phone — the SWAP button in the action pad does this. */
+[data-input-mode="touch"] .weapon-swap-key-tag {
+  display: none;
+}
 [data-input-mode="touch"] .wave-announcement {
   top: 24%;
   max-width: 72vw;
@@ -2091,9 +2117,11 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.draft-perk-card:hover {
-  transform: translate(4px, 4px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+@media (hover: hover) {
+  .draft-perk-card:hover {
+    transform: translate(4px, 4px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 /* Rarity reads off the card stock itself, not a coloured glow. */
 .draft-perk-card.rarity-common { background: var(--c-paper); }
@@ -2262,11 +2290,11 @@ button:focus-visible {
   cursor: pointer;
   text-decoration: underline;
 }
-.text-action:hover {
-  color: var(--c-red);
-}
-.danger-action:hover {
-  color: var(--c-red);
+@media (hover: hover) {
+  .text-action:hover,
+  .danger-action:hover {
+    color: var(--c-red);
+  }
 }
 
 /* ── Armory ── */
@@ -2307,9 +2335,11 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.refill-action:hover {
-  transform: translate(2px, 2px);
-  box-shadow: 2px 2px 0 var(--c-ink);
+@media (hover: hover) {
+  .refill-action:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 var(--c-ink);
+  }
 }
 
 .armory-notice {
@@ -2408,9 +2438,11 @@ button:focus-visible {
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.armory-item-action button:hover:not(:disabled) {
-  transform: translate(2px, 2px);
-  box-shadow: 2px 2px 0 var(--c-ink);
+@media (hover: hover) {
+  .armory-item-action button:hover:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 var(--c-ink);
+  }
 }
 .armory-item-action button:disabled {
   background: #d9d0bd;
@@ -2461,14 +2493,16 @@ button:focus-visible {
   letter-spacing: 0.06em;
   padding: 14px 22px;
 }
-.armory-footer .primary-action:hover,
-.result-actions .primary-action:hover,
-.pause-actions .primary-action:hover,
-.victory-actions .primary-action:hover {
-  background: var(--c-red);
-  color: var(--c-paper);
-  transform: translate(3px, 3px);
-  box-shadow: 3px 3px 0 var(--c-ink);
+@media (hover: hover) {
+  .armory-footer .primary-action:hover,
+  .result-actions .primary-action:hover,
+  .pause-actions .primary-action:hover,
+  .victory-actions .primary-action:hover {
+    background: var(--c-red);
+    color: var(--c-paper);
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--c-ink);
+  }
 }
 
 @media (max-width: 900px) {

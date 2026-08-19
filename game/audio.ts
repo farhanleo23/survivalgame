@@ -26,7 +26,7 @@ export class GameAudio {
     this.sfx = settings.sfx;
     this.music = settings.music;
     this.applyLevels();
-    if (this.music && this.context?.state === "suspended") void this.context.resume();
+    if (this.music) this.resumeContext();
   }
 
   start() {
@@ -516,8 +516,20 @@ export class GameAudio {
   }
 
   private unlock = () => {
-    if (this.context?.state === "suspended") void this.context.resume().catch(() => undefined);
+    this.resumeContext();
   };
+
+  /**
+   * Anything that is not "running" needs a resume, not just "suspended".
+   * Safari parks the context in its own non-standard "interrupted" state after
+   * a call, Siri, or a trip to another app, and the old suspended-only check
+   * meant every gate below — all of which require "running" — stayed shut for
+   * the rest of the session. The game came back from the interruption silent.
+   */
+  private resumeContext() {
+    if (!this.context || this.context.state === "running" || this.context.state === "closed") return;
+    void this.context.resume().catch(() => undefined);
+  }
 
   private bindUnlockGesture() {
     if (this.unlockListening || typeof window === "undefined") return;

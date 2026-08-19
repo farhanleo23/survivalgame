@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { GameEngine as GameEngineType } from "@/game/GameEngine";
 import {
   getPerkUpgradeCost,
@@ -15,7 +15,7 @@ import {
 } from "@/game/config";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
 import { normalizeJoystick, resolveInputMode, triggerHaptic } from "@/game/mobile";
-import { createDefaultProfile, loadProfile, saveProfile } from "@/game/profile";
+import { createDefaultProfile, getLocalStorage, loadProfile, saveProfile } from "@/game/profile";
 import type { ControlMode, GameScreen, GraphicsMode, HudState, InputMode, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
 import { LobbyHero } from "./LobbyHero";
 
@@ -78,11 +78,20 @@ export function Deadwave() {
   const orientationPauseRef = useRef(false);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      setProfile(loadProfile(window.localStorage));
-      setHydrated(true);
-    });
-    return () => window.cancelAnimationFrame(frame);
+    // A timeout rather than a frame: requestAnimationFrame does not run in a
+    // hidden tab, so a game opened in the background — or backgrounded while
+    // loading, which is most of a phone's life — sat on the boot screen until
+    // it was brought forward again.
+    const handle = window.setTimeout(() => {
+      // The whole game sits behind this flag, so nothing a stored profile can
+      // do is allowed to strand the player on the boot screen.
+      try {
+        setProfile(loadProfile(getLocalStorage()));
+      } finally {
+        setHydrated(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(handle);
   }, []);
 
   useEffect(() => {
@@ -138,7 +147,7 @@ export function Deadwave() {
   const commitProfile = useCallback((updater: (current: ProfileV1) => ProfileV1) => {
     setProfile((current) => {
       const next = updater(current);
-      saveProfile(typeof window === "undefined" ? undefined : window.localStorage, next);
+      saveProfile(getLocalStorage(), next);
       engineRef.current?.setProfile(next);
       return next;
     });
@@ -1194,6 +1203,21 @@ function MobileControls({
       knobRef.current.style.transform = `translate3d(${vector.knobX}px, ${vector.knobY}px, 0)`;
     }
     onMoveRef.current(vector.x, vector.z);
+  }, []);
+
+  // React registers its root touchstart listener as passive, so the
+  // preventDefault() in the JSX handler below is silently dropped. The stick is
+  // the one control where that matters: a drag that the browser is still free
+  // to interpret picks up a text selection or a scroll on the way. Claim the
+  // gesture here, non-passively, on the element itself.
+  useEffect(() => {
+    const stick = joystickRef.current;
+    if (!stick) return;
+    const claimGesture = (event: globalThis.TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    stick.addEventListener("touchstart", claimGesture, { passive: false });
+    return () => stick.removeEventListener("touchstart", claimGesture);
   }, []);
 
   useEffect(() => {

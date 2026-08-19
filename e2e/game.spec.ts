@@ -54,6 +54,29 @@ test("a narrow desktop viewport keeps keyboard and mouse controls", async ({ pag
   await expect(page.getByText("WASD", { exact: true })).toBeVisible();
 });
 
+test("releases the mouse trigger when the pointer is cancelled instead of released", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("start-mission").click();
+  await page.getByTestId("deploy").click();
+  await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
+
+  const ammo = page.locator(".ammo-numbers strong");
+  const before = Number(await ammo.innerText());
+  await page.locator(".game-canvas").dispatchEvent("pointerdown", {
+    pointerId: 3, pointerType: "mouse", button: 0, buttons: 1, isPrimary: true, clientX: 640, clientY: 300,
+  });
+  await page.waitForTimeout(600);
+  expect(Number(await ammo.innerText())).toBeLessThan(before);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 3, pointerType: "mouse", bubbles: true }));
+  });
+  await page.waitForTimeout(200);
+  const atCancel = Number(await ammo.innerText());
+  await page.waitForTimeout(800);
+  expect(Number(await ammo.innerText())).toBe(atCancel);
+});
+
 test("restores banked progress from the local profile", async ({ page }) => {
   await seedProfile(page, profileWith({
     coins: 777,

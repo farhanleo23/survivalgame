@@ -153,6 +153,56 @@ test("blocks portrait combat, resumes in landscape, and exposes analog controls"
   await expect(page.getByRole("heading", { name: "Operation paused" })).toBeVisible();
 });
 
+test("keeps the play field free of the trigger and releases a cancelled fire contact", async ({ page }) => {
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.goto("/");
+  await deploy(page);
+  await expect(page.getByTestId("mobile-controls")).toBeVisible({ timeout: 15_000 });
+
+  const ammo = page.locator(".ammo-numbers strong");
+  const before = Number(await ammo.innerText());
+
+  // A finger on the arena — the start of a drag, a stray thumb — is not the
+  // trigger on touch. The FIRE button owns it.
+  await page.locator(".game-canvas").dispatchEvent("pointerdown", {
+    pointerId: 55, pointerType: "touch", button: 0, buttons: 1, isPrimary: true, clientX: 400, clientY: 120,
+  });
+  await page.waitForTimeout(900);
+  expect(Number(await ammo.innerText())).toBe(before);
+
+  // A FIRE contact the browser cancels instead of releasing must stop
+  // shooting, not empty the magazine into the floor.
+  const fire = page.getByRole("button", { name: "Fire weapon with automatic aim" });
+  await dispatchTouch(fire, "touchstart", 21);
+  await expect(fire).toHaveClass(/is-held/);
+  await page.waitForTimeout(600);
+  const spent = Number(await ammo.innerText());
+  expect(spent).toBeLessThan(before);
+  await dispatchTouch(fire, "touchcancel", 21);
+  await expect(fire).not.toHaveClass(/is-held/);
+  await page.waitForTimeout(200);
+  const atRelease = Number(await ammo.innerText());
+  await page.waitForTimeout(700);
+  expect(Number(await ammo.innerText())).toBe(atRelease);
+});
+
+test("reaches the lobby when the browser blocks local storage", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      },
+    });
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("start-mission")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".boot-screen")).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
 test("persists a keyboard override on a touch device", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("group", { name: "Control mode" }).getByRole("button", { name: "Keyboard & Mouse" }).click();

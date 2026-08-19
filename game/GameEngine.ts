@@ -18,7 +18,7 @@ import {
 import { CRATE_BASE_HP, getArenaForWave, type ArenaDefinition, type ArenaId, type ArenaProp } from "./arenas";
 import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
-import { shouldReplaceTouchTarget } from "./mobile";
+import { selectTouchAimTarget } from "./mobile";
 import { ComicPostProcess, type ComicPostOptions } from "./postfx";
 import { VisualFactory, type CharacterRig } from "./visuals";
 import type {
@@ -1492,18 +1492,12 @@ export class GameEngine {
       }
 
       const previousTarget = this.touchAimTarget;
-      let target = previousTarget && this.enemies.includes(previousTarget)
-        ? previousTarget
-        : this.enemies[0];
-      let targetDistance = target.mesh.position.distanceToSquared(this.playerMesh.position);
-      for (const enemy of this.enemies) {
-        if (enemy === target) continue;
-        const distance = enemy.mesh.position.distanceToSquared(this.playerMesh.position);
-        if (shouldReplaceTouchTarget(targetDistance, distance)) {
-          target = enemy;
-          targetDistance = distance;
-        }
-      }
+      const target = selectTouchAimTarget(
+        this.enemies,
+        (enemy) => enemy.mesh.position.distanceToSquared(this.playerMesh.position),
+        previousTarget,
+      );
+      if (!target) return;
       this.touchAimTarget = target;
       if (target !== previousTarget) this.touchAimLockPulse = 1;
       this.updateTouchAimIndicator(target);
@@ -3104,11 +3098,30 @@ export class GameEngine {
   };
 
   private onPointerDown = (event: PointerEvent) => {
+    // Touch aiming owns the trigger through the on-screen FIRE button. Without
+    // this guard any finger that landed on the play field — including the first
+    // frame of a drag — opened up, and auto-aim sent the shot wherever it was
+    // already pointing.
+    if (this.inputMode === "touch") return;
     if (!this.paused && event.button === 0) this.firing = true;
   };
 
   private onPointerUp = (event: PointerEvent) => {
     if (event.button === 0) this.firing = false;
+  };
+
+  /**
+   * A cancelled pointer never reports an "up", so the trigger it opened has to
+   * be released here or the weapon fires until the tab loses focus.
+   *
+   * Touch mode is deliberately exempt: there the trigger belongs to the FIRE
+   * button, which tracks native Touch Events precisely because iOS cancels the
+   * synthesized pointer while the finger is still down. Honouring that cancel
+   * would drop a hold the player is still making.
+   */
+  private onPointerCancel = () => {
+    if (this.inputMode === "touch") return;
+    this.firing = false;
   };
 
   private onKeyDown = (event: KeyboardEvent) => {
@@ -3252,6 +3265,7 @@ export class GameEngine {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onPointerCancel);
     window.addEventListener("wheel", this.onWheel, { passive: true });
     window.addEventListener("blur", this.onFocusLost);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -3267,6 +3281,7 @@ export class GameEngine {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onPointerCancel);
     window.removeEventListener("wheel", this.onWheel);
     window.removeEventListener("blur", this.onFocusLost);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);

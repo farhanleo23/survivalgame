@@ -78,9 +78,30 @@ export function validateProfile(raw: unknown): ProfileV1 {
   };
 }
 
+/**
+ * Safari with "Block all cookies", and a fair number of in-app browsers, throw
+ * a SecurityError from the `window.localStorage` *getter* itself — not just
+ * from a read or a write. Reaching for it unguarded threw during hydration and
+ * left the game sitting on the boot screen forever, so every caller goes
+ * through here and simply plays without persistence when storage is off.
+ */
+export function getLocalStorage(): Storage | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadProfile(storage: Storage | undefined): ProfileV1 {
   if (!storage) return createDefaultProfile();
-  const serialized = storage.getItem(PROFILE_KEY);
+  let serialized: string | null = null;
+  try {
+    serialized = storage.getItem(PROFILE_KEY);
+  } catch {
+    return createDefaultProfile();
+  }
   if (!serialized) return createDefaultProfile();
   try {
     return validateProfile(JSON.parse(serialized));

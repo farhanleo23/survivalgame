@@ -21,8 +21,8 @@ import {
 import { ARENA_IDS, ARENAS, CRATE_BASE_HP, getArenaForWave } from "../game/arenas";
 import type { SynergyCardId } from "../game/types";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "../game/economy";
-import { normalizeJoystick, resolveInputMode, shouldReplaceTouchTarget } from "../game/mobile";
-import { createDefaultProfile, loadProfile, PROFILE_KEY, saveProfile, validateProfile } from "../game/profile";
+import { normalizeJoystick, resolveInputMode, selectTouchAimTarget, shouldReplaceTouchTarget } from "../game/mobile";
+import { createDefaultProfile, getLocalStorage, loadProfile, PROFILE_KEY, saveProfile, validateProfile } from "../game/profile";
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -110,6 +110,74 @@ describe("adaptive mobile controls", () => {
   it("keeps touch aim sticky until another enemy is substantially closer", () => {
     expect(shouldReplaceTouchTarget(100, 50)).toBe(false);
     expect(shouldReplaceTouchTarget(100, 48)).toBe(true);
+  });
+
+  describe("auto-aim acquisition", () => {
+    // Spawn order, not proximity: "far" is deliberately first in the list.
+    const far = { d: 400 };
+    const middle = { d: 121 };
+    const near = { d: 100 };
+    const horde = [far, middle, near];
+    const distance = (enemy: { d: number }) => enemy.d;
+
+    it("locks the nearest enemy when there is nothing to hold on to", () => {
+      expect(selectTouchAimTarget(horde, distance, null)).toBe(near);
+    });
+
+    it("re-acquires the nearest once the held target is gone", () => {
+      expect(selectTouchAimTarget(horde, distance, { d: 1 })).toBe(near);
+    });
+
+    it("holds a lock against an enemy that is closer but not decisively so", () => {
+      expect(selectTouchAimTarget(horde, distance, middle)).toBe(middle);
+    });
+
+    it("hands the lock over once a challenger is 30% closer", () => {
+      expect(selectTouchAimTarget([far, near], distance, far)).toBe(near);
+    });
+
+    it("has nothing to aim at in an empty arena", () => {
+      expect(selectTouchAimTarget([], distance, null)).toBeNull();
+    });
+  });
+});
+
+describe("storage availability", () => {
+  /** Safari's "Block all cookies" throws from the getter, not from getItem. */
+  class BlockedStorage implements Storage {
+    get length(): number { throw new DOMException("The operation is insecure.", "SecurityError"); }
+    clear(): void { throw new DOMException("The operation is insecure.", "SecurityError"); }
+    getItem(): string | null { throw new DOMException("The operation is insecure.", "SecurityError"); }
+    key(): string | null { throw new DOMException("The operation is insecure.", "SecurityError"); }
+    removeItem(): void { throw new DOMException("The operation is insecure.", "SecurityError"); }
+    setItem(): void { throw new DOMException("The operation is insecure.", "SecurityError"); }
+  }
+
+  it("falls back to a fresh profile when storage reads throw", () => {
+    expect(() => loadProfile(new BlockedStorage())).not.toThrow();
+    expect(loadProfile(new BlockedStorage())).toEqual(createDefaultProfile());
+  });
+
+  it("swallows a throwing write so a blocked browser still plays", () => {
+    expect(() => saveProfile(new BlockedStorage(), createDefaultProfile())).not.toThrow();
+  });
+
+  it("reports no storage rather than throwing when the getter is blocked", () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      get: () => ({
+        get localStorage(): Storage {
+          throw new DOMException("The operation is insecure.", "SecurityError");
+        },
+      }),
+    });
+    try {
+      expect(getLocalStorage()).toBeUndefined();
+    } finally {
+      if (original) Object.defineProperty(globalThis, "window", original);
+      else delete (globalThis as { window?: unknown }).window;
+    }
   });
 });
 
