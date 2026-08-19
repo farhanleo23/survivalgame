@@ -20,6 +20,8 @@ const description =
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
   themeColor: "#050d0a",
 };
@@ -35,6 +37,14 @@ export async function generateMetadata(): Promise<Metadata> {
     title,
     description,
     icons: { icon: "/favicon.png", shortcut: "/favicon.png" },
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "black-translucent",
+      title: "Deadwave",
+    },
+    formatDetection: {
+      telephone: false,
+    },
     openGraph: {
       type: "website",
       title,

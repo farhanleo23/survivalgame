@@ -507,6 +507,8 @@ export class GameAudio {
     if (this.unlockListening || typeof window === "undefined") return;
     this.unlockListening = true;
     window.addEventListener("pointerdown", this.unlock, { passive: true });
+    window.addEventListener("touchstart", this.unlock, { passive: true });
+    window.addEventListener("touchend", this.unlock, { passive: true });
     window.addEventListener("keydown", this.unlock);
   }
 
@@ -514,6 +516,8 @@ export class GameAudio {
     if (!this.unlockListening || typeof window === "undefined") return;
     this.unlockListening = false;
     window.removeEventListener("pointerdown", this.unlock);
+    window.removeEventListener("touchstart", this.unlock);
+    window.removeEventListener("touchend", this.unlock);
     window.removeEventListener("keydown", this.unlock);
   }
 

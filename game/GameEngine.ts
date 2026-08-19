@@ -1298,6 +1298,9 @@ export class GameEngine {
       if (this.enemies.length === 0) {
         this.touchAimTarget = null;
         this.hideTouchAimIndicator();
+        if (this.virtualMove.lengthSq() > 0.01) {
+          this.aim.set(this.virtualMove.x, 0, this.virtualMove.y).normalize();
+        }
         return;
       }
 
@@ -1318,7 +1321,10 @@ export class GameEngine {
       if (target !== previousTarget) this.touchAimLockPulse = 1;
       this.updateTouchAimIndicator(target);
       this.mouseWorldPos.copy(target.mesh.position);
-      this.aim.copy(target.mesh.position).sub(this.playerMesh.position).setY(0).normalize();
+      const dir = target.mesh.position.clone().sub(this.playerMesh.position).setY(0);
+      if (dir.lengthSq() > 0.0001) {
+        this.aim.copy(dir.normalize());
+      }
       return;
     }
     this.hideTouchAimIndicator();
@@ -2859,6 +2865,8 @@ export class GameEngine {
 
   private bindEvents() {
     window.addEventListener("resize", this.resize);
+    window.addEventListener("orientationchange", this.resize);
+    window.visualViewport?.addEventListener("resize", this.resize);
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("pointerup", this.onPointerUp);
@@ -2872,6 +2880,8 @@ export class GameEngine {
 
   private unbindEvents() {
     window.removeEventListener("resize", this.resize);
+    window.removeEventListener("orientationchange", this.resize);
+    window.visualViewport?.removeEventListener("resize", this.resize);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("pointerup", this.onPointerUp);

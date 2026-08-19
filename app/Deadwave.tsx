@@ -14,7 +14,7 @@ import {
   WEAPON_IDS,
 } from "@/game/config";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
-import { normalizeJoystick, resolveInputMode } from "@/game/mobile";
+import { normalizeJoystick, resolveInputMode, triggerHaptic } from "@/game/mobile";
 import { createDefaultProfile, loadProfile, saveProfile } from "@/game/profile";
 import type { ControlMode, GameScreen, GraphicsMode, HudState, InputMode, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
 import { LobbyHero } from "./LobbyHero";
@@ -104,12 +104,16 @@ export function Deadwave() {
     portrait.addEventListener("change", syncCapabilities);
     compact.addEventListener("change", syncCapabilities);
     window.visualViewport?.addEventListener("resize", syncCapabilities);
+    window.addEventListener("resize", syncCapabilities);
+    window.addEventListener("orientationchange", syncCapabilities);
     return () => {
       coarsePointer.removeEventListener("change", syncCapabilities);
       noHover.removeEventListener("change", syncCapabilities);
       portrait.removeEventListener("change", syncCapabilities);
       compact.removeEventListener("change", syncCapabilities);
       window.visualViewport?.removeEventListener("resize", syncCapabilities);
+      window.removeEventListener("resize", syncCapabilities);
+      window.removeEventListener("orientationchange", syncCapabilities);
     };
   }, []);
 
@@ -1105,6 +1109,7 @@ function MobileControls({
   const knobRef = useRef<HTMLSpanElement>(null);
   const fireButtonRef = useRef<HTMLButtonElement>(null);
   const moveContactRef = useRef<{ kind: "pointer" | "touch"; id: number } | null>(null);
+  const joystickCenterRef = useRef<{ x: number; y: number; radius: number } | null>(null);
   const firePointerRef = useRef<number | null>(null);
   const fireTouchRef = useRef<number | null>(null);
   const onMoveRef = useRef(onMove);
@@ -1118,6 +1123,7 @@ function MobileControls({
     const active = moveContactRef.current;
     if (kind !== undefined && (!active || active.kind !== kind || active.id !== id)) return;
     moveContactRef.current = null;
+    joystickCenterRef.current = null;
     if (knobRef.current) knobRef.current.style.transform = "translate3d(0, 0, 0)";
     onMoveRef.current(0, 0);
   }, []);
@@ -1146,6 +1152,7 @@ function MobileControls({
   const beginFiring = useCallback(() => {
     if (firePointerRef.current !== null || fireTouchRef.current !== null) return false;
     fireButtonRef.current?.classList.add("is-held");
+    triggerHaptic(10);
     onFireRef.current(true);
     return true;
   }, []);
@@ -1153,12 +1160,20 @@ function MobileControls({
   const updateJoystickPosition = useCallback((kind: "pointer" | "touch", id: number, clientX: number, clientY: number) => {
     const active = moveContactRef.current;
     if (!active || active.kind !== kind || active.id !== id || !joystickRef.current) return;
-    const rect = joystickRef.current.getBoundingClientRect();
-    const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.34);
+    let center = joystickCenterRef.current;
+    if (!center) {
+      const rect = joystickRef.current.getBoundingClientRect();
+      center = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        radius: Math.max(1, Math.min(rect.width, rect.height) * 0.34),
+      };
+      joystickCenterRef.current = center;
+    }
     const vector = normalizeJoystick(
-      clientX - (rect.left + rect.width / 2),
-      clientY - (rect.top + rect.height / 2),
-      radius,
+      clientX - center.x,
+      clientY - center.y,
+      center.radius,
     );
     if (knobRef.current) {
       knobRef.current.style.transform = `translate3d(${vector.knobX}px, ${vector.knobY}px, 0)`;
@@ -1222,9 +1237,13 @@ function MobileControls({
     };
   }, [resetFirePointer, resetFireTouch, resetJoystick, stopFiring, updateJoystickPosition]);
 
-  const triggerAction = (event: PointerEvent<HTMLButtonElement>, action: "dash" | "reload" | "swap") => {
+  const triggerAction = (
+    event: React.SyntheticEvent,
+    action: "dash" | "reload" | "swap",
+  ) => {
     event.preventDefault();
     event.stopPropagation();
+    triggerHaptic(action === "dash" ? 18 : action === "reload" ? [10, 30, 10] : 12);
     onAction(action);
   };
 
@@ -1242,6 +1261,14 @@ function MobileControls({
           if (moveContactRef.current !== null) return;
           const touch = event.changedTouches[0];
           if (!touch) return;
+          if (joystickRef.current) {
+            const rect = joystickRef.current.getBoundingClientRect();
+            joystickCenterRef.current = {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              radius: Math.max(1, Math.min(rect.width, rect.height) * 0.34),
+            };
+          }
           moveContactRef.current = { kind: "touch", id: touch.identifier };
           updateJoystickPosition("touch", touch.identifier, touch.clientX, touch.clientY);
         }}
@@ -1250,6 +1277,14 @@ function MobileControls({
           event.preventDefault();
           event.stopPropagation();
           if (moveContactRef.current !== null) return;
+          if (joystickRef.current) {
+            const rect = joystickRef.current.getBoundingClientRect();
+            joystickCenterRef.current = {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              radius: Math.max(1, Math.min(rect.width, rect.height) * 0.34),
+            };
+          }
           moveContactRef.current = { kind: "pointer", id: event.pointerId };
           updateJoystickPosition("pointer", event.pointerId, event.clientX, event.clientY);
           try {
@@ -1270,10 +1305,56 @@ function MobileControls({
         <span ref={knobRef} className="joystick-knob" aria-hidden="true"><i /></span>
       </div>
       <div className="mobile-action-pad">
-        <button type="button" className="touch-action touch-pause" aria-label="Pause operation" onPointerDown={(event) => { event.preventDefault(); onPause(); }}>Ⅱ</button>
-        <button type="button" className="touch-action touch-reload" onPointerDown={(event) => triggerAction(event, "reload")}>RLD</button>
-        <button type="button" className="touch-action touch-swap" onPointerDown={(event) => triggerAction(event, "swap")}>SWAP</button>
-        <button type="button" className="touch-action touch-dash" onPointerDown={(event) => triggerAction(event, "dash")}>DASH</button>
+        <button
+          type="button"
+          className="touch-action touch-pause"
+          aria-label="Pause operation"
+          onTouchStart={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onPause();
+          }}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            event.preventDefault();
+            onPause();
+          }}
+        >
+          Ⅱ
+        </button>
+        <button
+          type="button"
+          className="touch-action touch-reload"
+          onTouchStart={(event) => triggerAction(event, "reload")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "reload");
+          }}
+        >
+          RLD
+        </button>
+        <button
+          type="button"
+          className="touch-action touch-swap"
+          onTouchStart={(event) => triggerAction(event, "swap")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "swap");
+          }}
+        >
+          SWAP
+        </button>
+        <button
+          type="button"
+          className="touch-action touch-dash"
+          onTouchStart={(event) => triggerAction(event, "dash")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "dash");
+          }}
+        >
+          DASH
+        </button>
         <button
           ref={fireButtonRef}
           type="button"

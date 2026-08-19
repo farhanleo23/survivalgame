@@ -39,3 +39,15 @@ export function normalizeJoystick(
 export function shouldReplaceTouchTarget(currentDistanceSquared: number, candidateDistanceSquared: number) {
   return candidateDistanceSquared < currentDistanceSquared * 0.49;
 }
+
+/** Safe haptic feedback trigger for mobile devices supporting vibration */
+export function triggerHaptic(pattern: number | number[] = 12) {
+  try {
+    if (typeof navigator !== "undefined" && "vibrate" in navigator && typeof navigator.vibrate === "function") {
+      navigator.vibrate(pattern);
+    }
+  } catch {
+    // Ignore environments where vibrate is restricted or blocked
+  }
+}
+
