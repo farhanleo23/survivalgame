@@ -6,6 +6,8 @@ import {
   getWaveDefinition,
   getWaveScaling,
   getEnemySpeed,
+  HIT_STOP_COOLDOWN,
+  HIT_STOP_DURATION,
   getProfilePower,
   getWeaponStats,
   PICKUPS,
@@ -13,6 +15,7 @@ import {
   WEAPONS,
   type WaveModifier,
 } from "./config";
+import { CRATE_BASE_HP, getArenaForWave, type ArenaDefinition, type ArenaId, type ArenaProp } from "./arenas";
 import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
 import { shouldReplaceTouchTarget } from "./mobile";
@@ -136,6 +139,36 @@ interface HazardEntity {
   tickTimer: number;
 }
 
+/**
+ * A constructed arena, held for reuse.
+ *
+ * The obstacle and barrel lists are templates: activation copies them so a
+ * crate destroyed this wave is whole again next time the arena comes round,
+ * without the copy having to walk the scene graph.
+ */
+interface BuiltArena {
+  root: THREE.Group;
+  obstacles: Obstacle[];
+  barrels: BarrelEntity[];
+}
+
+/**
+ * A telegraphed arena hazard mid-flight.
+ *
+ * The marker goes down first and the payload lands when `timer` expires, so
+ * every arena hazard is something the player is given time to walk out of.
+ */
+interface ArenaEvent {
+  kind: "debris" | "surge";
+  x: number;
+  z: number;
+  radius: number;
+  damage: number;
+  timer: number;
+  marker: THREE.Object3D;
+  payload?: THREE.Object3D;
+}
+
 interface EffectEntity {
   mesh: THREE.Object3D;
   life: number;
@@ -149,6 +182,13 @@ interface Obstacle {
   hx: number;
   hz: number;
   radius?: number;
+  /**
+   * Destructible cover. Only crates carry these; every other obstacle is
+   * permanent, and the absence of `health` is what marks it as such.
+   */
+  health?: number;
+  maxHealth?: number;
+  mesh?: THREE.Group;
 }
 
 const FIXED_STEP = 1 / 60;
@@ -233,6 +273,8 @@ export class GameEngine {
   private comboCount = 0;
   private comboTimer = 0;
   private hitStopTimer = 0;
+  /** Blocks hit-stop from re-arming; ticks down even while frozen. */
+  private hitStopCooldown = 0;
   private waveCleared = false;
   private extractionTimer = 0;
   private readonly extractionRequiredTime = 3.2;
@@ -278,6 +320,13 @@ export class GameEngine {
   private touchAimTarget: EnemyEntity | null = null;
   private touchAimIndicator: THREE.Group | null = null;
   private touchAimLockPulse = 0;
+  /**
+   * The current arena's own sky, and the danger wash blended over it.
+   *
+   * `skyCool` is reassigned per arena by activateArena rather than fixed: the
+   * atmosphere pass runs every frame, so a hard-coded base silently overwrote
+   * each arena's theme colour a frame after it was set.
+   */
   private skyCool = new THREE.Color(COMIC.sky);
   private skyHot = new THREE.Color(0x7a1f3d);
   private qaMode =
@@ -295,6 +344,29 @@ export class GameEngine {
   private bulletCount = 0;
   private acidTrailTimer = 0;
   private obstacles: Obstacle[] = [];
+  /**
+   * Everything belonging to the current arena.
+   *
+   * Kept as one group purely so a rebuild is a single removal — walking the
+   * scene graph looking for "props" is how you eventually orphan a mesh and
+   * leak a whole layout per wave.
+   */
+  private arenaRoot = new THREE.Group();
+  private currentArena: ArenaDefinition | null = null;
+  /**
+   * Arenas are built once and kept.
+   *
+   * `VisualFactory.disposeObject` only detaches — every geometry and texture it
+   * hands out is owned centrally and released when the engine dies. Rebuilding
+   * a layout from scratch each wave therefore allocates a fresh copy that is
+   * never freed, which an endless run turns into an unbounded leak. Four cached
+   * groups swapped in and out cost nothing and never grow.
+   */
+  private arenaCache = new Map<ArenaId, BuiltArena>();
+  /** Countdown to the next arena hazard event. */
+  private arenaHazardTimer = 0;
+  /** Pending telegraphed hazard events waiting to resolve. */
+  private arenaEvents: ArenaEvent[] = [];
   private weaponStates = new Map<WeaponId, WeaponInstance>();
   private loadout: WeaponId[];
   private activeWeaponIndex = 0;
@@ -587,6 +659,7 @@ export class GameEngine {
   private setupScene() {
     // Comic panel, not a dark room: a saturated sky wash and no fog at all.
     // Depth comes from ink outlines and flat colour separation instead.
+    // The wash itself is per-arena and set by activateArena.
     this.scene.background = new THREE.Color(COMIC.sky);
     this.scene.fog = null;
 
@@ -618,47 +691,8 @@ export class GameEngine {
     coolFill.position.set(14, 12, 16);
     this.scene.add(coolFill);
 
-    this.scene.add(this.visuals.createGround());
-    this.visuals.addPerimeter(this.scene);
-    this.visuals.addSetDressing(this.scene);
-
-    // Edge architecture creates 2.5D depth without obstructing combat lanes or creating corner traps.
-    this.addObstacle(-12.8, 8.8, 3.4, 2.4, COMIC.steel);
-    this.addObstacle(12.8, -8.8, 3.4, 2.4, COMIC.concrete);
-    this.addObstacle(-12.8, -9.2, 2.8, 2.4, COMIC.rust);
-    this.addObstacle(12.8, 9.2, 2.8, 2.4, COMIC.steel);
-    this.addBarricade(-7.5, 12.0, 3.6, 0.45, 0.14);
-    this.addBarricade(7.5, -12.0, 3.6, 0.45, -0.18);
-
-    this.addFloodlight(-15.2, -14.5, COMIC.hazardStripe);
-    this.addFloodlight(14.6, 13.9, COMIC.electric);
-    this.addFloodlight(-14.7, 14.2, COMIC.hazardYellow);
-
-    // 1. Glowing furnace heaters on stands (matching screenshot left & right)
-    this.addFurnaceBeacon(-11.5, 5.5);
-    this.addFurnaceBeacon(12.5, -4.5);
-
-    // 2. Glowing toxic green slime pools
-    this.addSlimePool(-6.5, -7.5, 1.8);
-    this.addSlimePool(7.5, 6.5, 1.6);
-    this.addToxicVat(-12.5, -9.5);
-    this.addToxicVat(9.5, 9.2);
-
-    // 3. Concrete traffic barricades with hazard stripes & cones
-    this.addTrafficBarricade(-2.5, 2.5, -0.2);
-    this.addTrafficBarricade(3.8, -3.2, 0.35);
-    this.addTrafficCone(-4.2, 3.2);
-    this.addTrafficCone(-1.2, 2.4);
-    this.addTrafficCone(2.6, -3.8);
-    this.addPallet(6.5, -2.5);
-
-    // 4. Generators and barrels
-    this.addGenerator(-10.6, 7.9);
-    this.addGenerator(10.9, -8.5);
-    this.addBarrel(-3.5, -2.5);
-    this.addBarrel(5.5, 2.2);
-    this.addBarrel(11.5, -1.5);
-    this.addBarrel(-13.5, 1.8);
+    this.scene.add(this.arenaRoot);
+    this.buildArena(getArenaForWave(this.wave));
 
     this.extractionZoneMesh = this.visuals.createExtractionZone();
     this.extractionZoneMesh.position.set(0, 0, 0);
@@ -669,10 +703,149 @@ export class GameEngine {
     this.scene.add(this.touchAimIndicator);
   }
 
+  /**
+   * Make `arena` the active layout, constructing it the first time it is used.
+   *
+   * Ground, perimeter and props are all themed, so arenas cannot share a
+   * built group — reusing the floor across layouts is what made the first pass
+   * at this read as "the depot with different boxes in it".
+   */
+  private buildArena(arena: ArenaDefinition) {
+    if (this.currentArena?.id === arena.id) {
+      // Same layout two waves running: just make the cover whole again.
+      this.activateArena(arena);
+      return;
+    }
+
+    const previous = this.currentArena ? this.arenaCache.get(this.currentArena.id) : undefined;
+    if (previous) this.arenaRoot.remove(previous.root);
+
+    if (!this.arenaCache.has(arena.id)) {
+      const root = new THREE.Group();
+      // The prop helpers append to arenaRoot, so point it at the new group for
+      // the duration of construction rather than threading a target through
+      // eleven call sites.
+      const restore = this.arenaRoot;
+      this.arenaRoot = root;
+      this.obstacles = [];
+      this.barrels = [];
+
+      root.add(this.visuals.createGround(arena.theme));
+      this.visuals.addPerimeter(root, arena.theme);
+      this.visuals.addSetDressing(root, arena.theme);
+      for (const prop of arena.props) this.addArenaProp(prop);
+
+      this.arenaCache.set(arena.id, { root, obstacles: this.obstacles, barrels: this.barrels });
+      this.arenaRoot = restore;
+    }
+
+    const built = this.arenaCache.get(arena.id)!;
+    this.arenaRoot.add(built.root);
+    this.activateArena(arena);
+  }
+
+  /**
+   * Point the live collision and barrel lists at the cached arena, restored to
+   * pristine condition: crates whole, barrels unspent.
+   */
+  private activateArena(arena: ArenaDefinition) {
+    const built = this.arenaCache.get(arena.id);
+    if (!built) return;
+    this.currentArena = arena;
+    this.skyCool.setHex(arena.theme.sky);
+    this.scene.background = new THREE.Color(arena.theme.sky);
+
+    // Copied, not aliased: destroying a crate splices the live list, and the
+    // template has to survive that to rebuild the arena next time round.
+    this.obstacles = built.obstacles.map((obstacle) => ({ ...obstacle }));
+    for (const obstacle of this.obstacles) {
+      if (!obstacle.mesh || obstacle.maxHealth === undefined) continue;
+      obstacle.health = obstacle.maxHealth;
+      obstacle.mesh.visible = true;
+      this.visuals.damageCrate(obstacle.mesh, 1);
+    }
+
+    this.barrels = built.barrels.map((barrel) => ({ ...barrel, active: true }));
+    for (const barrel of this.barrels) barrel.mesh.visible = true;
+
+    this.arenaHazardTimer = arena.hazard.interval;
+    this.clearArenaEvents();
+  }
+
+  private clearArenaEvents() {
+    for (const event of this.arenaEvents) {
+      this.scene.remove(event.marker);
+      this.visuals.disposeObject(event.marker);
+      if (event.payload) {
+        this.scene.remove(event.payload);
+        this.visuals.disposeObject(event.payload);
+      }
+    }
+    this.arenaEvents = [];
+  }
+
+  private addArenaProp(prop: ArenaProp) {
+    switch (prop.kind) {
+      case "block":
+        this.addObstacle(prop.x, prop.z, prop.width, prop.depth, prop.color);
+        break;
+      case "barricade":
+        this.addBarricade(prop.x, prop.z, prop.width, prop.depth, prop.rotation);
+        break;
+      case "barrel":
+        this.addBarrel(prop.x, prop.z);
+        break;
+      case "furnace":
+        this.addFurnaceBeacon(prop.x, prop.z);
+        break;
+      case "trafficBarricade":
+        this.addTrafficBarricade(prop.x, prop.z, prop.rotation ?? 0);
+        break;
+      case "cone":
+        this.addTrafficCone(prop.x, prop.z);
+        break;
+      case "pallet":
+        this.addPallet(prop.x, prop.z);
+        break;
+      case "slime":
+        this.addSlimePool(prop.x, prop.z, prop.radius ?? 1.4);
+        break;
+      case "vat":
+        this.addToxicVat(prop.x, prop.z);
+        break;
+      case "generator":
+        this.addGenerator(prop.x, prop.z);
+        break;
+      case "floodlight":
+        this.addFloodlight(prop.x, prop.z, prop.color);
+        break;
+      case "crate":
+        this.addCrate(prop.x, prop.z, prop.hp ?? CRATE_BASE_HP, prop.rotation ?? 0);
+        break;
+    }
+  }
+
+  /**
+   * Destructible cover.
+   *
+   * The obstacle keeps a reference to its own mesh, which nothing else in the
+   * list does, because removing it needs both halves — the collider so enemies
+   * stop pathing around a hole, and the mesh so the player can see that they
+   * just spent a magazine opening a lane.
+   */
+  private addCrate(x: number, z: number, hp: number, rotation: number) {
+    const crate = this.visuals.createSupplyCrate();
+    crate.position.set(x, 0, z);
+    crate.rotation.y = rotation;
+    this.arenaRoot.add(crate);
+    const half = 0.8;
+    this.obstacles.push({ x, z, hx: half, hz: half, health: hp, maxHealth: hp, mesh: crate });
+  }
+
   private addFurnaceBeacon(x: number, z: number) {
     const beacon = this.visuals.createFurnaceBeacon();
     beacon.position.set(x, 0, z);
-    this.scene.add(beacon);
+    this.arenaRoot.add(beacon);
     const radius = 0.6;
     this.obstacles.push({ x, z, hx: radius, hz: radius, radius });
   }
@@ -681,7 +854,7 @@ export class GameEngine {
     const barricade = this.visuals.createTrafficBarricade(2.4);
     barricade.position.set(x, 0, z);
     barricade.rotation.y = rotation;
-    this.scene.add(barricade);
+    this.arenaRoot.add(barricade);
     const hx = 1.2;
     const hz = 0.3;
     this.obstacles.push({ x, z, hx, hz });
@@ -690,25 +863,25 @@ export class GameEngine {
   private addTrafficCone(x: number, z: number) {
     const cone = this.visuals.createTrafficCone();
     cone.position.set(x, 0, z);
-    this.scene.add(cone);
+    this.arenaRoot.add(cone);
   }
 
   private addPallet(x: number, z: number) {
     const pallet = this.visuals.createPallet();
     pallet.position.set(x, 0, z);
-    this.scene.add(pallet);
+    this.arenaRoot.add(pallet);
   }
 
   private addSlimePool(x: number, z: number, radius = 1.4) {
     const pool = this.visuals.createSlimePool(radius);
     pool.position.set(x, 0, z);
-    this.scene.add(pool);
+    this.arenaRoot.add(pool);
   }
 
   private addToxicVat(x: number, z: number) {
     const vat = this.visuals.createToxicVat();
     vat.position.set(x, 0, z);
-    this.scene.add(vat);
+    this.arenaRoot.add(vat);
     const radius = 1.35;
     this.obstacles.push({ x, z, hx: radius, hz: radius, radius });
   }
@@ -716,7 +889,7 @@ export class GameEngine {
   private addGenerator(x: number, z: number) {
     const gen = this.visuals.createGenerator();
     gen.position.set(x, 0, z);
-    this.scene.add(gen);
+    this.arenaRoot.add(gen);
     const hx = 1.3;
     const hz = 0.85;
     this.obstacles.push({ x, z, hx, hz });
@@ -725,7 +898,7 @@ export class GameEngine {
   private addObstacle(x: number, z: number, width: number, depth: number, color: number) {
     const structure = this.visuals.createDepotStructure(width, depth, color);
     structure.position.set(x, 0, z);
-    this.scene.add(structure);
+    this.arenaRoot.add(structure);
     this.obstacles.push({ x, z, hx: width / 2, hz: depth / 2 });
   }
 
@@ -733,7 +906,7 @@ export class GameEngine {
     const barricade = this.visuals.createBarricade(width, depth);
     barricade.position.set(x, 0, z);
     barricade.rotation.y = rotation;
-    this.scene.add(barricade);
+    this.arenaRoot.add(barricade);
     const hx = Math.abs(Math.cos(rotation) * width / 2) + Math.abs(Math.sin(rotation) * depth / 2);
     const hz = Math.abs(Math.sin(rotation) * width / 2) + Math.abs(Math.cos(rotation) * depth / 2);
     this.obstacles.push({ x, z, hx, hz });
@@ -744,13 +917,13 @@ export class GameEngine {
     // floor, which fights the flat cel surfaces; the lens reads as lit on its own.
     const fixture = this.visuals.createFloodlight(color);
     fixture.position.set(x, 0, z);
-    this.scene.add(fixture);
+    this.arenaRoot.add(fixture);
   }
 
   private addBarrel(x: number, z: number) {
     const group = this.visuals.createBarrel();
     group.position.set(x, 0, z);
-    this.scene.add(group);
+    this.arenaRoot.add(group);
     this.barrels.push({ mesh: group, active: true });
   }
 
@@ -819,11 +992,25 @@ export class GameEngine {
     this.waveModifier = rollWaveModifier(wave);
     this.hazardBloomTimer = this.waveModifier?.hazardInterval ?? 0;
 
+    // Swapping the arena also restores its cover, so this runs every wave and
+    // not only when the layout actually changes.
+    const arena = getArenaForWave(wave);
+    const arenaChanged = this.currentArena?.id !== arena.id;
+    this.buildArena(arena);
+
     const definition = getWaveDefinition(wave);
-    this.announcement = this.waveModifier
-      ? `Wave ${wave}: ${this.waveModifier.icon} ${this.waveModifier.name.toUpperCase()} — ${this.waveModifier.blurb}`
-      : `Wave ${wave}: ${definition.label}`;
-    this.announcementTimer = this.waveModifier ? 3.4 : 2.6;
+    // Relocating is the bigger news: when the arena changes it leads, and the
+    // modifier rides along, because walking into an unfamiliar layout expecting
+    // the old cover is how a run ends without the player knowing why.
+    const modifierNote = this.waveModifier
+      ? ` · ${this.waveModifier.icon} ${this.waveModifier.name.toUpperCase()}`
+      : "";
+    this.announcement = arenaChanged
+      ? `Wave ${wave}: ${arena.name.toUpperCase()} — ${arena.blurb}${modifierNote}`
+      : this.waveModifier
+        ? `Wave ${wave}: ${this.waveModifier.icon} ${this.waveModifier.name.toUpperCase()} — ${this.waveModifier.blurb}`
+        : `Wave ${wave}: ${definition.label}`;
+    this.announcementTimer = arenaChanged ? 3.8 : this.waveModifier ? 3.4 : 2.6;
     this.callbacks.onWaveChange(wave);
     const countMult = this.waveModifier?.countMult ?? 1;
     for (const [id, count] of Object.entries(definition.enemies)) {
@@ -1857,7 +2044,15 @@ export class GameEngine {
         this.removeProjectile(index);
         continue;
       }
-      if (this.pointInsideObstacle(projectile.mesh.position.x, projectile.mesh.position.z)) {
+      const struck = this.obstacleAt(projectile.mesh.position.x, projectile.mesh.position.z);
+      if (struck) {
+        // Player fire opens lanes; enemy spit does not, so the layout only ever
+        // changes as a result of a decision the player made.
+        if (!projectile.enemy && struck.health !== undefined) {
+          this.damageObstacle(struck, projectile.damage, projectile.mesh.position);
+          this.removeProjectile(index);
+          continue;
+        }
         if (projectile.bouncesRemaining && projectile.bouncesRemaining > 0) {
           projectile.bouncesRemaining -= 1;
           projectile.velocity.x *= -1;
@@ -2075,9 +2270,11 @@ export class GameEngine {
 
     this.createDirectionalHitBurst(hitPos, bulletDir, enemy.type === "spitter" || enemy.type === "boomer");
 
-    // Tactile micro hit-stop on crits or heavy kills
-    if (isCrit || finalDamage >= 60) {
-      this.hitStopTimer = Math.max(this.hitStopTimer, 0.035);
+    // Tactile micro hit-stop on crits or heavy kills, rate limited so that
+    // holding the trigger can never hold the simulation still.
+    if ((isCrit || finalDamage >= 60) && this.hitStopCooldown <= 0) {
+      this.hitStopTimer = HIT_STOP_DURATION;
+      this.hitStopCooldown = HIT_STOP_COOLDOWN;
     }
 
     this.spawnFloatingText(hitPos, isCrit ? `CRIT ${finalDamage}!` : `${finalDamage}`, isCrit ? "crit" : "damage");
@@ -2340,6 +2537,148 @@ export class GameEngine {
     }
   }
 
+  /**
+   * The arena's own standing rule.
+   *
+   * Every hazard here hurts the player as well as the infected. An arena that
+   * only ever damages the enemy is scenery — the player learns nothing from it
+   * and never has to move. The cost of that is that all of them telegraph, and
+   * all of them are escapable by walking.
+   */
+  private updateArenaHazards(dt: number) {
+    const hazard = this.currentArena?.hazard;
+    if (!hazard || hazard.id === "none") return;
+
+    if (this.waveActive || this.arenaEvents.length > 0) {
+      this.arenaHazardTimer -= dt;
+      if (this.arenaHazardTimer <= 0 && this.waveActive) {
+        this.arenaHazardTimer = hazard.interval;
+        this.spawnArenaEvent(hazard.id, hazard);
+      }
+    }
+
+    for (let index = this.arenaEvents.length - 1; index >= 0; index -= 1) {
+      const event = this.arenaEvents[index];
+      event.timer -= dt;
+
+      if (event.kind === "surge" && event.payload) {
+        // Expands through the telegraph so the ring you see is the ring that
+        // will hit you, just smaller.
+        const progress = 1 - Math.max(0, event.timer) / Math.max(0.001, event.radius / 9);
+        event.payload.scale.setScalar(0.4 + progress * event.radius);
+      }
+      if (event.kind === "debris" && event.payload) {
+        // Freefall onto the marker.
+        event.payload.position.y = Math.max(0.35, event.payload.position.y - 26 * dt);
+        event.payload.rotation.y += dt * 1.4;
+      }
+
+      if (event.timer > 0) continue;
+      this.resolveArenaEvent(event);
+      this.scene.remove(event.marker);
+      this.visuals.disposeObject(event.marker);
+      if (event.payload) {
+        this.scene.remove(event.payload);
+        this.visuals.disposeObject(event.payload);
+      }
+      this.arenaEvents.splice(index, 1);
+    }
+  }
+
+  private spawnArenaEvent(kind: "debris" | "surge", hazard: { telegraph: number; damage: number; radius: number }) {
+    if (kind === "surge") {
+      // One ring from the beacon outward. Every direction is an escape, so the
+      // answer is always "keep moving" and never "memorise the safe tile".
+      const ring = this.visuals.createSurgeRing();
+      ring.position.set(0, 0.05, 0);
+      ring.scale.setScalar(0.4);
+      this.scene.add(ring);
+      const marker = this.visuals.createTelegraphCircle(2.0);
+      marker.position.set(0, 0.03, 0);
+      this.scene.add(marker);
+      this.arenaEvents.push({
+        kind,
+        x: 0,
+        z: 0,
+        // The ring sweeps out to the arena edge; radius here is the band width
+        // checked against at resolve time.
+        radius: hazard.radius,
+        damage: hazard.damage,
+        timer: ARENA_LIMIT / 9,
+        marker,
+        payload: ring,
+      });
+      this.audio.tone(120, 0.5, 0.06, "sawtooth");
+      return;
+    }
+
+    // Debris drops near the player but never exactly on them — landing on the
+    // player's current tile is unreactable, and reactable is the whole point.
+    const angle = Math.random() * Math.PI * 2;
+    const distance = 3.5 + Math.random() * 5;
+    const x = THREE.MathUtils.clamp(this.playerMesh.position.x + Math.cos(angle) * distance, -16, 16);
+    const z = THREE.MathUtils.clamp(this.playerMesh.position.z + Math.sin(angle) * distance, -16, 16);
+
+    const marker = this.visuals.createTelegraphCircle(hazard.radius);
+    marker.position.set(x, 0.03, z);
+    this.scene.add(marker);
+
+    const slab = this.visuals.createDebrisSlab();
+    slab.position.set(x, 16, z);
+    this.scene.add(slab);
+
+    this.arenaEvents.push({
+      kind,
+      x,
+      z,
+      radius: hazard.radius,
+      damage: hazard.damage,
+      timer: hazard.telegraph,
+      marker,
+      payload: slab,
+    });
+    this.audio.tone(90, 0.18, 0.05, "sawtooth");
+  }
+
+  private resolveArenaEvent(event: ArenaEvent) {
+    if (event.kind === "debris") {
+      const impact = new THREE.Vector3(event.x, 0, event.z);
+      for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+        const enemy = this.enemies[index];
+        if (!enemy) continue;
+        if (enemy.mesh.position.distanceTo(impact) > event.radius + enemy.definition.radius) continue;
+        const push = enemy.mesh.position.clone().sub(impact).setY(0).normalize();
+        this.damageEnemy(enemy, event.damage * 3, 9, push);
+      }
+      if (this.playerMesh.position.distanceTo(impact) <= event.radius + 0.5) {
+        this.damagePlayer(event.damage);
+      }
+      this.visuals.addBloodDecal(this.scene, impact, 0.9);
+      this.cameraShake = Math.max(this.cameraShake, 0.55);
+      this.audio.playGroundSlam();
+      return;
+    }
+
+    // Surge: the ring has reached the wall, so anything still outside the
+    // beacon pad takes the hit.
+    const inner = ARENA_LIMIT - event.radius;
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      const enemy = this.enemies[index];
+      if (!enemy) continue;
+      const distance = Math.hypot(enemy.mesh.position.x, enemy.mesh.position.z);
+      if (distance < inner) continue;
+      const push = enemy.mesh.position.clone().setY(0).normalize().multiplyScalar(-1);
+      this.damageEnemy(enemy, event.damage * 2.5, 6, push);
+    }
+    const playerDistance = Math.hypot(this.playerMesh.position.x, this.playerMesh.position.z);
+    if (playerDistance >= inner) {
+      this.damagePlayer(event.damage);
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.8), "ZAP!", "comic-zap");
+    }
+    this.cameraShake = Math.max(this.cameraShake, 0.4);
+    this.audio.playChainLightning();
+  }
+
   private updateHazards(dt: number) {
     for (let index = this.hazards.length - 1; index >= 0; index -= 1) {
       const hazard = this.hazards[index];
@@ -2494,19 +2833,58 @@ export class GameEngine {
     return position;
   }
 
-  private pointInsideObstacle(x: number, z: number, padding = 0) {
-    return this.obstacles.some((obstacle) => {
+  private obstacleAt(x: number, z: number, padding = 0): Obstacle | null {
+    for (const obstacle of this.obstacles) {
       if (obstacle.radius) {
         const dx = x - obstacle.x;
         const dz = z - obstacle.z;
         const r = obstacle.radius + padding;
-        return dx * dx + dz * dz <= r * r;
-      }
-      return (
+        if (dx * dx + dz * dz <= r * r) return obstacle;
+      } else if (
         Math.abs(x - obstacle.x) <= obstacle.hx + padding &&
         Math.abs(z - obstacle.z) <= obstacle.hz + padding
-      );
-    });
+      ) {
+        return obstacle;
+      }
+    }
+    return null;
+  }
+
+  private pointInsideObstacle(x: number, z: number, padding = 0) {
+    return this.obstacleAt(x, z, padding) !== null;
+  }
+
+  /**
+   * Chip a destructible crate, removing it once it gives out.
+   *
+   * Returns true if the shot was absorbed. Crates are the one piece of cover
+   * the player can edit, so the feedback has to be immediate: the tint steps
+   * down on every hit rather than only at the moment it breaks.
+   */
+  private damageObstacle(obstacle: Obstacle, damage: number, at: THREE.Vector3): boolean {
+    if (obstacle.health === undefined || obstacle.maxHealth === undefined) return false;
+    obstacle.health -= damage;
+
+    if (obstacle.health > 0) {
+      if (obstacle.mesh) this.visuals.damageCrate(obstacle.mesh, obstacle.health / obstacle.maxHealth);
+      this.audio.tone(180, 0.05, 0.05, "square");
+      this.spawnFloatingText(at.clone().setY(1.1), "CRACK!", "comic-slam");
+      return true;
+    }
+
+    if (obstacle.mesh) {
+      obstacle.mesh.visible = false;
+      const burst = this.visuals.createRadialSpeedLinesMesh(COMIC.rust);
+      burst.position.set(obstacle.x, 0.6, obstacle.z);
+      this.scene.add(burst);
+      this.effects.push({ mesh: burst, life: 0.32, maxLife: 0.32 });
+    }
+    const index = this.obstacles.indexOf(obstacle);
+    if (index >= 0) this.obstacles.splice(index, 1);
+    this.spawnFloatingText(at.clone().setY(1.3), "SMASH!", "comic-boom");
+    this.audio.playExplosion();
+    this.cameraShake = Math.max(this.cameraShake, 0.24);
+    return true;
   }
 
   private removeProjectile(index: number) {
@@ -2588,6 +2966,9 @@ export class GameEngine {
 
     this.updateAim();
 
+    // Ticked before the early return, so a freeze cannot extend its own gate.
+    this.hitStopCooldown = Math.max(0, this.hitStopCooldown - dt);
+
     // Hit-stop micro freeze frame (slow down/freeze simulation momentarily for punchy impact)
     if (this.hitStopTimer > 0) {
       this.hitStopTimer -= dt;
@@ -2601,6 +2982,7 @@ export class GameEngine {
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
     this.updateHazards(dt);
+    this.updateArenaHazards(dt);
     // After projectiles, so indirect damage (chain lightning, burn splash,
     // explosions) resolves into deaths on the same frame it was dealt.
     this.reapDead();

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { COMIC, ComicPalette, inkInPlace, inkOutline } from "./comic";
 import { CharacterFactory, type CharacterKind, type CharacterRig } from "./characters";
+import type { ArenaTheme } from "./arenas";
 import type { EnemyDefinition, EnemyId, WeaponId } from "./types";
 
 export type { CharacterRig } from "./characters";
@@ -89,20 +90,20 @@ export class VisualFactory {
   }
 
   /** Painted concrete: bright slab colour with inked seams and speckle. */
-  private createFloorTexture(): THREE.CanvasTexture {
+  private createFloorTexture(theme: ArenaTheme): THREE.CanvasTexture {
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = 256;
     const ctx = canvas.getContext("2d");
     if (ctx) {
-      ctx.fillStyle = "#8f9db8";
+      ctx.fillStyle = theme.floorLight;
       ctx.fillRect(0, 0, 256, 256);
 
-      ctx.fillStyle = "#7d8aa6";
+      ctx.fillStyle = theme.floorDark;
       ctx.fillRect(0, 0, 128, 128);
       ctx.fillRect(128, 128, 128, 128);
 
       // Bold slab seams — the comic equivalent of grout lines.
-      ctx.strokeStyle = "#3f4a63";
+      ctx.strokeStyle = theme.seam;
       ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(128, 0);
@@ -111,7 +112,7 @@ export class VisualFactory {
       ctx.lineTo(256, 128);
       ctx.stroke();
 
-      ctx.fillStyle = "rgba(40,50,74,0.5)";
+      ctx.fillStyle = theme.speckle;
       for (let i = 0; i < 90; i += 1) {
         const x = Math.random() * 256;
         const y = Math.random() * 256;
@@ -153,11 +154,11 @@ export class VisualFactory {
 
   // ------------------------------------------------------------------ ground
 
-  createGround() {
+  createGround(theme: ArenaTheme) {
     const group = new THREE.Group();
 
     const floorMaterial = this.palette.toon(0xffffff);
-    floorMaterial.map = this.track(this.createFloorTexture());
+    floorMaterial.map = this.track(this.createFloorTexture(theme));
     const floor = new THREE.Mesh(this.own(new THREE.PlaneGeometry(46, 46)), floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
@@ -166,7 +167,7 @@ export class VisualFactory {
     // Painted centre pad. Full-strength paint, not the old 8%-opacity ghosting.
     const padOuter = new THREE.Mesh(
       this.own(new THREE.RingGeometry(6.8, 7.2, 64)),
-      this.palette.flat(COMIC.hazardYellow, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+      this.palette.flat(theme.paint, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
     );
     padOuter.rotation.x = -Math.PI / 2;
     padOuter.position.y = 0.02;
@@ -225,9 +226,9 @@ export class VisualFactory {
     return group;
   }
 
-  addPerimeter(scene: THREE.Scene) {
-    const wallMaterial = this.palette.toon(COMIC.concrete);
-    const trimMaterial = this.palette.toon(COMIC.hazardYellow);
+  addPerimeter(scene: THREE.Object3D, theme: ArenaTheme) {
+    const wallMaterial = this.palette.toon(theme.wall);
+    const trimMaterial = this.palette.toon(theme.trim);
     const ink = this.palette.outlineMaterial();
 
     const wallGeometry = this.own(new RoundedBoxGeometry(42, 3.4, 0.9, 3, 0.08));
@@ -259,17 +260,17 @@ export class VisualFactory {
       [-20, 20],
       [20, 20],
     ] as const) {
-      const tower = inkOutline(towerGeometry, this.palette.toon(COMIC.steel), ink, 0.02);
+      const tower = inkOutline(towerGeometry, this.palette.toon(theme.wall), ink, 0.02);
       tower.position.set(x, 2.6, z);
       scene.add(tower);
     }
   }
 
-  addSetDressing(scene: THREE.Scene) {
+  addSetDressing(scene: THREE.Object3D, theme: ArenaTheme) {
     const ink = this.palette.outlineMaterial();
 
     // Distant silhouetted skyline: flat unlit blocks that read as backdrop art.
-    const skylineMaterial = this.palette.flat(0x2a3358);
+    const skylineMaterial = this.palette.flat(theme.skyline);
     const skylineGeometry = this.own(new THREE.BoxGeometry(1, 1, 1));
     for (let i = 0; i < 26; i += 1) {
       const angle = (i / 26) * Math.PI * 2;
@@ -408,6 +409,121 @@ export class VisualFactory {
     inkInPlace(runner, ink, 0.04);
     group.add(runner);
     return group;
+  }
+
+  /**
+   * Destructible supply crate.
+   *
+   * Reads as cover at a glance and as *shootable* cover on a second look: the
+   * stencilled cross and the chipped corner slats are the only props in the
+   * arena drawn with a broken outline, which is the cue that it can be
+   * removed. `damageCrate` swaps the material to sell each hit.
+   */
+  createSupplyCrate(): THREE.Group {
+    const group = new THREE.Group();
+    const ink = this.palette.outlineMaterial();
+
+    const body = new THREE.Mesh(
+      this.own(new RoundedBoxGeometry(1.6, 1.5, 1.6, 3, 0.06)),
+      this.palette.toon(COMIC.rust),
+    );
+    body.position.y = 0.75;
+    body.castShadow = true;
+    body.name = "crate-body";
+    inkInPlace(body, ink, 0.045);
+    group.add(body);
+
+    // Corner slats, deliberately not flush — a crate that is already coming
+    // apart reads as breakable without needing an icon.
+    const slatGeometry = this.own(new RoundedBoxGeometry(1.72, 0.16, 0.2, 2, 0.02));
+    const slatMaterial = this.palette.toon(0x8a4a1c);
+    for (const [y, z, tilt] of [
+      [0.28, 0.8, 0.04],
+      [1.2, 0.8, -0.03],
+      [0.28, -0.8, -0.05],
+      [1.2, -0.8, 0.02],
+    ] as const) {
+      const slat = new THREE.Mesh(slatGeometry, slatMaterial);
+      slat.position.set(0, y, z);
+      slat.rotation.z = tilt;
+      group.add(slat);
+    }
+
+    // Stencilled supply cross on the two faces the camera can actually see.
+    const crossMaterial = this.palette.flat(COMIC.paper, { transparent: true, opacity: 0.9 });
+    const barGeometry = this.own(new THREE.PlaneGeometry(0.9, 0.24));
+    for (const [rotY, offZ, offX] of [
+      [0, 0.81, 0],
+      [Math.PI / 2, 0, 0.81],
+    ] as const) {
+      for (let i = 0; i < 2; i += 1) {
+        const bar = new THREE.Mesh(barGeometry, crossMaterial);
+        bar.position.set(offX, 0.78, offZ);
+        bar.rotation.y = rotY;
+        bar.rotation.z = i === 0 ? 0 : Math.PI / 2;
+        group.add(bar);
+      }
+    }
+
+    return group;
+  }
+
+  /**
+   * Recolour a crate to its damage state. Three flat steps rather than a fade,
+   * because the post-process posterises anything smoother back into steps
+   * anyway and a lerp just lands on an unpredictable one.
+   */
+  damageCrate(crate: THREE.Group, healthFraction: number) {
+    const body = crate.getObjectByName("crate-body");
+    if (!(body instanceof THREE.Mesh)) return;
+    const tint = healthFraction > 0.66 ? COMIC.rust : healthFraction > 0.33 ? 0x9c4a18 : 0x6b3411;
+    const material = body.material as THREE.MeshToonMaterial;
+    material.color.setHex(tint);
+  }
+
+  /**
+   * Falling ceiling slab for the garage. Spawned above the impact point and
+   * dropped by the engine, so the telegraph on the floor and the thing casting
+   * it are the same event.
+   */
+  createDebrisSlab(): THREE.Group {
+    const group = new THREE.Group();
+    const ink = this.palette.outlineMaterial();
+    const slab = new THREE.Mesh(
+      this.own(new RoundedBoxGeometry(2.3, 0.5, 2.3, 3, 0.05)),
+      this.palette.toon(COMIC.concrete),
+    );
+    inkInPlace(slab, ink, 0.05);
+    group.add(slab);
+
+    const rebarGeometry = this.own(new THREE.CylinderGeometry(0.05, 0.05, 1.1, 5));
+    const rebarMaterial = this.palette.toon(COMIC.steel);
+    for (const [x, z] of [
+      [-0.6, -0.5],
+      [0.5, 0.6],
+      [0.7, -0.4],
+    ] as const) {
+      const rebar = new THREE.Mesh(rebarGeometry, rebarMaterial);
+      rebar.position.set(x, 0.5, z);
+      rebar.rotation.z = 0.3;
+      group.add(rebar);
+    }
+    return group;
+  }
+
+  /**
+   * Electrified surge ring for the flooded bay: a bright annulus the engine
+   * scales outward. Drawn double-sided and unlit so it stays the same
+   * screaming cyan at every radius.
+   */
+  createSurgeRing(): THREE.Mesh {
+    const ring = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(0.82, 1, 48)),
+      this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    return ring;
   }
 
   createBarrel() {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CAMPAIGN_WAVES,
   ENEMIES,
+  HIT_STOP_COOLDOWN,
+  HIT_STOP_DURATION,
   getWaveDefinition,
   getWaveScaling,
   getEnemySpeed,
@@ -16,6 +18,7 @@ import {
   WAVE_MODIFIERS,
   WAVES,
 } from "../game/config";
+import { ARENA_IDS, ARENAS, CRATE_BASE_HP, getArenaForWave } from "../game/arenas";
 import type { SynergyCardId } from "../game/types";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "../game/economy";
 import { normalizeJoystick, resolveInputMode, shouldReplaceTouchTarget } from "../game/mobile";
@@ -420,5 +423,126 @@ describe("meta-progression scaling", () => {
 
   it("never scales enemy speed with the player's wallet", () => {
     expect(getWaveScaling(10, 0).speed).toBe(getWaveScaling(10, 1).speed);
+  });
+});
+
+describe("arenas", () => {
+  it("gives every campaign wave a defined arena", () => {
+    for (let wave = 1; wave <= CAMPAIGN_WAVES; wave += 1) {
+      const arena = getArenaForWave(wave);
+      expect(ARENA_IDS).toContain(arena.id);
+    }
+  });
+
+  it("puts the two boss waves in different arenas", () => {
+    expect(getArenaForWave(5).id).not.toBe(getArenaForWave(10).id);
+  });
+
+  it("is deterministic, so a wave can be learned and planned for", () => {
+    for (const wave of [3, 7, 12, 40]) {
+      expect(getArenaForWave(wave).id).toBe(getArenaForWave(wave).id);
+    }
+  });
+
+  it("cycles every arena through endless rather than settling on one", () => {
+    const seen = new Set<string>();
+    for (let wave = CAMPAIGN_WAVES + 1; wave <= CAMPAIGN_WAVES + ARENA_IDS.length * 2; wave += 1) {
+      seen.add(getArenaForWave(wave).id);
+    }
+    expect(seen.size).toBe(ARENA_IDS.length);
+  });
+
+  it("keeps the extraction beacon clear of collision in every arena", () => {
+    // The wave only advances by standing at the origin. A *colliding* prop
+    // there would soft-lock the run, and it would do so silently. Cones,
+    // pallets, slime and floodlights are decoration and may sit anywhere.
+    const collides = new Set(["block", "barricade", "furnace", "trafficBarricade", "vat", "generator", "crate"]);
+    for (const id of ARENA_IDS) {
+      for (const prop of ARENAS[id].props) {
+        if (!collides.has(prop.kind)) continue;
+        const clearance = Math.hypot(prop.x, prop.z);
+        expect(clearance, `${id} prop ${prop.kind}`).toBeGreaterThan(3.0);
+      }
+    }
+  });
+
+  it("keeps every prop inside the playable square", () => {
+    for (const id of ARENA_IDS) {
+      for (const prop of ARENAS[id].props) {
+        expect(Math.abs(prop.x), `${id} ${prop.kind} x`).toBeLessThanOrEqual(18.5);
+        expect(Math.abs(prop.z), `${id} ${prop.kind} z`).toBeLessThanOrEqual(18.5);
+      }
+    }
+  });
+
+  it("leaves a brute-width gap between garage pillars", () => {
+    // A brute has a 0.9 radius. Pillars are 2.2 wide on a 7.4 lattice, so the
+    // gap is 5.2 — if that ever drops below 2.0 the garage becomes a wall and
+    // the heavies pile up against it instead of reaching the player.
+    const pillars = ARENAS.garage.props.filter(
+      (prop): prop is Extract<typeof prop, { kind: "block" }> => prop.kind === "block",
+    );
+    expect(pillars.length).toBeGreaterThan(0);
+    for (const pillar of pillars) {
+      const neighbour = pillars.find(
+        (other) => other !== pillar && Math.abs(other.z - pillar.z) < 0.01 && other.x > pillar.x,
+      );
+      if (!neighbour) continue;
+      const gap = neighbour.x - pillar.x - pillar.width / 2 - neighbour.width / 2;
+      expect(gap).toBeGreaterThan(2.0);
+    }
+  });
+
+  it("never lets a hazard move the player on its own", () => {
+    // The rooftop originally carried a continuous crosswind that displaced the
+    // operator every frame and could not be countered by walking into it, so
+    // the character drifted about a metre a second with no input at all —
+    // indistinguishable from broken controls. Every hazard must be a discrete,
+    // dodgeable event; the "gale" variant is gone from the union so the type
+    // checker refuses a new one, and this pins the data alongside it.
+    const discrete = new Set(["none", "debris", "surge"]);
+    for (const id of ARENA_IDS) {
+      expect(discrete.has(ARENAS[id].hazard.id), `${id} hazard`).toBe(true);
+    }
+  });
+
+  it("only damages the player through hazards that telegraph first", () => {
+    for (const id of ARENA_IDS) {
+      const hazard = ARENAS[id].hazard;
+      if (hazard.id === "none") continue;
+      expect(hazard.telegraph, `${id} telegraph`).toBeGreaterThan(0.5);
+    }
+  });
+
+  it("gives every destructible crate positive health", () => {
+    for (const id of ARENA_IDS) {
+      for (const prop of ARENAS[id].props) {
+        if (prop.kind !== "crate") continue;
+        expect(prop.hp ?? CRATE_BASE_HP).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe("hit-stop budget", () => {
+  it("caps how much of real time the freeze can consume", () => {
+    // damageEnemy runs many times per frame under sustained fire — six shotgun
+    // pellets, four shrapnel shards, three tesla arcs — and at a 20% crit
+    // chance the odds of at least one qualifying hit per frame approach 1.
+    // Without a gate the freeze re-armed every frame; measured against a
+    // wave-5 crowd the simulation advanced at 64% of real time. The duty cycle
+    // is what bounds that.
+    const dutyCycle = HIT_STOP_DURATION / (HIT_STOP_DURATION + HIT_STOP_COOLDOWN);
+    expect(dutyCycle).toBeLessThan(0.2);
+  });
+
+  it("still freezes long enough to register as an impact", () => {
+    // Below about two frames at 60Hz the freeze stops reading as a hit and
+    // just looks like a dropped frame.
+    expect(HIT_STOP_DURATION).toBeGreaterThanOrEqual(2 / 60);
+  });
+
+  it("cannot re-arm before the previous freeze has finished", () => {
+    expect(HIT_STOP_COOLDOWN).toBeGreaterThan(HIT_STOP_DURATION);
   });
 });

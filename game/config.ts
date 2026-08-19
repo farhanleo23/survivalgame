@@ -480,6 +480,27 @@ export function rollWaveModifier(wave: number, random: () => number = Math.rando
   return WAVE_MODIFIERS[WAVE_MODIFIER_IDS[index]];
 }
 
+/**
+ * Hit-stop: how long the simulation freezes on a meaty hit, and the minimum
+ * gap before it may fire again.
+ *
+ * The freeze is the whole point — it is what makes a crit land — but it used
+ * to be re-armed by every qualifying damage event with nothing stopping one
+ * from starting before the last had finished. `damageEnemy` runs many times a
+ * frame under sustained fire (six shotgun pellets, four shrapnel shards, three
+ * tesla arcs, a crowd of bodies), and at a 20% crit chance the odds of at
+ * least one crit per frame approach certainty. The result was a permanently
+ * re-armed freeze: measured against a wave-5 crowd, the simulation advanced at
+ * 64% of real time for as long as the trigger was held, which reads as the
+ * whole game lagging.
+ *
+ * The cooldown caps the duty cycle at roughly one frozen frame in seven, which
+ * keeps the punch on discrete impacts and makes sustained fire impossible to
+ * stall behind.
+ */
+export const HIT_STOP_DURATION = 0.035;
+export const HIT_STOP_COOLDOWN = 0.22;
+
 /** The player's base move speed, before the mobility perk. */
 export const PLAYER_BASE_SPEED = 6.2;
 
