@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
@@ -16,6 +16,13 @@ const geistMono = Geist_Mono({
 const title = "Deadwave — Zombie Survival Shooter";
 const description =
   "Survive ten escalating waves in a comic-book 2.5D industrial arena, recover salvage, and upgrade your arsenal.";
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#050d0a",
+};
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

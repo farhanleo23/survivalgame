@@ -18,6 +18,7 @@ import {
 } from "../game/config";
 import type { SynergyCardId } from "../game/types";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "../game/economy";
+import { normalizeJoystick, resolveInputMode, shouldReplaceTouchTarget } from "../game/mobile";
 import { createDefaultProfile, loadProfile, PROFILE_KEY, saveProfile, validateProfile } from "../game/profile";
 
 class MemoryStorage implements Storage {
@@ -37,6 +38,8 @@ describe("profile persistence", () => {
     expect(profile.coins).toBe(0);
     expect(profile.ownedWeapons).toEqual(["pistol"]);
     expect(profile.equippedLoadout).toEqual(["pistol"]);
+    expect(profile.settings.controlMode).toBe("auto");
+    expect(profile.settings.graphicsMode).toBe("auto");
   });
 
   it("clamps invalid ranks and restores the starter weapon", () => {
@@ -68,6 +71,42 @@ describe("profile persistence", () => {
     const profile = { ...createDefaultProfile(), coins: 325, highestWave: 6 };
     saveProfile(storage, profile);
     expect(loadProfile(storage)).toMatchObject({ coins: 325, highestWave: 6 });
+  });
+
+  it("migrates old profiles and rejects unknown control modes", () => {
+    const oldProfile = validateProfile({ settings: { music: false, sfx: true, reducedMotion: false } });
+    expect(oldProfile.settings.controlMode).toBe("auto");
+    const invalid = validateProfile({ settings: { controlMode: "gamepad" } });
+    expect(invalid.settings.controlMode).toBe("auto");
+    const touch = validateProfile({ settings: { controlMode: "touch" } });
+    expect(touch.settings.controlMode).toBe("touch");
+    expect(oldProfile.settings.graphicsMode).toBe("auto");
+    const invalidGraphics = validateProfile({ settings: { graphicsMode: "ultra" } });
+    expect(invalidGraphics.settings.graphicsMode).toBe("auto");
+    const quality = validateProfile({ settings: { graphicsMode: "quality" } });
+    expect(quality.settings.graphicsMode).toBe("quality");
+  });
+});
+
+describe("adaptive mobile controls", () => {
+  it("resolves automatic controls from primary pointer capabilities", () => {
+    expect(resolveInputMode("auto", true)).toBe("touch");
+    expect(resolveInputMode("auto", false)).toBe("keyboard");
+    expect(resolveInputMode("keyboard", true)).toBe("keyboard");
+    expect(resolveInputMode("touch", false)).toBe("touch");
+  });
+
+  it("normalizes an analog joystick with diagonals, clamping, and a dead zone", () => {
+    expect(normalizeJoystick(3, 3, 50)).toEqual({ x: 0, z: 0, knobX: 0, knobY: 0 });
+    const diagonal = normalizeJoystick(50, 50, 50);
+    expect(diagonal.x).toBeCloseTo(Math.SQRT1_2, 4);
+    expect(diagonal.z).toBeCloseTo(Math.SQRT1_2, 4);
+    expect(Math.hypot(diagonal.knobX, diagonal.knobY)).toBeCloseTo(50, 4);
+  });
+
+  it("keeps touch aim sticky until another enemy is substantially closer", () => {
+    expect(shouldReplaceTouchTarget(100, 50)).toBe(false);
+    expect(shouldReplaceTouchTarget(100, 48)).toBe(true);
   });
 });
 

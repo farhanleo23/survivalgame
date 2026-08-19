@@ -1,4 +1,4 @@
-import type { PerkId, ProfileV1, WeaponId } from "./types";
+import type { ControlMode, GraphicsMode, PerkId, ProfileV1, WeaponId } from "./types";
 
 export const PROFILE_KEY = "deadwave.profile.v1";
 
@@ -10,7 +10,7 @@ export function createDefaultProfile(): ProfileV1 {
     weaponRanks: { pistol: 1, smg: 1, shotgun: 1, rifle: 1 },
     perkRanks: { vitality: 0, mobility: 0, magnet: 0 },
     equippedLoadout: ["pistol"],
-    settings: { music: true, sfx: true, reducedMotion: false },
+    settings: { music: true, sfx: true, reducedMotion: false, controlMode: "auto", graphicsMode: "auto" },
     completedLevels: [],
     highestWave: 1,
     checkpointWave: 1,
@@ -20,6 +20,8 @@ export function createDefaultProfile(): ProfileV1 {
 
 const weaponIds: WeaponId[] = ["pistol", "smg", "shotgun", "rifle"];
 const perkIds: PerkId[] = ["vitality", "mobility", "magnet"];
+const controlModes: ControlMode[] = ["auto", "touch", "keyboard"];
+const graphicsModes: GraphicsMode[] = ["auto", "quality", "performance"];
 
 function safeInt(value: unknown, min: number, max: number, fallback: number) {
   return typeof value === "number" && Number.isFinite(value)
@@ -56,6 +58,12 @@ export function validateProfile(raw: unknown): ProfileV1 {
       music: value.settings?.music !== false,
       sfx: value.settings?.sfx !== false,
       reducedMotion: value.settings?.reducedMotion === true,
+      controlMode: controlModes.includes(value.settings?.controlMode as ControlMode)
+        ? value.settings?.controlMode as ControlMode
+        : "auto",
+      graphicsMode: graphicsModes.includes(value.settings?.graphicsMode as GraphicsMode)
+        ? value.settings?.graphicsMode as GraphicsMode
+        : "auto",
     },
     completedLevels: Array.isArray(value.completedLevels)
       ? [...new Set(value.completedLevels.filter((level) => Number.isInteger(level) && level >= 1 && level <= 50))]

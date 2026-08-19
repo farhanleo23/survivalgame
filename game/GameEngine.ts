@@ -15,13 +15,16 @@ import {
 } from "./config";
 import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
-import { ComicPostProcess } from "./postfx";
+import { shouldReplaceTouchTarget } from "./mobile";
+import { ComicPostProcess, type ComicPostOptions } from "./postfx";
 import { VisualFactory, type CharacterRig } from "./visuals";
 import type {
   EliteAffix,
   EnemyDefinition,
   EnemyId,
   HudState,
+  GraphicsMode,
+  InputMode,
   PerkId,
   PickupId,
   ProfileV1,
@@ -38,6 +41,12 @@ interface EngineCallbacks {
   onDeath: () => void;
   onVictory: () => void;
   onPauseToggle: () => void;
+}
+
+export interface GameRuntimeConfig {
+  inputMode: InputMode;
+  mobileRendering: boolean;
+  graphicsMode: GraphicsMode;
 }
 
 interface EnemyEntity {
@@ -152,6 +161,56 @@ const MAX_ACTIVE_ENEMIES = 36;
 const MAX_KNOCKBACK_SPEED = 26;
 const CROWD_CELL_SIZE = 2.5;
 
+interface RenderTuning {
+  initialPixelRatio: number;
+  minPixelRatio: number;
+  maxPixelRatio: number;
+  shadows: boolean;
+  shadowMapSize: number;
+  post: Required<Pick<ComicPostOptions, "outlineStrength" | "halftoneStrength" | "grainStrength">>;
+}
+
+function getRenderTuning(mode: GraphicsMode, mobile: boolean): RenderTuning {
+  if (mode === "performance") {
+    return {
+      initialPixelRatio: 1,
+      minPixelRatio: 0.75,
+      maxPixelRatio: mobile ? 1 : 1.1,
+      shadows: false,
+      shadowMapSize: 512,
+      post: { outlineStrength: 0.82, halftoneStrength: 0.26, grainStrength: 0.014 },
+    };
+  }
+  if (mode === "quality") {
+    return {
+      initialPixelRatio: mobile ? 1.5 : 1.75,
+      minPixelRatio: mobile ? 1.1 : 1.25,
+      maxPixelRatio: mobile ? 1.75 : 2,
+      shadows: true,
+      shadowMapSize: mobile ? 1024 : 2048,
+      post: { outlineStrength: 0.95, halftoneStrength: 0.44, grainStrength: 0.026 },
+    };
+  }
+  if (mobile) {
+    return {
+      initialPixelRatio: 1.25,
+      minPixelRatio: 0.9,
+      maxPixelRatio: 1.5,
+      shadows: true,
+      shadowMapSize: 1024,
+      post: { outlineStrength: 0.9, halftoneStrength: 0.36, grainStrength: 0.02 },
+    };
+  }
+  return {
+    initialPixelRatio: 1.5,
+    minPixelRatio: 1,
+    maxPixelRatio: 1.5,
+    shadows: true,
+    shadowMapSize: 2048,
+    post: { outlineStrength: 1, halftoneStrength: 0.5, grainStrength: 0.045 },
+  };
+}
+
 
 export class GameEngine {
   private container: HTMLElement;
@@ -179,6 +238,9 @@ export class GameEngine {
   private readonly extractionRequiredTime = 3.2;
   private extractionZoneMesh!: THREE.Group;
   private pixelRatio = Math.min(typeof window === "undefined" ? 1 : window.devicePixelRatio, 1.5);
+  private minPixelRatio = 1;
+  private maxPixelRatio = 1.5;
+  private shadowMapSize = 2048;
   private frameTimeAverage = FIXED_STEP;
   private performanceSampleTime = 0;
   private qaFramesRendered = 0;
@@ -209,6 +271,11 @@ export class GameEngine {
   private firing = false;
   private virtualMove = new THREE.Vector2();
   private usingTouchControls = false;
+  private inputMode: InputMode = "keyboard";
+  private mobileRendering = false;
+  private graphicsMode: GraphicsMode = "auto";
+  private keyLight: THREE.DirectionalLight | null = null;
+  private touchAimTarget: EnemyEntity | null = null;
   private skyCool = new THREE.Color(COMIC.sky);
   private skyHot = new THREE.Color(0x7a1f3d);
   private qaMode =
@@ -279,16 +346,29 @@ export class GameEngine {
   private deathBurstGeometry = new THREE.RingGeometry(0.18, 0.48, 16);
   private deathBurstMaterial = new THREE.MeshBasicMaterial({ color: 0x00f5d4, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
 
-  constructor(container: HTMLElement, profile: ProfileV1, callbacks: EngineCallbacks) {
+  constructor(
+    container: HTMLElement,
+    profile: ProfileV1,
+    callbacks: EngineCallbacks,
+    runtime: GameRuntimeConfig = { inputMode: "keyboard", mobileRendering: false, graphicsMode: "auto" },
+  ) {
     this.container = container;
     this.profile = profile;
     this.callbacks = callbacks;
+    this.inputMode = runtime.inputMode;
+    this.usingTouchControls = runtime.inputMode === "touch";
+    this.mobileRendering = runtime.mobileRendering;
+    this.graphicsMode = runtime.graphicsMode;
+    const tuning = getRenderTuning(runtime.graphicsMode, runtime.mobileRendering);
+    this.minPixelRatio = tuning.minPixelRatio;
+    this.maxPixelRatio = tuning.maxPixelRatio;
+    this.shadowMapSize = tuning.shadowMapSize;
     this.loadout = profile.equippedLoadout.length ? [...profile.equippedLoadout] : ["pistol"];
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-    if (this.qaMode) this.pixelRatio = 0.5;
+    this.renderer = new THREE.WebGLRenderer({ antialias: !runtime.mobileRendering, powerPreference: "high-performance" });
+    this.pixelRatio = this.qaMode ? 0.5 : Math.min(window.devicePixelRatio, tuning.initialPixelRatio);
     this.renderer.setPixelRatio(this.pixelRatio);
-    this.renderer.shadowMap.enabled = !this.qaMode;
+    this.renderer.shadowMap.enabled = !this.qaMode && tuning.shadows;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // Flat sRGB with no tone curve: filmic roll-off desaturates the highlights
@@ -303,7 +383,7 @@ export class GameEngine {
 
     this.timer.connect(document);
     this.visuals = new VisualFactory(this.renderer);
-    this.post = new ComicPostProcess(this.renderer);
+    this.post = new ComicPostProcess(this.renderer, tuning.post);
 
     this.applyPerks(profile.perkRanks);
     this.setupScene();
@@ -429,20 +509,52 @@ export class GameEngine {
   }
 
   setVirtualMove(x: number, z: number) {
-    this.usingTouchControls = true;
+    if (this.inputMode !== "touch") return;
     this.virtualMove.set(THREE.MathUtils.clamp(x, -1, 1), THREE.MathUtils.clamp(z, -1, 1));
   }
 
   setVirtualFire(active: boolean) {
-    this.usingTouchControls = true;
+    if (this.inputMode !== "touch") return;
     this.firing = active;
   }
 
   triggerVirtualAction(action: "dash" | "reload" | "swap") {
-    this.usingTouchControls = true;
+    if (this.inputMode !== "touch") return;
     if (action === "dash") this.startDash();
     else if (action === "reload") this.reload();
     else this.switchWeapon();
+  }
+
+  setInputMode(mode: InputMode) {
+    if (this.inputMode === mode) return;
+    this.inputMode = mode;
+    this.usingTouchControls = mode === "touch";
+    this.touchAimTarget = null;
+    this.clearInputState();
+  }
+
+  setGraphicsMode(mode: GraphicsMode) {
+    if (this.graphicsMode === mode) return;
+    this.graphicsMode = mode;
+    const tuning = getRenderTuning(mode, this.mobileRendering);
+    this.minPixelRatio = tuning.minPixelRatio;
+    this.maxPixelRatio = tuning.maxPixelRatio;
+    this.shadowMapSize = tuning.shadowMapSize;
+
+    if (!this.qaMode) {
+      this.pixelRatio = Math.min(window.devicePixelRatio, tuning.initialPixelRatio);
+      this.renderer.shadowMap.enabled = tuning.shadows;
+      if (this.keyLight) {
+        this.keyLight.shadow.mapSize.setScalar(tuning.shadowMapSize);
+        this.keyLight.shadow.map?.dispose();
+        this.keyLight.shadow.map = null;
+        this.keyLight.shadow.needsUpdate = true;
+      }
+    }
+    this.post.setUniform("uOutlineStrength", tuning.post.outlineStrength);
+    this.post.setUniform("uHalftoneStrength", tuning.post.halftoneStrength);
+    this.post.setUniform("uGrainStrength", tuning.post.grainStrength);
+    this.resize();
   }
 
   destroy() {
@@ -485,7 +597,7 @@ export class GameEngine {
     const key = new THREE.DirectionalLight(0xfff6e2, 0.72);
     key.position.set(-14, 26, -10);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.mapSize.setScalar(this.shadowMapSize);
     // Must enclose the 46-unit ground plus the perimeter walls. Ground outside
     // the shadow frustum samples as fully shadowed, which darkened the arena
     // corners and undid the flat lighting exactly where it was least expected.
@@ -495,6 +607,7 @@ export class GameEngine {
     key.shadow.camera.bottom = -32;
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.035;
+    this.keyLight = key;
     this.scene.add(key);
 
     // Cool bounce keeps shadowed sides coloured rather than grey.
@@ -1175,18 +1288,27 @@ export class GameEngine {
   }
 
   private updateAim() {
-    if (this.usingTouchControls && this.enemies.length > 0) {
-      let closest = this.enemies[0];
-      let closestDistance = closest.mesh.position.distanceToSquared(this.playerMesh.position);
-      for (let index = 1; index < this.enemies.length; index += 1) {
-        const distance = this.enemies[index].mesh.position.distanceToSquared(this.playerMesh.position);
-        if (distance < closestDistance) {
-          closest = this.enemies[index];
-          closestDistance = distance;
+    if (this.usingTouchControls) {
+      if (this.enemies.length === 0) {
+        this.touchAimTarget = null;
+        return;
+      }
+
+      let target = this.touchAimTarget && this.enemies.includes(this.touchAimTarget)
+        ? this.touchAimTarget
+        : this.enemies[0];
+      let targetDistance = target.mesh.position.distanceToSquared(this.playerMesh.position);
+      for (const enemy of this.enemies) {
+        if (enemy === target) continue;
+        const distance = enemy.mesh.position.distanceToSquared(this.playerMesh.position);
+        if (shouldReplaceTouchTarget(targetDistance, distance)) {
+          target = enemy;
+          targetDistance = distance;
         }
       }
-      this.mouseWorldPos.copy(closest.mesh.position);
-      this.aim.copy(closest.mesh.position).sub(this.playerMesh.position).setY(0).normalize();
+      this.touchAimTarget = target;
+      this.mouseWorldPos.copy(target.mesh.position);
+      this.aim.copy(target.mesh.position).sub(this.playerMesh.position).setY(0).normalize();
       return;
     }
     this.raycaster.setFromCamera(this.mouseNdc, this.camera);
@@ -2500,10 +2622,11 @@ export class GameEngine {
     this.performanceSampleTime += delta;
     if (this.performanceSampleTime >= 2) {
       this.performanceSampleTime = 0;
-      const maximum = Math.min(window.devicePixelRatio, 1.5);
+      const maximum = Math.min(window.devicePixelRatio, this.maxPixelRatio);
+      const minimum = this.qaMode ? 0.5 : this.minPixelRatio;
       const nextRatio =
         this.frameTimeAverage > 0.021
-          ? Math.max(1, this.pixelRatio - 0.15)
+          ? Math.max(minimum, this.pixelRatio - 0.15)
           : this.frameTimeAverage < 0.0172
             ? Math.min(maximum, this.pixelRatio + 0.1)
             : this.pixelRatio;
@@ -2594,6 +2717,10 @@ export class GameEngine {
     }
 
     if (code === "ShiftLeft" || code === "ShiftRight" || code === "Space") this.startDash();
+    if (code === "KeyJ" && this.qaMode) {
+      this.damagePlayer(this.playerHealth);
+      return;
+    }
     if (code === "KeyK" && this.qaMode) {
       for (const enemy of this.enemies) {
         // Telegraph rings live in the scene, not on the rig, so clearing the

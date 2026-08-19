@@ -7,7 +7,7 @@ const profileWith = (overrides: Record<string, unknown> = {}) => ({
   weaponRanks: { pistol: 1, smg: 1, shotgun: 1, rifle: 1 },
   perkRanks: { vitality: 0, mobility: 0, magnet: 0 },
   equippedLoadout: ["pistol"],
-  settings: { music: false, sfx: false, reducedMotion: true },
+  settings: { music: false, sfx: false, reducedMotion: true, controlMode: "auto", graphicsMode: "auto" },
   completedLevels: [],
   highestWave: 1,
   ...overrides,
@@ -42,6 +42,16 @@ test("enters the depot and starts a playable run", async ({ page }) => {
   await expect(page.getByTestId("game-stage")).toBeVisible();
   await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("hud-wave")).toContainText("01", { timeout: 15_000 });
+});
+
+test("a narrow desktop viewport keeps keyboard and mouse controls", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 700 });
+  await page.goto("/");
+  await page.getByTestId("start-mission").click();
+  await page.getByTestId("deploy").click();
+  await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("mobile-controls")).toHaveCount(0);
+  await expect(page.getByText("WASD", { exact: true })).toBeVisible();
 });
 
 test("restores banked progress from the local profile", async ({ page }) => {

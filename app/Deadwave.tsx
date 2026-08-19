@@ -14,8 +14,9 @@ import {
   WEAPON_IDS,
 } from "@/game/config";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
+import { normalizeJoystick, resolveInputMode } from "@/game/mobile";
 import { createDefaultProfile, loadProfile, saveProfile } from "@/game/profile";
-import type { GameScreen, HudState, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
+import type { ControlMode, GameScreen, GraphicsMode, HudState, InputMode, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
 import { LobbyHero } from "./LobbyHero";
 
 const initialHud: HudState = {
@@ -36,6 +37,18 @@ const initialHud: HudState = {
 
 type EngineStatus = "idle" | "loading" | "ready" | "error";
 
+interface AdaptiveCapabilities {
+  touchPrimary: boolean;
+  compact: boolean;
+  portrait: boolean;
+}
+
+const initialCapabilities: AdaptiveCapabilities = {
+  touchPrimary: false,
+  compact: false,
+  portrait: false,
+};
+
 /** Redeploys granted at the start of a run, and the ceiling you can bank to. */
 const STARTING_REDEPLOYS = 2;
 const MAX_REDEPLOYS = 3;
@@ -49,6 +62,7 @@ export function Deadwave() {
   const [runToken, setRunToken] = useState(0);
   const [draftCards, setDraftCards] = useState<SynergyCardDefinition[]>([]);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("idle");
+  const [capabilities, setCapabilities] = useState<AdaptiveCapabilities>(initialCapabilities);
   /** Wave the next run begins on, and the deck it carries in. */
   const [runStartWave, setRunStartWave] = useState(1);
   const [carriedSynergies, setCarriedSynergies] = useState<Partial<Record<SynergyCardId, number>>>({});
@@ -61,6 +75,7 @@ export function Deadwave() {
   const [redeploys, setRedeploys] = useState(STARTING_REDEPLOYS);
   const stageRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngineType | null>(null);
+  const orientationPauseRef = useRef(false);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -69,6 +84,37 @@ export function Deadwave() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    const coarsePointer = window.matchMedia("(pointer: coarse)");
+    const noHover = window.matchMedia("(hover: none)");
+    const portrait = window.matchMedia("(orientation: portrait)");
+    const compact = window.matchMedia("(max-width: 900px), (max-height: 560px)");
+    const syncCapabilities = () => {
+      setCapabilities({
+        touchPrimary: coarsePointer.matches && noHover.matches,
+        compact: compact.matches,
+        portrait: portrait.matches,
+      });
+    };
+
+    syncCapabilities();
+    coarsePointer.addEventListener("change", syncCapabilities);
+    noHover.addEventListener("change", syncCapabilities);
+    portrait.addEventListener("change", syncCapabilities);
+    compact.addEventListener("change", syncCapabilities);
+    window.visualViewport?.addEventListener("resize", syncCapabilities);
+    return () => {
+      coarsePointer.removeEventListener("change", syncCapabilities);
+      noHover.removeEventListener("change", syncCapabilities);
+      portrait.removeEventListener("change", syncCapabilities);
+      compact.removeEventListener("change", syncCapabilities);
+      window.visualViewport?.removeEventListener("resize", syncCapabilities);
+    };
+  }, []);
+
+  const inputMode = resolveInputMode(profile.settings.controlMode, capabilities.touchPrimary);
+  const orientationBlocked = inputMode === "touch" && capabilities.portrait && screen === "playing";
 
   const commitProfile = useCallback((updater: (current: ProfileV1) => ProfileV1) => {
     setProfile((current) => {
@@ -141,7 +187,7 @@ export function Deadwave() {
               return current;
             });
           },
-        });
+        }, { inputMode, mobileRendering: capabilities.touchPrimary, graphicsMode: profile.settings.graphicsMode });
         engineRef.current = engine;
         engine.start(runStartWave);
         // start() only clears synergies on wave 1, but the engine itself was
@@ -159,9 +205,32 @@ export function Deadwave() {
     return () => {
       cancelled = true;
     };
-  }, [screen, runToken, profile, commitProfile, runStartWave, carriedSynergies]);
+  }, [screen, runToken, profile, commitProfile, runStartWave, carriedSynergies, inputMode, capabilities.touchPrimary]);
 
   useEffect(() => () => engineRef.current?.destroy(), []);
+
+  useEffect(() => {
+    engineRef.current?.setInputMode(inputMode);
+  }, [inputMode]);
+
+  useEffect(() => {
+    engineRef.current?.setGraphicsMode(profile.settings.graphicsMode);
+  }, [profile.settings.graphicsMode]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (orientationBlocked) {
+      if (engine && !orientationPauseRef.current) {
+        engine.pause();
+        orientationPauseRef.current = true;
+      }
+      return;
+    }
+    if (orientationPauseRef.current) {
+      if (engine && screen === "playing") engine.resume();
+      orientationPauseRef.current = false;
+    }
+  }, [orientationBlocked, screen, engineStatus]);
 
   const gameVisible = ["playing", "paused", "armory", "draft", "dead", "victory"].includes(screen);
   const healthPercent = Math.max(0, Math.min(100, (hud.health / hud.maxHealth) * 100));
@@ -268,10 +337,25 @@ export function Deadwave() {
     commitProfile((current) => ({ ...current, settings: { ...current.settings, [key]: !current.settings[key] } }));
   };
 
+  const setControlMode = (controlMode: ControlMode) => {
+    commitProfile((current) => ({ ...current, settings: { ...current.settings, controlMode } }));
+  };
+
+  const setGraphicsMode = (graphicsMode: GraphicsMode) => {
+    commitProfile((current) => ({ ...current, settings: { ...current.settings, graphicsMode } }));
+  };
+
   if (!hydrated) return <main className="boot-screen"><span>ESTABLISHING TACTICAL LINK…</span></main>;
 
   return (
-    <main className={`deadwave ${profile.settings.reducedMotion ? "reduced-motion" : ""}`}>
+    <main
+      className={`deadwave ${profile.settings.reducedMotion ? "reduced-motion" : ""}`}
+      data-input-mode={inputMode}
+      data-handheld={capabilities.touchPrimary ? "true" : "false"}
+      data-compact={capabilities.compact ? "true" : "false"}
+      data-orientation-blocked={orientationBlocked ? "true" : "false"}
+      data-graphics-mode={profile.settings.graphicsMode}
+    >
       {!gameVisible && <LobbyBackground />}
 
       {screen === "lobby" && (
@@ -281,6 +365,10 @@ export function Deadwave() {
           onOpenArmory={() => setScreen("loadout")}
           onResume={() => startNewRun(profile.checkpointWave, {})}
           onToggleSetting={toggleSetting}
+          inputMode={inputMode}
+          onControlModeChange={setControlMode}
+          onGraphicsModeChange={setGraphicsMode}
+          handheld={capabilities.touchPrimary}
         />
       )}
 
@@ -305,7 +393,7 @@ export function Deadwave() {
         >
           <div className="canvas-mount" ref={stageRef} />
           <div className="vignette" aria-hidden="true" />
-          {engineStatus === "ready" && <div className="combat-reticle" aria-hidden="true"><i /><b /></div>}
+          {engineStatus === "ready" && inputMode === "keyboard" && <div className="combat-reticle" aria-hidden="true"><i /><b /></div>}
           {engineStatus === "ready" && (
             <Hud
               hud={hud}
@@ -316,7 +404,7 @@ export function Deadwave() {
               loadoutCount={Math.max(profile.equippedLoadout.length, profile.ownedWeapons.length)}
             />
           )}
-          {screen === "playing" && engineStatus === "ready" && (
+          {screen === "playing" && engineStatus === "ready" && inputMode === "keyboard" && (
             <div className="game-controls">
               <span><b>WASD</b> Move</span>
               <span><b>MOUSE</b> Aim</span>
@@ -327,12 +415,24 @@ export function Deadwave() {
               <span><b>ESC</b> Pause</span>
             </div>
           )}
-          {screen === "playing" && engineStatus === "ready" && (
+          {screen === "playing" && engineStatus === "ready" && inputMode === "touch" && !orientationBlocked && (
             <MobileControls
               onMove={(x, z) => engineRef.current?.setVirtualMove(x, z)}
               onFire={(active) => engineRef.current?.setVirtualFire(active)}
               onAction={(action) => engineRef.current?.triggerVirtualAction(action)}
+              onPause={() => {
+                engineRef.current?.pause();
+                setScreen("paused");
+              }}
             />
+          )}
+          {orientationBlocked && (
+            <div className="orientation-blocker" role="dialog" aria-modal="true" aria-label="Rotate device">
+              <span className="orientation-phone" aria-hidden="true">▯</span>
+              <p className="eyebrow">COMBAT DISPLAY LOCKED</p>
+              <h2>ROTATE TO LANDSCAPE</h2>
+              <p>Turn your device sideways to continue the operation.</p>
+            </div>
           )}
           {screen === "playing" && engineStatus === "loading" && (
             <div className="engine-status" role="status" aria-live="polite">
@@ -362,6 +462,8 @@ export function Deadwave() {
             <SettingToggle label="Music" active={profile.settings.music} onClick={() => toggleSetting("music")} />
             <SettingToggle label="Sound Effects" active={profile.settings.sfx} onClick={() => toggleSetting("sfx")} />
             <SettingToggle label="Reduced Motion" active={profile.settings.reducedMotion} onClick={() => toggleSetting("reducedMotion")} />
+            <ControlModeSelector value={profile.settings.controlMode} onChange={setControlMode} />
+            <GraphicsModeSelector value={profile.settings.graphicsMode} onChange={setGraphicsMode} />
             <button className="text-action danger-action" onClick={returnToLobby}>Abandon Run</button>
           </div>
         </Modal>
@@ -485,12 +587,20 @@ function Lobby({
   onOpenArmory,
   onResume,
   onToggleSetting,
+  inputMode,
+  onControlModeChange,
+  onGraphicsModeChange,
+  handheld,
 }: {
   profile: ProfileV1;
   onStart: () => void;
   onOpenArmory: () => void;
   onResume: () => void;
   onToggleSetting: (key: "music" | "sfx" | "reducedMotion") => void;
+  inputMode: InputMode;
+  onControlModeChange: (mode: ControlMode) => void;
+  onGraphicsModeChange: (mode: GraphicsMode) => void;
+  handheld: boolean;
 }) {
   const showArmoryOption = profile.highestWave >= 2 || profile.ownedWeapons.length > 1;
   // A banked checkpoint outlives the browser session, so offer it up front.
@@ -517,11 +627,13 @@ function Lobby({
       <div className="hazard-rule" aria-hidden="true" />
 
       <div className="comic-grid">
-        <section className="comic-panel cover-panel" aria-label="Operator">
-          <LobbyHero reducedMotion={profile.settings.reducedMotion} />
-          <p className="panel-caption caption-top">SECTOR 01 — THE DEPOT HAS GONE QUIET.</p>
-          <p className="panel-sfx" aria-hidden="true">KRAAKOOM!</p>
-        </section>
+        {!handheld && (
+          <section className="comic-panel cover-panel" aria-label="Operator">
+            <LobbyHero reducedMotion={profile.settings.reducedMotion} />
+            <p className="panel-caption caption-top">SECTOR 01 — THE DEPOT HAS GONE QUIET.</p>
+            <p className="panel-sfx" aria-hidden="true">KRAAKOOM!</p>
+          </section>
+        )}
 
         <section className="comic-panel briefing-panel">
           <p className="panel-caption">MISSION BRIEFING</p>
@@ -566,14 +678,20 @@ function Lobby({
 
           <div className="controls-block">
             <span className="block-label">Controls</span>
-            <div className="keycap-row">
-              <span className="keycap">WASD</span><em>move</em>
-              <span className="keycap">MOUSE</span><em>aim</em>
-              <span className="keycap">CLICK</span><em>fire</em>
-              <span className="keycap">SPACE</span><em>dash</em>
-              <span className="keycap">R</span><em>reload</em>
-              <span className="keycap">Q</span><em>swap</em>
-            </div>
+            {inputMode === "touch" ? (
+              <div className="touch-control-summary" data-testid="touch-control-summary">
+                <span>◉ Analog movement</span><span>◎ Automatic aim</span><span>● Hold to fire</span>
+              </div>
+            ) : (
+              <div className="keycap-row">
+                <span className="keycap">WASD</span><em>move</em>
+                <span className="keycap">MOUSE</span><em>aim</em>
+                <span className="keycap">CLICK</span><em>fire</em>
+                <span className="keycap">SPACE</span><em>dash</em>
+                <span className="keycap">R</span><em>reload</em>
+                <span className="keycap">Q</span><em>swap</em>
+              </div>
+            )}
           </div>
 
           <div className="settings-block">
@@ -601,6 +719,8 @@ function Lobby({
                 ◐ Reduced motion
               </button>
             </div>
+            <ControlModeSelector value={profile.settings.controlMode} onChange={onControlModeChange} compact />
+            <GraphicsModeSelector value={profile.settings.graphicsMode} onChange={onGraphicsModeChange} compact />
           </div>
         </section>
       </div>
@@ -789,6 +909,9 @@ function Hud({
           </span>
           <small>{formattedTime}</small>
         </div>
+        <div className="hud-hostiles" aria-label={`${hud.enemies} hostiles remaining`}>
+          <span>HOSTILES</span><strong>{hud.enemies}</strong>
+        </div>
         {hud.modifier && (
           <div className="hud-modifier" title={`Wave modifier: ${hud.modifier.name}`}>
             <span aria-hidden="true">{hud.modifier.icon}</span>
@@ -959,45 +1082,94 @@ function MobileControls({
   onMove,
   onFire,
   onAction,
+  onPause,
 }: {
   onMove: (x: number, z: number) => void;
   onFire: (active: boolean) => void;
   onAction: (action: "dash" | "reload" | "swap") => void;
+  onPause: () => void;
 }) {
-  const bindMove = (x: number, z: number) => ({
-    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      onMove(x, z);
-    },
-    onPointerUp: () => onMove(0, 0),
-    onPointerCancel: () => onMove(0, 0),
-  });
+  const joystickRef = useRef<HTMLDivElement>(null);
+  const knobRef = useRef<HTMLSpanElement>(null);
+  const movePointerRef = useRef<number | null>(null);
+
+  const resetJoystick = (pointerId?: number) => {
+    if (pointerId !== undefined && movePointerRef.current !== pointerId) return;
+    movePointerRef.current = null;
+    if (knobRef.current) knobRef.current.style.transform = "translate3d(0, 0, 0)";
+    onMove(0, 0);
+  };
+
+  const updateJoystick = (event: PointerEvent<HTMLDivElement>) => {
+    if (movePointerRef.current !== event.pointerId || !joystickRef.current) return;
+    const rect = joystickRef.current.getBoundingClientRect();
+    const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.34);
+    const vector = normalizeJoystick(
+      event.clientX - (rect.left + rect.width / 2),
+      event.clientY - (rect.top + rect.height / 2),
+      radius,
+    );
+    if (knobRef.current) {
+      knobRef.current.style.transform = `translate3d(${vector.knobX}px, ${vector.knobY}px, 0)`;
+    }
+    onMove(vector.x, vector.z);
+  };
+
+  const triggerAction = (event: PointerEvent<HTMLButtonElement>, action: "dash" | "reload" | "swap") => {
+    event.preventDefault();
+    event.stopPropagation();
+    onAction(action);
+  };
 
   return (
-    <div className="mobile-combat-controls" aria-label="Touch combat controls">
-      <div className="mobile-move-pad" aria-label="Movement controls">
-        <button type="button" className="move-up" aria-label="Move up" {...bindMove(0, -1)}>▲</button>
-        <button type="button" className="move-left" aria-label="Move left" {...bindMove(-1, 0)}>◀</button>
-        <span className="move-core" aria-hidden="true" />
-        <button type="button" className="move-right" aria-label="Move right" {...bindMove(1, 0)}>▶</button>
-        <button type="button" className="move-down" aria-label="Move down" {...bindMove(0, 1)}>▼</button>
+    <div className="mobile-combat-controls" aria-label="Touch combat controls" data-testid="mobile-controls">
+      <div
+        ref={joystickRef}
+        className="mobile-joystick"
+        role="group"
+        aria-label="Analog movement joystick"
+        data-testid="mobile-joystick"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          if (movePointerRef.current !== null) return;
+          movePointerRef.current = event.pointerId;
+          updateJoystick(event);
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // Some embedded browsers can cancel a contact before capture.
+            // Movement still works and the global pause/visibility reset is safe.
+          }
+        }}
+        onPointerMove={updateJoystick}
+        onPointerUp={(event) => resetJoystick(event.pointerId)}
+        onPointerCancel={(event) => resetJoystick(event.pointerId)}
+        onLostPointerCapture={(event) => resetJoystick(event.pointerId)}
+      >
+        <span ref={knobRef} className="joystick-knob" aria-hidden="true"><i /></span>
       </div>
       <div className="mobile-action-pad">
-        <button type="button" className="touch-action touch-reload" onPointerDown={() => onAction("reload")}>R</button>
-        <button type="button" className="touch-action touch-swap" onPointerDown={() => onAction("swap")}>SWAP</button>
-        <button type="button" className="touch-action touch-dash" onPointerDown={() => onAction("dash")}>DASH</button>
+        <button type="button" className="touch-action touch-pause" aria-label="Pause operation" onPointerDown={(event) => { event.preventDefault(); onPause(); }}>Ⅱ</button>
+        <button type="button" className="touch-action touch-reload" onPointerDown={(event) => triggerAction(event, "reload")}>RLD</button>
+        <button type="button" className="touch-action touch-swap" onPointerDown={(event) => triggerAction(event, "swap")}>SWAP</button>
+        <button type="button" className="touch-action touch-dash" onPointerDown={(event) => triggerAction(event, "dash")}>DASH</button>
         <button
           type="button"
           className="touch-fire"
           aria-label="Fire weapon with automatic aim"
           onPointerDown={(event) => {
             event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
+            event.stopPropagation();
+            try {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            } catch {
+              // A cancelled synthetic or browser-owned gesture may not be capturable.
+            }
             onFire(true);
           }}
           onPointerUp={() => onFire(false)}
           onPointerCancel={() => onFire(false)}
+          onLostPointerCapture={() => onFire(false)}
         >
           FIRE
         </button>
@@ -1173,6 +1345,74 @@ function SettingToggle({ label, active, onClick }: { label: string; active: bool
       <span>{label}</span>
       <i className={active ? "active" : ""} aria-hidden="true"><b /></i>
     </button>
+  );
+}
+
+function ControlModeSelector({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: ControlMode;
+  onChange: (mode: ControlMode) => void;
+  compact?: boolean;
+}) {
+  const modes: Array<{ value: ControlMode; label: string }> = [
+    { value: "auto", label: "Automatic" },
+    { value: "touch", label: "Touch" },
+    { value: "keyboard", label: "Keyboard & Mouse" },
+  ];
+  return (
+    <div className={`control-mode-setting ${compact ? "compact" : ""}`}>
+      <span className="control-mode-label">Control mode</span>
+      <div className="control-mode-options" role="group" aria-label="Control mode">
+        {modes.map((mode) => (
+          <button
+            key={mode.value}
+            type="button"
+            className={value === mode.value ? "active" : ""}
+            aria-pressed={value === mode.value}
+            onClick={() => onChange(mode.value)}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GraphicsModeSelector({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: GraphicsMode;
+  onChange: (mode: GraphicsMode) => void;
+  compact?: boolean;
+}) {
+  const modes: Array<{ value: GraphicsMode; label: string }> = [
+    { value: "auto", label: "Automatic" },
+    { value: "quality", label: "Quality" },
+    { value: "performance", label: "Performance" },
+  ];
+  return (
+    <div className={`control-mode-setting ${compact ? "compact" : ""}`}>
+      <span className="control-mode-label">Graphics</span>
+      <div className="control-mode-options" role="group" aria-label="Graphics quality">
+        {modes.map((mode) => (
+          <button
+            key={mode.value}
+            type="button"
+            className={value === mode.value ? "active" : ""}
+            aria-pressed={value === mode.value}
+            onClick={() => onChange(mode.value)}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

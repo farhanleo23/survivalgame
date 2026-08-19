@@ -64,12 +64,14 @@ button:focus-visible {
 .deadwave {
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   background: #050d0a;
 }
 
 .boot-screen {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   background: var(--c-paper);
@@ -90,6 +92,7 @@ button:focus-visible {
   z-index: 2;
   width: min(1540px, 100%);
   min-height: 100vh;
+  min-height: 100dvh;
   margin: auto;
   padding: 26px clamp(22px, 4vw, 70px) 28px;
 }
@@ -581,6 +584,62 @@ button:focus-visible {
   box-shadow: 1px 1px 0 var(--c-ink);
 }
 
+.touch-control-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.touch-control-summary span {
+  padding: 6px 9px;
+  background: var(--c-ink);
+  color: var(--c-paper);
+  border: 2px solid var(--c-ink);
+  box-shadow: 2px 2px 0 var(--c-blue);
+  font: 900 9px ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.control-mode-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 14px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+}
+.control-mode-setting.compact {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+.control-mode-label {
+  font: 900 9px ui-monospace, monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.control-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+.control-mode-options button {
+  min-height: 40px;
+  padding: 7px 9px;
+  border: 2px solid var(--c-ink);
+  background: #d9d0bd;
+  color: var(--c-ink);
+  font: 900 9px ui-monospace, monospace;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.control-mode-options button.active {
+  background: var(--c-green);
+  box-shadow: 2px 2px 0 var(--c-ink);
+}
+
 @media (max-width: 980px) {
   .comic-grid {
     grid-template-columns: 1fr;
@@ -919,6 +978,13 @@ button:focus-visible {
     #061012;
   cursor: crosshair;
 }
+[data-input-mode="touch"] .game-view {
+  cursor: default;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .canvas-mount {
   position: relative;
   z-index: 0;
@@ -1256,6 +1322,24 @@ button:focus-visible {
 .hud-wave-status small {
   font: 800 10px ui-monospace, monospace;
   opacity: 0.72;
+}
+
+.hud-hostiles {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--c-paper);
+  border: 3px solid var(--c-ink);
+  box-shadow: var(--ink-drop-sm);
+}
+.hud-hostiles span {
+  font: 900 8px ui-monospace, monospace;
+  letter-spacing: 0.12em;
+}
+.hud-hostiles strong {
+  font: 900 15px ui-monospace, monospace;
+  color: var(--c-red);
 }
 
 .comic-hud-bottom-left {
@@ -1602,135 +1686,186 @@ button:focus-visible {
   display: none;
 }
 
-@media (hover: none) and (pointer: coarse), (max-width: 900px) {
-  .combat-reticle,
-  .game-controls,
-  .comic-hud-bottom-left {
-    display: none;
-  }
+[data-input-mode="touch"] .combat-reticle,
+[data-input-mode="touch"] .game-controls,
+[data-input-mode="touch"] .comic-hud-bottom-left,
+[data-input-mode="touch"] .isometric-minimap {
+  display: none;
+}
 
-  .mobile-combat-controls {
-    position: absolute;
-    inset: auto 0 max(18px, env(safe-area-inset-bottom));
-    z-index: 10;
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    padding: 0 max(18px, env(safe-area-inset-right)) 0 max(18px, env(safe-area-inset-left));
-    pointer-events: none;
-    user-select: none;
-    touch-action: none;
-  }
+[data-input-mode="touch"] .mobile-combat-controls {
+  position: absolute;
+  inset: auto 0 max(14px, env(safe-area-inset-bottom));
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 0 max(18px, env(safe-area-inset-right)) 0 max(18px, env(safe-area-inset-left));
+  pointer-events: none;
+  user-select: none;
+  touch-action: none;
+}
 
-  .mobile-move-pad {
-    position: relative;
-    display: grid;
-    grid-template-columns: repeat(3, 44px);
-    grid-template-rows: repeat(3, 44px);
-    width: 132px;
-    height: 132px;
-    border: 1px solid rgba(75, 220, 224, 0.42);
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(3, 14, 18, 0.85), rgba(3, 10, 13, 0.38));
-    box-shadow: 0 0 28px rgba(0, 245, 212, 0.12);
-    pointer-events: auto;
-  }
+.mobile-joystick {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 144px;
+  height: 144px;
+  border: 2px solid rgba(75, 220, 224, 0.5);
+  border-radius: 50%;
+  background:
+    linear-gradient(transparent 49%, rgba(75, 220, 224, 0.16) 50% 51%, transparent 52%),
+    linear-gradient(90deg, transparent 49%, rgba(75, 220, 224, 0.16) 50% 51%, transparent 52%),
+    radial-gradient(circle, rgba(3, 14, 18, 0.88), rgba(3, 10, 13, 0.48));
+  box-shadow: inset 0 0 24px rgba(0, 245, 212, 0.1), 0 0 28px rgba(0, 245, 212, 0.14);
+  pointer-events: auto;
+}
 
-  .mobile-move-pad button,
-  .touch-action,
-  .touch-fire {
-    border: 1px solid rgba(96, 232, 234, 0.58);
-    background: rgba(4, 16, 20, 0.8);
-    color: #dffdf8;
-    font: 900 12px ui-monospace, monospace;
-    touch-action: none;
-    -webkit-tap-highlight-color: transparent;
-  }
+.joystick-knob {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border: 3px solid var(--cyan);
+  border-radius: 50%;
+  background: rgba(4, 16, 20, 0.94);
+  box-shadow: 0 0 18px rgba(0, 245, 212, 0.38);
+  will-change: transform;
+}
+.joystick-knob i {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--amber);
+  transform: rotate(45deg);
+}
 
-  .mobile-move-pad button:active,
-  .touch-action:active,
-  .touch-fire:active {
-    color: #041012;
-    background: var(--cyan);
-    box-shadow: 0 0 20px rgba(0, 245, 212, 0.75);
-  }
+.mobile-action-pad {
+  display: grid;
+  grid-template-columns: repeat(4, 56px);
+  grid-template-rows: 52px 82px;
+  gap: 8px;
+  align-items: end;
+  pointer-events: auto;
+}
 
-  .move-up { grid-area: 1 / 2; }
-  .move-left { grid-area: 2 / 1; }
-  .move-core {
-    grid-area: 2 / 2;
-    width: 24px;
-    height: 24px;
-    place-self: center;
-    border: 1px solid rgba(255, 183, 3, 0.62);
-    transform: rotate(45deg);
-  }
-  .move-right { grid-area: 2 / 3; }
-  .move-down { grid-area: 3 / 2; }
+.touch-action,
+.touch-fire {
+  min-width: 52px;
+  min-height: 52px;
+  border: 2px solid rgba(96, 232, 234, 0.68);
+  background: rgba(4, 16, 20, 0.88);
+  color: #dffdf8;
+  font: 900 10px ui-monospace, monospace;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
 
-  .mobile-action-pad {
-    display: grid;
-    grid-template-columns: repeat(3, 48px);
-    grid-template-rows: 44px 72px;
-    gap: 8px;
-    align-items: end;
-    pointer-events: auto;
-  }
+.touch-action:active,
+.touch-fire:active {
+  color: #041012;
+  background: var(--cyan);
+  box-shadow: 0 0 20px rgba(0, 245, 212, 0.75);
+}
 
-  .touch-action {
-    height: 40px;
-    border-radius: 3px;
-    color: var(--amber);
-    font-size: 9px;
-  }
+.touch-action {
+  border-radius: 6px;
+  color: var(--amber);
+}
+.touch-pause {
+  color: var(--c-paper);
+}
 
-  .touch-fire {
-    grid-column: 2 / 4;
-    justify-self: end;
-    width: 78px;
-    height: 72px;
-    border: 2px solid #ff7548;
-    border-radius: 50%;
-    color: #fff;
-    background: radial-gradient(circle, rgba(255, 79, 39, 0.44), rgba(29, 7, 5, 0.86));
-    box-shadow: 0 0 24px rgba(255, 72, 35, 0.26);
-  }
+.touch-fire {
+  grid-column: 3 / 5;
+  justify-self: end;
+  width: 90px;
+  height: 82px;
+  border-color: #ff7548;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 12px;
+  background: radial-gradient(circle, rgba(255, 79, 39, 0.54), rgba(29, 7, 5, 0.9));
+  box-shadow: 0 0 24px rgba(255, 72, 35, 0.3);
+}
 
-  .comic-hud-top-left {
-    left: max(10px, env(safe-area-inset-left));
-    top: max(10px, env(safe-area-inset-top));
-  }
+[data-input-mode="touch"] .comic-hud-top-left {
+  left: max(10px, env(safe-area-inset-left));
+  top: max(10px, env(safe-area-inset-top));
+}
+[data-input-mode="touch"] .operator-vitals-card {
+  width: 184px;
+  padding: 7px 10px;
+}
+[data-input-mode="touch"] .hud-synergy-tray {
+  max-width: 184px;
+}
+[data-input-mode="touch"] .comic-hud-top-right {
+  right: max(10px, env(safe-area-inset-right));
+  top: max(10px, env(safe-area-inset-top));
+  min-width: 136px;
+}
+[data-input-mode="touch"] .hud-score-display,
+[data-input-mode="touch"] .hud-wave-status {
+  padding: 4px 8px;
+}
+[data-input-mode="touch"] .hud-score-display strong {
+  font-size: 16px;
+}
+[data-input-mode="touch"] .hud-modifier {
+  max-width: 150px;
+  font-size: 8px;
+}
+[data-input-mode="touch"] .comic-hud-bottom-right {
+  right: max(16px, env(safe-area-inset-right));
+  bottom: 156px;
+  transform: scale(0.76);
+  transform-origin: right bottom;
+}
+[data-input-mode="touch"] .wave-announcement {
+  top: 24%;
+  max-width: 72vw;
+  padding-inline: 18px;
+  white-space: normal;
+  text-align: center;
+}
 
-  .operator-vitals-card {
-    width: 190px;
-    padding: 8px 12px 9px 9px;
-  }
-
-  .isometric-minimap {
-    width: 88px;
-    height: 88px;
-  }
-
-  .comic-hud-top-right {
-    right: max(10px, env(safe-area-inset-right));
-    top: max(10px, env(safe-area-inset-top));
-    min-width: 145px;
-  }
-
-  .comic-hud-bottom-right {
-    right: max(14px, env(safe-area-inset-right));
-    bottom: 154px;
-    transform: scale(0.82);
-    transform-origin: right bottom;
-  }
-
-  .wave-announcement {
-    top: 26%;
-    max-width: 88vw;
-    padding-inline: 24px;
-    white-space: normal;
-    text-align: center;
-  }
+.orientation-blocker {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  padding: max(28px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  background: rgba(18, 13, 26, 0.96);
+  color: var(--c-paper);
+  text-align: center;
+  touch-action: none;
+}
+.orientation-phone {
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 54px;
+  margin-bottom: 22px;
+  border: 5px solid var(--c-yellow);
+  border-radius: 9px;
+  color: var(--c-yellow);
+  font-size: 32px;
+  transform: rotate(-8deg);
+}
+.orientation-blocker h2 {
+  margin: 5px 0 10px;
+  color: var(--c-yellow);
+  font: 900 clamp(28px, 9vw, 46px) / 0.94 "Arial Black", Impact, sans-serif;
+}
+.orientation-blocker > p:last-child {
+  margin: 0;
+  max-width: 320px;
+  color: var(--c-paper);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 /* Floating Arcade Popups */
@@ -1892,6 +2027,8 @@ button:focus-visible {
 
 .draft-modal-panel {
   width: min(1080px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
   padding: 24px;
   background: var(--c-paper);
   border: var(--ink-line);
@@ -2027,6 +2164,8 @@ button:focus-visible {
 
 .modal-panel {
   width: min(560px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
   padding: 24px;
   background: var(--c-paper);
   border: var(--ink-line);
@@ -2326,6 +2465,124 @@ button:focus-visible {
   }
 }
 
+[data-handheld="true"] .comic-grid {
+  grid-template-columns: 1fr;
+}
+[data-handheld="true"] .comic-lobby,
+[data-handheld="true"] .menu-shell {
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+}
+[data-handheld="true"] .comic-lobby {
+  justify-content: flex-start;
+}
+[data-handheld="true"] button,
+[data-handheld="true"] .primary-action {
+  min-height: 44px;
+}
+[data-handheld="true"] .modal-backdrop,
+[data-handheld="true"] .draft-modal-backdrop {
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+}
+[data-input-mode="touch"] .extraction-hud-card {
+  bottom: 160px;
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  [data-handheld="true"] .menu-shell {
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+  [data-handheld="true"] .masthead {
+    align-items: center;
+  }
+  [data-handheld="true"] .comic-title-ink {
+    font-size: clamp(34px, 7vw, 52px);
+  }
+  [data-handheld="true"] .hazard-rule {
+    height: 10px;
+    margin: 10px 0 12px;
+  }
+  [data-handheld="true"] .briefing-panel {
+    padding: 16px;
+    gap: 10px;
+  }
+  [data-handheld="true"] .briefing-copy,
+  [data-handheld="true"] .controls-block {
+    display: none;
+  }
+  [data-handheld="true"] .loadout-grid {
+    grid-template-columns: repeat(4, minmax(180px, 1fr));
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+  [data-handheld="true"] .weapon-card {
+    min-width: 180px;
+  }
+  [data-handheld="true"] .weapon-card .weapon-svg-silhouette {
+    height: 48px;
+  }
+  [data-handheld="true"] .modal-panel,
+  [data-handheld="true"] .draft-modal-panel {
+    max-height: calc(100dvh - 20px);
+    padding: 14px;
+  }
+  [data-handheld="true"] .modal-panel header,
+  [data-handheld="true"] .draft-modal-header {
+    margin-bottom: 10px;
+  }
+  [data-handheld="true"] .modal-panel header h2,
+  [data-handheld="true"] .draft-modal-header h2 {
+    font-size: 22px;
+  }
+  [data-handheld="true"] .armory-layout {
+    grid-template-columns: 1.2fr 1fr;
+  }
+  [data-handheld="true"] .armory-list {
+    max-height: 40dvh;
+  }
+  [data-handheld="true"] .armory-footer p {
+    display: none;
+  }
+  [data-handheld="true"] .victory-grid {
+    grid-template-columns: 1fr 1fr;
+    padding: 10px 0;
+  }
+  [data-handheld="true"] .next-level-card {
+    min-height: 170px;
+    padding: 16px;
+  }
+  [data-input-mode="touch"] .mobile-joystick {
+    width: 118px;
+    height: 118px;
+  }
+  [data-input-mode="touch"] .joystick-knob {
+    width: 50px;
+    height: 50px;
+  }
+  [data-input-mode="touch"] .mobile-action-pad {
+    grid-template-columns: repeat(4, 52px);
+    grid-template-rows: 48px 70px;
+    gap: 6px;
+  }
+  [data-input-mode="touch"] .touch-action,
+  [data-input-mode="touch"] .touch-fire {
+    min-width: 48px;
+    min-height: 48px;
+  }
+  [data-input-mode="touch"] .touch-fire {
+    width: 78px;
+    height: 70px;
+  }
+  [data-input-mode="touch"] .comic-hud-bottom-right {
+    bottom: 156px;
+    transform: scale(0.68);
+  }
+  [data-input-mode="touch"] .extraction-hud-card {
+    bottom: 154px;
+  }
+}
+
 
 /* Victory Screen */
 .victory-grid {
@@ -2447,9 +2704,6 @@ button:focus-visible {
   }
   .hud-top-left {
     width: 240px;
-  }
-  .game-controls {
-    display: none;
   }
   .victory-grid {
     grid-template-columns: 1fr;

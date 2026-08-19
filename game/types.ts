@@ -12,6 +12,9 @@ export type WeaponId = "pistol" | "smg" | "shotgun" | "rifle";
 export type EnemyId = "shambler" | "runner" | "spitter" | "brute" | "juggernaut" | "boomer";
 export type PickupId = "coin" | "ammo" | "health";
 export type PerkId = "vitality" | "mobility" | "magnet";
+export type ControlMode = "auto" | "touch" | "keyboard";
+export type InputMode = Exclude<ControlMode, "auto">;
+export type GraphicsMode = "auto" | "quality" | "performance";
 
 export type SynergyCardId =
   | "piercing"
@@ -112,6 +115,8 @@ export interface GameSettings {
   music: boolean;
   sfx: boolean;
   reducedMotion: boolean;
+  controlMode: ControlMode;
+  graphicsMode: GraphicsMode;
 }
 
 export interface ProfileV1 {
@@ -161,5 +166,3 @@ export interface HudState {
   minimapEnemies?: Array<{ x: number; z: number; type: EnemyId }>;
   activeSynergies?: Partial<Record<SynergyCardId, number>>;
 }
-
-
