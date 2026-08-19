@@ -276,6 +276,8 @@ export class GameEngine {
   private graphicsMode: GraphicsMode = "auto";
   private keyLight: THREE.DirectionalLight | null = null;
   private touchAimTarget: EnemyEntity | null = null;
+  private touchAimIndicator: THREE.Group | null = null;
+  private touchAimLockPulse = 0;
   private skyCool = new THREE.Color(COMIC.sky);
   private skyHot = new THREE.Color(0x7a1f3d);
   private qaMode =
@@ -530,6 +532,7 @@ export class GameEngine {
     this.inputMode = mode;
     this.usingTouchControls = mode === "touch";
     this.touchAimTarget = null;
+    this.hideTouchAimIndicator();
     this.clearInputState();
   }
 
@@ -661,6 +664,9 @@ export class GameEngine {
     this.extractionZoneMesh.position.set(0, 0, 0);
     this.extractionZoneMesh.visible = false;
     this.scene.add(this.extractionZoneMesh);
+
+    this.touchAimIndicator = this.visuals.createAutoAimIndicator();
+    this.scene.add(this.touchAimIndicator);
   }
 
   private addFurnaceBeacon(x: number, z: number) {
@@ -1291,11 +1297,13 @@ export class GameEngine {
     if (this.usingTouchControls) {
       if (this.enemies.length === 0) {
         this.touchAimTarget = null;
+        this.hideTouchAimIndicator();
         return;
       }
 
-      let target = this.touchAimTarget && this.enemies.includes(this.touchAimTarget)
-        ? this.touchAimTarget
+      const previousTarget = this.touchAimTarget;
+      let target = previousTarget && this.enemies.includes(previousTarget)
+        ? previousTarget
         : this.enemies[0];
       let targetDistance = target.mesh.position.distanceToSquared(this.playerMesh.position);
       for (const enemy of this.enemies) {
@@ -1307,10 +1315,13 @@ export class GameEngine {
         }
       }
       this.touchAimTarget = target;
+      if (target !== previousTarget) this.touchAimLockPulse = 1;
+      this.updateTouchAimIndicator(target);
       this.mouseWorldPos.copy(target.mesh.position);
       this.aim.copy(target.mesh.position).sub(this.playerMesh.position).setY(0).normalize();
       return;
     }
+    this.hideTouchAimIndicator();
     this.raycaster.setFromCamera(this.mouseNdc, this.camera);
     const hit = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(this.groundPlane, hit)) {
@@ -1318,6 +1329,29 @@ export class GameEngine {
       this.aim.copy(hit.clone().sub(this.playerMesh.position)).setY(0);
       if (this.aim.lengthSq() > 0.01) this.aim.normalize();
     }
+  }
+
+  private updateTouchAimIndicator(target: EnemyEntity) {
+    const indicator = this.touchAimIndicator;
+    if (!indicator) return;
+
+    indicator.visible = true;
+    indicator.position.copy(target.mesh.position).setY(0.085);
+    indicator.rotation.y = this.missionElapsed * 1.7;
+
+    this.touchAimLockPulse = Math.max(0, this.touchAimLockPulse - FIXED_STEP * 4.5);
+    const breathe = this.profile.settings.reducedMotion
+      ? 0
+      : Math.sin(this.missionElapsed * 7) * 0.035;
+    const targetRadius = Math.max(0.92, target.definition.radius * 1.12);
+    const lockScale = targetRadius * (1 + breathe + this.touchAimLockPulse * 0.18);
+    indicator.scale.setScalar(lockScale);
+    this.renderer.domElement.dataset.autoAimTarget = target.type;
+  }
+
+  private hideTouchAimIndicator() {
+    if (this.touchAimIndicator) this.touchAimIndicator.visible = false;
+    delete this.renderer.domElement.dataset.autoAimTarget;
   }
 
   private updateWave(dt: number) {
@@ -1706,8 +1740,10 @@ export class GameEngine {
 
       if (enemy.healthBar) {
         const ratio = Math.max(0, Math.min(1, enemy.health / enemy.maxHealth));
-        // Hidden at full health so an untouched crowd stays readable.
-        enemy.healthBar.visible = ratio < 0.999;
+        // The mobile lock target keeps its bar at full health: together with
+        // the ring, this answers both "what am I aiming at?" and "how close is
+        // it to dying?" without filling the whole crowd with UI.
+        enemy.healthBar.visible = ratio < 0.999 || (this.usingTouchControls && enemy === this.touchAimTarget);
         if (enemy.healthBar.visible) {
           const fill = enemy.healthBar.getObjectByName("hp-fill");
           if (fill) {
@@ -2089,6 +2125,10 @@ export class GameEngine {
     // live enemy and leaves the dead one walking around.
     const index = this.enemies.indexOf(enemy);
     if (index < 0) return;
+    if (this.touchAimTarget === enemy) {
+      this.touchAimTarget = null;
+      this.hideTouchAimIndicator();
+    }
     this.clearTelegraph(enemy);
     const position = enemy.mesh.position.clone();
     this.visuals.disposeCharacter(enemy.rig);
@@ -2474,6 +2514,11 @@ export class GameEngine {
   private emitHud(force = false) {
     if (!force && this.hudTimer > 0) return;
     this.hudTimer = 0.08;
+    // Kept on the render surface for browser/device diagnostics. This lets the
+    // mobile regression suite prove that a joystick gesture moves the actual
+    // simulation rather than merely animating the on-screen knob.
+    this.renderer.domElement.dataset.playerX = this.playerMesh.position.x.toFixed(3);
+    this.renderer.domElement.dataset.playerZ = this.playerMesh.position.z.toFixed(3);
     const id = this.getActiveWeaponId();
     const state = this.weaponStates.get(id);
     const boss = this.enemies.find((enemy) => enemy.type === "juggernaut");
@@ -2719,6 +2764,24 @@ export class GameEngine {
     if (code === "ShiftLeft" || code === "ShiftRight" || code === "Space") this.startDash();
     if (code === "KeyJ" && this.qaMode) {
       this.damagePlayer(this.playerHealth);
+      return;
+    }
+    if (code === "KeyL" && this.qaMode) {
+      // Clear combat pressure but leave the wave active so browser tests can
+      // inspect the real extraction-beacon flow before it completes. Start
+      // outside the ring so the short hold timer cannot race the assertion.
+      for (const enemy of this.enemies) {
+        this.clearTelegraph(enemy);
+        this.visuals.disposeCharacter(enemy.rig);
+        this.scene.remove(enemy.mesh);
+      }
+      this.enemies = [];
+      this.spawnQueue = [];
+      this.playerMesh.position.set(6, 0, 0);
+      return;
+    }
+    if (code === "KeyM" && this.qaMode) {
+      this.playerMesh.position.set(0, 0, 0);
       return;
     }
     if (code === "KeyK" && this.qaMode) {

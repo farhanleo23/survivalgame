@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const mobileProfile = {
   version: 1,
@@ -36,6 +36,33 @@ async function expectWithinViewport(page: Page, selector: string) {
   expect(fits).toBe(true);
 }
 
+async function dispatchTouch(
+  target: Locator,
+  type: "touchstart" | "touchmove" | "touchend" | "touchcancel",
+  identifier: number,
+  point: { x: number; y: number } = { x: 0.5, y: 0.5 },
+) {
+  const rect = await target.boundingBox();
+  if (!rect) throw new Error("Touch target has no layout box");
+  const touch = {
+    identifier,
+    clientX: rect.x + rect.width * point.x,
+    clientY: rect.y + rect.height * point.y,
+    pageX: rect.x + rect.width * point.x,
+    pageY: rect.y + rect.height * point.y,
+    screenX: rect.x + rect.width * point.x,
+    screenY: rect.y + rect.height * point.y,
+  };
+  const active = type === "touchstart" || type === "touchmove" ? [touch] : [];
+  await target.dispatchEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    touches: active,
+    targetTouches: active,
+    changedTouches: [touch],
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await seedMobileProfile(page);
 });
@@ -55,23 +82,72 @@ test("blocks portrait combat, resumes in landscape, and exposes analog controls"
   await page.setViewportSize({ width: 844, height: 390 });
   await expect(page.getByRole("heading", { name: "Rotate to landscape" })).toHaveCount(0);
   await expect(page.getByTestId("mobile-controls")).toBeVisible();
+  await expect(page.locator(".game-canvas")).toHaveAttribute("data-auto-aim-target", /.+/, { timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Pause operation" })).toBeVisible();
   await expect(page.locator(".game-controls")).toHaveCount(0);
 
   const joystick = page.getByTestId("mobile-joystick");
-  const box = await joystick.boundingBox();
-  expect(box).not.toBeNull();
-  if (!box) return;
-  const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true, buttons: 1 };
-  await joystick.dispatchEvent("pointerdown", { ...pointer, clientX: box.x + box.width * 0.8, clientY: box.y + box.height * 0.25 });
+  const startPosition = await page.locator(".game-canvas").evaluate((canvas) => ({
+    x: Number((canvas as HTMLElement).dataset.playerX),
+    z: Number((canvas as HTMLElement).dataset.playerZ),
+  }));
+  await dispatchTouch(joystick, "touchstart", 7, { x: 0.8, y: 0.25 });
+  // A synthesized pointer cancellation must not terminate the native touch
+  // contact that owns movement on a phone.
+  await joystick.dispatchEvent("pointercancel", { pointerId: 7, pointerType: "touch", buttons: 0 });
   await expect(joystick.locator(".joystick-knob")).not.toHaveCSS("transform", "none");
+  await page.waitForTimeout(750);
+  const movedPosition = await page.locator(".game-canvas").evaluate((canvas) => ({
+    x: Number((canvas as HTMLElement).dataset.playerX),
+    z: Number((canvas as HTMLElement).dataset.playerZ),
+  }));
+  expect(Math.hypot(movedPosition.x - startPosition.x, movedPosition.z - startPosition.z)).toBeGreaterThan(1);
+
+  // Movement and Fire must remain independent contacts.
+  await dispatchTouch(joystick, "touchmove", 7, { x: 0.9, y: 0.2 });
 
   const fire = page.getByRole("button", { name: "Fire weapon with automatic aim" });
-  await fire.dispatchEvent("pointerdown", { pointerId: 8, pointerType: "touch", buttons: 1 });
+  const ammo = page.locator(".ammo-numbers strong");
+  const reserve = page.locator(".ammo-numbers small");
+  const ammoBeforeHold = Number(await ammo.innerText());
+  await dispatchTouch(fire, "touchstart", 8);
+  // Pointer cancellation is ignored for an active native touch hold.
+  await fire.dispatchEvent("lostpointercapture", { pointerId: 8, pointerType: "touch", buttons: 1 });
+  await fire.dispatchEvent("pointercancel", { pointerId: 8, pointerType: "touch", buttons: 0 });
+  await expect(fire).toHaveClass(/is-held/);
   await expect(joystick.locator(".joystick-knob")).not.toHaveCSS("transform", "none");
-  await fire.dispatchEvent("pointerup", { pointerId: 8, pointerType: "touch" });
-  await joystick.dispatchEvent("pointerup", { ...pointer, buttons: 0 });
+  await page.waitForTimeout(750);
+  const ammoAfterHold = Number(await ammo.innerText());
+  expect(ammoAfterHold).toBeLessThanOrEqual(ammoBeforeHold - 2);
+  await dispatchTouch(fire, "touchend", 8);
+  await expect(fire).not.toHaveClass(/is-held/);
+  await page.waitForTimeout(150);
+  const ammoAtRelease = Number(await ammo.innerText());
+  await page.waitForTimeout(400);
+  expect(Number(await ammo.innerText())).toBe(ammoAtRelease);
+
+  // A held contact should survive the intentional automatic-reload pause and
+  // resume firing without requiring another tap.
+  await dispatchTouch(fire, "touchstart", 9);
+  await page.waitForTimeout(4_800);
+  await expect(fire).toHaveClass(/is-held/);
+  expect(Number((await reserve.innerText()).replace("/", ""))).toBeLessThan(72);
+  expect(Number(await ammo.innerText())).toBeLessThan(12);
+  await dispatchTouch(fire, "touchend", 9);
+  await expect(fire).not.toHaveClass(/is-held/);
+  await dispatchTouch(joystick, "touchend", 7, { x: 0.9, y: 0.2 });
   await expect(joystick.locator(".joystick-knob")).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
+  await page.waitForTimeout(300);
+  const stoppedPosition = await page.locator(".game-canvas").evaluate((canvas) => ({
+    x: Number((canvas as HTMLElement).dataset.playerX),
+    z: Number((canvas as HTMLElement).dataset.playerZ),
+  }));
+  await page.waitForTimeout(400);
+  const positionAfterRelease = await page.locator(".game-canvas").evaluate((canvas) => ({
+    x: Number((canvas as HTMLElement).dataset.playerX),
+    z: Number((canvas as HTMLElement).dataset.playerZ),
+  }));
+  expect(Math.hypot(positionAfterRelease.x - stoppedPosition.x, positionAfterRelease.z - stoppedPosition.z)).toBeLessThan(0.15);
 
   await page.getByRole("button", { name: "Pause operation" }).click();
   await expect(page.getByRole("heading", { name: "Operation paused" })).toBeVisible();
@@ -132,8 +208,21 @@ test("keeps every run screen usable in a compact landscape viewport", async ({ p
   await expect(page.getByTestId("mobile-controls")).toBeVisible({ timeout: 15_000 });
 
   for (let wave = 1; wave <= 10; wave += 1) {
-    await page.keyboard.press("k");
+    await page.keyboard.press(wave === 1 ? "l" : "k");
     if (wave < 10) {
+      if (wave === 1) {
+        const extractionCard = page.locator(".extraction-hud-card");
+        await expect(extractionCard).toBeVisible();
+        await expect(page.locator(".wave-announcement.extraction-announcement")).toBeHidden();
+        await expect(extractionCard.locator(".extraction-mobile-status")).toHaveText("REACH CENTER");
+        const extractionBox = await extractionCard.boundingBox();
+        expect(extractionBox).not.toBeNull();
+        expect(extractionBox?.height ?? 999).toBeLessThanOrEqual(44);
+        expect(extractionBox?.width ?? 999).toBeLessThanOrEqual(300);
+        expect(extractionBox?.y ?? 999).toBeLessThanOrEqual(24);
+        await page.keyboard.press("m");
+        await expect(extractionCard.locator(".extraction-mobile-status")).toContainText("HOLD");
+      }
       await expect(page.locator(".draft-modal-panel")).toBeVisible();
       await expectWithinViewport(page, ".draft-modal-panel");
       await page.locator(".draft-perk-card").first().click();

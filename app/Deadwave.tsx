@@ -420,6 +420,7 @@ export function Deadwave() {
               onMove={(x, z) => engineRef.current?.setVirtualMove(x, z)}
               onFire={(active) => engineRef.current?.setVirtualFire(active)}
               onAction={(action) => engineRef.current?.triggerVirtualAction(action)}
+              reloading={hud.reloading > 0}
               onPause={() => {
                 engineRef.current?.pause();
                 setScreen("paused");
@@ -968,7 +969,11 @@ function Hud({
       )}
 
       {/* Wave Announcement Banner */}
-      {hud.announcement && <div className="wave-announcement">{hud.announcement}</div>}
+      {hud.announcement && (
+        <div className={`wave-announcement ${hud.extractionZoneActive ? "extraction-announcement" : ""}`}>
+          {hud.announcement}
+        </div>
+      )}
 
       {/* Extraction / Inter-Wave Beacon Hold Banner */}
       {hud.extractionZoneActive && (
@@ -976,7 +981,12 @@ function Hud({
           <div className="extraction-hud-header">
             <span className="beacon-icon">{hud.extractionProgress && hud.extractionProgress > 0 ? "⚡" : "📍"}</span>
             <div>
-              <strong>EXTRACTION BEACON ACTIVE</strong>
+              <strong className="extraction-desktop-title">EXTRACTION BEACON ACTIVE</strong>
+              <strong className="extraction-mobile-status">
+                {hud.extractionProgress && hud.extractionProgress > 0
+                  ? `HOLD ${Math.round(hud.extractionProgress * 100)}%`
+                  : "REACH CENTER"}
+              </strong>
               <p>Stand in the central perimeter beacon to advance to the next round</p>
             </div>
           </div>
@@ -1082,38 +1092,135 @@ function MobileControls({
   onMove,
   onFire,
   onAction,
+  reloading,
   onPause,
 }: {
   onMove: (x: number, z: number) => void;
   onFire: (active: boolean) => void;
   onAction: (action: "dash" | "reload" | "swap") => void;
+  reloading: boolean;
   onPause: () => void;
 }) {
   const joystickRef = useRef<HTMLDivElement>(null);
   const knobRef = useRef<HTMLSpanElement>(null);
-  const movePointerRef = useRef<number | null>(null);
+  const fireButtonRef = useRef<HTMLButtonElement>(null);
+  const moveContactRef = useRef<{ kind: "pointer" | "touch"; id: number } | null>(null);
+  const firePointerRef = useRef<number | null>(null);
+  const fireTouchRef = useRef<number | null>(null);
+  const onMoveRef = useRef(onMove);
+  const onFireRef = useRef(onFire);
+  useEffect(() => {
+    onMoveRef.current = onMove;
+    onFireRef.current = onFire;
+  }, [onFire, onMove]);
 
-  const resetJoystick = (pointerId?: number) => {
-    if (pointerId !== undefined && movePointerRef.current !== pointerId) return;
-    movePointerRef.current = null;
+  const resetJoystick = useCallback((kind?: "pointer" | "touch", id?: number) => {
+    const active = moveContactRef.current;
+    if (kind !== undefined && (!active || active.kind !== kind || active.id !== id)) return;
+    moveContactRef.current = null;
     if (knobRef.current) knobRef.current.style.transform = "translate3d(0, 0, 0)";
-    onMove(0, 0);
-  };
+    onMoveRef.current(0, 0);
+  }, []);
 
-  const updateJoystick = (event: PointerEvent<HTMLDivElement>) => {
-    if (movePointerRef.current !== event.pointerId || !joystickRef.current) return;
+  const stopFiring = useCallback(() => {
+    firePointerRef.current = null;
+    fireTouchRef.current = null;
+    fireButtonRef.current?.classList.remove("is-held");
+    onFireRef.current(false);
+  }, []);
+
+  const resetFirePointer = useCallback((pointerId?: number) => {
+    if (pointerId !== undefined && firePointerRef.current !== pointerId) return;
+    if (firePointerRef.current === null) return;
+    firePointerRef.current = null;
+    if (fireTouchRef.current === null) stopFiring();
+  }, [stopFiring]);
+
+  const resetFireTouch = useCallback((touchId?: number) => {
+    if (touchId !== undefined && fireTouchRef.current !== touchId) return;
+    if (fireTouchRef.current === null) return;
+    fireTouchRef.current = null;
+    if (firePointerRef.current === null) stopFiring();
+  }, [stopFiring]);
+
+  const beginFiring = useCallback(() => {
+    if (firePointerRef.current !== null || fireTouchRef.current !== null) return false;
+    fireButtonRef.current?.classList.add("is-held");
+    onFireRef.current(true);
+    return true;
+  }, []);
+
+  const updateJoystickPosition = useCallback((kind: "pointer" | "touch", id: number, clientX: number, clientY: number) => {
+    const active = moveContactRef.current;
+    if (!active || active.kind !== kind || active.id !== id || !joystickRef.current) return;
     const rect = joystickRef.current.getBoundingClientRect();
     const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.34);
     const vector = normalizeJoystick(
-      event.clientX - (rect.left + rect.width / 2),
-      event.clientY - (rect.top + rect.height / 2),
+      clientX - (rect.left + rect.width / 2),
+      clientY - (rect.top + rect.height / 2),
       radius,
     );
     if (knobRef.current) {
       knobRef.current.style.transform = `translate3d(${vector.knobX}px, ${vector.knobY}px, 0)`;
     }
-    onMove(vector.x, vector.z);
-  };
+    onMoveRef.current(vector.x, vector.z);
+  }, []);
+
+  useEffect(() => {
+    const handlePointerMove = (event: globalThis.PointerEvent) => {
+      updateJoystickPosition("pointer", event.pointerId, event.clientX, event.clientY);
+    };
+    const handlePointerEnd = (event: globalThis.PointerEvent) => {
+      resetJoystick("pointer", event.pointerId);
+      resetFirePointer(event.pointerId);
+    };
+    const handleTouchMove = (event: globalThis.TouchEvent) => {
+      const active = moveContactRef.current;
+      if (!active || active.kind !== "touch") return;
+      const touch = Array.from(event.touches).find((candidate) => candidate.identifier === active.id);
+      if (touch) updateJoystickPosition("touch", touch.identifier, touch.clientX, touch.clientY);
+    };
+    const handleTouchEnd = (event: globalThis.TouchEvent) => {
+      for (const touch of Array.from(event.changedTouches)) {
+        resetJoystick("touch", touch.identifier);
+        resetFireTouch(touch.identifier);
+      }
+    };
+    const handleBlur = () => {
+      resetJoystick();
+      stopFiring();
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        resetJoystick();
+        stopFiring();
+      }
+    };
+
+    // Phones use their native Touch Events stream because iOS can cancel a
+    // synthesized pointer while the physical contact is still active. Pointer
+    // Events remain available for mouse and pen input.
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
+    window.addEventListener("pointerup", handlePointerEnd, { passive: true });
+    window.addEventListener("pointercancel", handlePointerEnd, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: true });
+    window.addEventListener("touchend", handleTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+    window.addEventListener("blur", handleBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("touchcancel", handleTouchEnd);
+      window.removeEventListener("blur", handleBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      resetJoystick();
+      stopFiring();
+    };
+  }, [resetFirePointer, resetFireTouch, resetJoystick, stopFiring, updateJoystickPosition]);
 
   const triggerAction = (event: PointerEvent<HTMLButtonElement>, action: "dash" | "reload" | "swap") => {
     event.preventDefault();
@@ -1129,22 +1236,36 @@ function MobileControls({
         role="group"
         aria-label="Analog movement joystick"
         data-testid="mobile-joystick"
-        onPointerDown={(event) => {
+        onTouchStart={(event) => {
           event.preventDefault();
-          if (movePointerRef.current !== null) return;
-          movePointerRef.current = event.pointerId;
-          updateJoystick(event);
+          event.stopPropagation();
+          if (moveContactRef.current !== null) return;
+          const touch = event.changedTouches[0];
+          if (!touch) return;
+          moveContactRef.current = { kind: "touch", id: touch.identifier };
+          updateJoystickPosition("touch", touch.identifier, touch.clientX, touch.clientY);
+        }}
+        onPointerDown={(event) => {
+          if (event.pointerType === "touch") return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (moveContactRef.current !== null) return;
+          moveContactRef.current = { kind: "pointer", id: event.pointerId };
+          updateJoystickPosition("pointer", event.pointerId, event.clientX, event.clientY);
           try {
             event.currentTarget.setPointerCapture(event.pointerId);
           } catch {
-            // Some embedded browsers can cancel a contact before capture.
-            // Movement still works and the global pause/visibility reset is safe.
+            // Window-level tracking below does not depend on capture support.
           }
         }}
-        onPointerMove={updateJoystick}
-        onPointerUp={(event) => resetJoystick(event.pointerId)}
-        onPointerCancel={(event) => resetJoystick(event.pointerId)}
-        onLostPointerCapture={(event) => resetJoystick(event.pointerId)}
+        onLostPointerCapture={(event) => {
+          // A genuine end/cancel has no pressed buttons and must reset. If the
+          // browser merely dropped capture mid-contact, global tracking keeps
+          // movement alive until the corresponding pointerup/pointercancel.
+          if (event.pointerType !== "touch" && event.buttons === 0) {
+            resetJoystick("pointer", event.pointerId);
+          }
+        }}
       >
         <span ref={knobRef} className="joystick-knob" aria-hidden="true"><i /></span>
       </div>
@@ -1154,24 +1275,38 @@ function MobileControls({
         <button type="button" className="touch-action touch-swap" onPointerDown={(event) => triggerAction(event, "swap")}>SWAP</button>
         <button type="button" className="touch-action touch-dash" onPointerDown={(event) => triggerAction(event, "dash")}>DASH</button>
         <button
+          ref={fireButtonRef}
           type="button"
           className="touch-fire"
           aria-label="Fire weapon with automatic aim"
-          onPointerDown={(event) => {
+          onTouchStart={(event) => {
             event.preventDefault();
             event.stopPropagation();
+            const touch = event.changedTouches[0];
+            if (!touch || !beginFiring()) return;
+            fireTouchRef.current = touch.identifier;
+          }}
+          onPointerDown={(event) => {
+            // Touch contacts use the older, more stable Touch Events stream on
+            // phones. Pointer Events remain as the mouse/pen fallback.
+            if (event.pointerType === "touch") return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (!beginFiring()) return;
+            firePointerRef.current = event.pointerId;
             try {
               event.currentTarget.setPointerCapture(event.pointerId);
             } catch {
-              // A cancelled synthetic or browser-owned gesture may not be capturable.
+              // Global pointer tracking does not depend on capture support.
             }
-            onFire(true);
           }}
-          onPointerUp={() => onFire(false)}
-          onPointerCancel={() => onFire(false)}
-          onLostPointerCapture={() => onFire(false)}
+          onLostPointerCapture={(event) => {
+            if (event.pointerType !== "touch" && event.buttons === 0) {
+              resetFirePointer(event.pointerId);
+            }
+          }}
         >
-          FIRE
+          {reloading ? "RELOAD" : "FIRE"}
         </button>
       </div>
     </div>

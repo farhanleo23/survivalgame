@@ -678,6 +678,58 @@ export class VisualFactory {
     return group;
   }
 
+  /**
+   * High-contrast ground marker for the enemy selected by mobile auto-aim.
+   *
+   * The marker is deliberately geometric rather than glow-based: it remains
+   * legible through the comic post-process and on lower-resolution screens,
+   * while the open centre leaves the enemy silhouette unobstructed.
+   */
+  createAutoAimIndicator(): THREE.Group {
+    const group = new THREE.Group();
+    group.name = "mobile-auto-aim-indicator";
+
+    const wash = new THREE.Mesh(
+      this.own(new THREE.CircleGeometry(0.82, 32)),
+      this.palette.flat(COMIC.electric, {
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+      }),
+    );
+    wash.rotation.x = -Math.PI / 2;
+    group.add(wash);
+
+    const ring = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(0.78, 1, 32)),
+      this.palette.flat(COMIC.electric, {
+        transparent: true,
+        opacity: 0.95,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.name = "auto-aim-ring";
+    group.add(ring);
+
+    const bracketGeometry = this.own(new THREE.PlaneGeometry(0.46, 0.12));
+    const bracketMaterial = this.palette.flat(COMIC.hazardYellow, {
+      transparent: true,
+      opacity: 1,
+      side: THREE.DoubleSide,
+    });
+    for (let index = 0; index < 4; index += 1) {
+      const angle = index * Math.PI / 2;
+      const bracket = new THREE.Mesh(bracketGeometry, bracketMaterial);
+      bracket.rotation.set(-Math.PI / 2, 0, angle);
+      bracket.position.set(Math.cos(angle) * 1.05, 0.015, Math.sin(angle) * 1.05);
+      group.add(bracket);
+    }
+
+    group.visible = false;
+    return group;
+  }
+
   animateCharacter(
     rig: CharacterRig,
     dt: number,

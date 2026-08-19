@@ -1587,6 +1587,9 @@ button:focus-visible {
   font: 900 12px ui-monospace, monospace;
   letter-spacing: 0.06em;
 }
+.extraction-mobile-status {
+  display: none !important;
+}
 .extraction-hud-header p {
   margin: 1px 0 0;
   font: 700 10px ui-monospace, monospace;
@@ -1762,7 +1765,8 @@ button:focus-visible {
 }
 
 .touch-action:active,
-.touch-fire:active {
+.touch-fire:active,
+.touch-fire.is-held {
   color: #041012;
   background: var(--cyan);
   box-shadow: 0 0 20px rgba(0, 245, 212, 0.75);
@@ -1828,6 +1832,9 @@ button:focus-visible {
   padding-inline: 18px;
   white-space: normal;
   text-align: center;
+}
+[data-input-mode="touch"] .wave-announcement.extraction-announcement {
+  display: none;
 }
 
 .orientation-blocker {
@@ -2486,7 +2493,40 @@ button:focus-visible {
   padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
 }
 [data-input-mode="touch"] .extraction-hud-card {
-  bottom: 160px;
+  top: max(8px, env(safe-area-inset-top));
+  bottom: auto;
+  display: grid;
+  grid-template-columns: auto minmax(76px, 104px);
+  align-items: center;
+  gap: 8px;
+  width: min(272px, 42vw);
+  min-width: 224px;
+  padding: 5px 8px;
+  border-width: 3px;
+  box-shadow: var(--ink-drop-sm);
+}
+[data-input-mode="touch"] .extraction-hud-header {
+  gap: 5px;
+  margin: 0;
+  min-width: 0;
+}
+[data-input-mode="touch"] .beacon-icon {
+  font-size: 13px;
+}
+[data-input-mode="touch"] .extraction-hud-header p,
+[data-input-mode="touch"] .extraction-desktop-title {
+  display: none;
+}
+[data-input-mode="touch"] .extraction-mobile-status {
+  display: block !important;
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+}
+[data-input-mode="touch"] .extraction-progress-track {
+  width: 100%;
+  height: 9px;
+  border-width: 2px;
 }
 
 @media (max-height: 560px) and (orientation: landscape) {
@@ -2577,9 +2617,6 @@ button:focus-visible {
   [data-input-mode="touch"] .comic-hud-bottom-right {
     bottom: 156px;
     transform: scale(0.68);
-  }
-  [data-input-mode="touch"] .extraction-hud-card {
-    bottom: 154px;
   }
 }
 
