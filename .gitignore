@@ -40,3 +40,6 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# TypeScript incremental build metadata
+*.tsbuildinfo
