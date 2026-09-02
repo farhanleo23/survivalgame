@@ -38,18 +38,25 @@ export interface CharacterRig {
   actions: Partial<Record<CharacterMotion, THREE.AnimationAction>>;
   activeMotion?: CharacterMotion;
 
-  /** Upper-body bones pinned to an aiming pose after each mixer update. */
+  /** Upper-body bones re-posed onto the weapon grip after each mixer update. */
   aimBones?: {
-    rightArm?: THREE.Object3D;
-    rightForeArm?: THREE.Object3D;
-    leftArm?: THREE.Object3D;
-    leftForeArm?: THREE.Object3D;
+    rightArm: THREE.Object3D;
+    rightForeArm: THREE.Object3D;
+    rightHand: THREE.Object3D;
+    leftArm: THREE.Object3D;
+    leftForeArm: THREE.Object3D;
+    leftHand: THREE.Object3D;
+    /** Bind-pose hand rotations, so the hands stay in line with the forearms. */
+    rightHandRest: THREE.Quaternion;
+    leftHandRest: THREE.Quaternion;
   };
 
   /** Cloned per rig so a hit flash never bleeds across characters. */
   tintMaterials: THREE.MeshToonMaterial[];
   /** Untinted colour per material, so a status tint can be undone exactly. */
   baseColors: number[];
+  /** Resting emissive, restored after a hit flash. Zero for most rigs. */
+  baseGlow: { color: number; intensity: number };
   /**
    * Every material created for this rig alone, released when it dies. The
    * shared ones (contact shadow, ink shell) are deliberately not in here.
@@ -81,6 +88,13 @@ interface ArchetypeSpec {
   tint?: number;
   /** 0 = texture untouched, 1 = tint dominates. Defaults to a subtle 0.5. */
   tintStrength?: number;
+  /**
+   * Constant emissive lift under the texture. A multiply tint can only darken
+   * a map; this is what keeps the shadowed side of the operator blue instead
+   * of black-green, so the hue survives the toon ramp's shadow band.
+   */
+  glow?: number;
+  glowIntensity?: number;
   /** Multiplier on clip playback rate; sells speed without new clips. */
   gaitRate: number;
   /**
@@ -92,16 +106,20 @@ interface ArchetypeSpec {
 }
 
 const ARCHETYPES: Record<CharacterKind, ArchetypeSpec> = {
-  // Tinted operator blue: the Vanguard's brown camo reads identically to the
-  // infected at the top-down camera, and finding yourself instantly matters
-  // more than the texture's original colour.
+  // Tinted operator blue so the player is findable in a pile of infected —
+  // but not so hard that the texture is dropped. At full strength the map
+  // went away entirely and the operator rendered as a featureless cyan
+  // mannequin: no face, no straps, no pouches, just a silhouette. Two thirds
+  // keeps the hue shift and lets the sculpted detail show through it.
   player: {
     height: 1.95,
     girth: 1,
     asset: "/models/soldier.glb",
     yawOffset: Math.PI,
     tint: COMIC.operator,
-    tintStrength: 1,
+    tintStrength: 0.8,
+    glow: COMIC.operatorDeep,
+    glowIntensity: 0.32,
     gaitRate: 1,
   },
   shambler: { height: 1.85, girth: 1, asset: "/models/zombie-shambler.glb", gaitRate: 0.85 },
@@ -168,18 +186,117 @@ function findBone(root: THREE.Object3D, name: string): THREE.Object3D | undefine
 }
 
 /**
- * Braced two-handed aiming pose, in local bone space for the Vanguard rig.
+ * The two-handed grip, as fractions of the operator's height in body space:
+ * +Z is forward, +X is the operator's left, +Y up.
  *
- * Applied after the mixer runs so it overrides whatever the locomotion clip
- * did to the arms, giving the classic twin-stick split: legs keep walking,
- * upper body stays locked on the cursor.
+ * The arms used to be pinned to four hand-tuned quaternions that were meant
+ * to "meet the weapon" but never did: the forearms crossed over the chest
+ * like folded arms while the gun sat on a fixed mount off to one side. The
+ * pose is now solved from where the hands need to be — the weapon's grip —
+ * so the two always agree, on every frame and in every animation state.
+ *
+ * Both targets sit at roughly 92% of the arm's reach, which is the braced
+ * isosceles stance: elbows a touch bent, weapon out in front at chest height.
  */
-const AIM_POSE = {
-  rightArm: new THREE.Quaternion(0.3512, 0, 0.7243, 0.5934),
-  rightForeArm: new THREE.Quaternion(0.6332, 0, 0.0612, 0.7715),
-  leftArm: new THREE.Quaternion(-0.5229, 0, 0.5282, 0.669),
-  leftForeArm: new THREE.Quaternion(-0.3079, 0, -0.2463, 0.919),
+const AIM_GRIP = {
+  /** Rear of the weapon body; the hands wrap this point. */
+  weapon: new THREE.Vector3(-0.015, 0.63, 0.145),
+  rightHand: new THREE.Vector3(-0.041, 0.62, 0.159),
+  leftHand: new THREE.Vector3(0.01, 0.61, 0.19),
+  /** Which way each elbow bends, so the solve never locks an arm backwards. */
+  rightPole: new THREE.Vector3(-1, -0.6, -0.2),
+  leftPole: new THREE.Vector3(1, -0.6, -0.2),
 };
+
+/** Scratch space for the arm solve so the per-frame path allocates nothing. */
+const IK = {
+  shoulder: new THREE.Vector3(),
+  elbow: new THREE.Vector3(),
+  wrist: new THREE.Vector3(),
+  target: new THREE.Vector3(),
+  pole: new THREE.Vector3(),
+  toTarget: new THREE.Vector3(),
+  dir: new THREE.Vector3(),
+  perp: new THREE.Vector3(),
+  bend: new THREE.Vector3(),
+  childDir: new THREE.Vector3(),
+  desired: new THREE.Vector3(),
+  parentQuat: new THREE.Quaternion(),
+  bodyQuat: new THREE.Quaternion(),
+};
+
+/**
+ * Rotate `bone` so that the axis running to `child` points at `worldTarget`.
+ *
+ * A bone's own frame is arbitrary per rig, but the direction to its child in
+ * that frame is fixed, so aiming that direction is the one operation that
+ * works without knowing how the rig was authored. Minimal rotation, so the
+ * twist about the bone is whatever falls out; for arms that is acceptable.
+ */
+function aimBoneAt(bone: THREE.Object3D, child: THREE.Object3D, worldTarget: THREE.Vector3) {
+  const parent = bone.parent;
+  if (!parent) return;
+  IK.childDir.copy(child.position).normalize();
+  bone.getWorldPosition(IK.desired);
+  IK.desired.subVectors(worldTarget, IK.desired);
+  if (IK.desired.lengthSq() < 1e-8) return;
+  parent.getWorldQuaternion(IK.parentQuat);
+  IK.desired.applyQuaternion(IK.parentQuat.invert()).normalize();
+  bone.quaternion.setFromUnitVectors(IK.childDir, IK.desired);
+}
+
+/**
+ * Analytic two-bone solve: put the wrist on `target` with the elbow bent
+ * toward `pole`. Both are world-space. Reach is clamped just short of a
+ * straight arm so the elbow never snaps through.
+ */
+function solveArm(
+  upper: THREE.Object3D,
+  lower: THREE.Object3D,
+  end: THREE.Object3D,
+  target: THREE.Vector3,
+  pole: THREE.Vector3,
+) {
+  upper.getWorldPosition(IK.shoulder);
+  lower.getWorldPosition(IK.elbow);
+  end.getWorldPosition(IK.wrist);
+  const upperLength = IK.shoulder.distanceTo(IK.elbow);
+  const lowerLength = IK.elbow.distanceTo(IK.wrist);
+  if (upperLength < 1e-5 || lowerLength < 1e-5) return;
+
+  IK.toTarget.subVectors(target, IK.shoulder);
+  const reach = (upperLength + lowerLength) * 0.985;
+  let distance = IK.toTarget.length();
+  if (distance < 1e-5) return;
+  if (distance > reach) {
+    IK.toTarget.multiplyScalar(reach / distance);
+    distance = reach;
+  }
+  IK.dir.copy(IK.toTarget).normalize();
+
+  // Law of cosines gives the shoulder angle; the elbow lies that far off the
+  // shoulder–target line, in the plane that contains the pole.
+  const cosShoulder = THREE.MathUtils.clamp(
+    (upperLength * upperLength + distance * distance - lowerLength * lowerLength) /
+      (2 * upperLength * distance),
+    -1,
+    1,
+  );
+  const shoulderAngle = Math.acos(cosShoulder);
+  IK.perp.copy(pole).addScaledVector(IK.dir, -pole.dot(IK.dir));
+  if (IK.perp.lengthSq() < 1e-6) IK.perp.set(0, -1, 0).addScaledVector(IK.dir, IK.dir.y);
+  IK.perp.normalize();
+  IK.bend
+    .copy(IK.shoulder)
+    .addScaledVector(IK.dir, Math.cos(shoulderAngle) * upperLength)
+    .addScaledVector(IK.perp, Math.sin(shoulderAngle) * upperLength);
+
+  aimBoneAt(upper, lower, IK.bend);
+  upper.updateMatrixWorld(true);
+  IK.target.copy(IK.shoulder).add(IK.toTarget);
+  aimBoneAt(lower, end, IK.target);
+  lower.updateMatrixWorld(true);
+}
 
 /**
  * Measure a character's real world-space extent.
@@ -284,6 +401,7 @@ export class CharacterFactory {
       actions: {},
       tintMaterials: [],
       baseColors: [],
+      baseGlow: { color: spec.glow ?? 0x000000, intensity: spec.glow === undefined ? 1 : spec.glowIntensity ?? 0.3 },
       ownedMaterials: [],
       kind,
       spec,
@@ -383,6 +501,9 @@ export class CharacterFactory {
       } else if (source?.color) {
         material.color.copy(source.color);
       }
+
+      material.emissive.setHex(rig.baseGlow.color);
+      material.emissiveIntensity = rig.baseGlow.intensity;
 
       child.material = material;
       rig.tintMaterials.push(material);
@@ -487,30 +608,44 @@ export class CharacterFactory {
    */
   private attachWeapons(rig: CharacterRig, model: THREE.Object3D, spec: ArchetypeSpec) {
     const ink = this.palette.outlineMaterial();
-    const gunmetal = this.palette.toon(0x2b3346);
+    // Mid-tone rather than near-black: under the toon ramp and a thick ink
+    // shell the old gunmetal collapsed into one black brick with no edges.
+    const gunmetal = this.palette.toon(0x55627d);
     const steel = this.palette.toon(COMIC.steel);
     const glow = this.palette.toon(COMIC.gold, { emissive: COMIC.gold, emissiveIntensity: 1.6 });
 
-    // The weapon rides a fixed chest mount, NOT the right hand bone.
+    // The weapon rides the body, NOT the right hand bone.
     //
-    // Parented to the hand it inherits the walk cycle's full arm swing, so the
-    // barrel sweeps through a wide arc while firing and tracers appear to leave
-    // from wherever the arm happened to be — the aim never matches the shot.
-    // Mounted on the body it always points down the character's +Z, which is
-    // exactly the direction the engine rotates toward the cursor, so muzzle and
-    // aim agree on every frame. The arms are then posed to meet the weapon.
+    // Parented to the hand it would inherit whatever the animation does to the
+    // arm, so the barrel would sweep and tracers would leave from wherever the
+    // hand happened to be. Mounted on the body it always points down +Z, which
+    // is exactly the direction the engine rotates toward the cursor, so muzzle
+    // and aim agree on every frame. The arms are then solved onto its grip.
     const weaponGroup = new THREE.Group();
-    weaponGroup.position.set(spec.height * 0.09, spec.height * 0.58, spec.height * 0.2);
+    weaponGroup.position.copy(AIM_GRIP.weapon).multiplyScalar(spec.height);
     weaponGroup.scale.setScalar(spec.height * 0.42);
     rig.body.add(weaponGroup);
     rig.weaponGroup = weaponGroup;
 
-    rig.aimBones = {
-      rightArm: findBone(model, "RightArm"),
-      rightForeArm: findBone(model, "RightForeArm"),
-      leftArm: findBone(model, "LeftArm"),
-      leftForeArm: findBone(model, "LeftForeArm"),
-    };
+    const rightArm = findBone(model, "RightArm");
+    const rightForeArm = findBone(model, "RightForeArm");
+    const rightHand = findBone(model, "RightHand");
+    const leftArm = findBone(model, "LeftArm");
+    const leftForeArm = findBone(model, "LeftForeArm");
+    const leftHand = findBone(model, "LeftHand");
+    if (rightArm && rightForeArm && rightHand && leftArm && leftForeArm && leftHand) {
+      // Captured before the mixer ever runs, so these are the bind pose.
+      rig.aimBones = {
+        rightArm,
+        rightForeArm,
+        rightHand,
+        leftArm,
+        leftForeArm,
+        leftHand,
+        rightHandRest: rightHand.quaternion.clone(),
+        leftHandRest: leftHand.quaternion.clone(),
+      };
+    }
 
     const models = new Map<WeaponId, { group: THREE.Group; muzzle: THREE.Object3D }>();
 
@@ -524,12 +659,14 @@ export class CharacterFactory {
     ) => {
       const group = new THREE.Group();
 
+      // Slim in X: the receiver was as wide as it was tall, which read as a
+      // box rather than a firearm from every angle the game uses.
       const gun = new THREE.Mesh(
-        this.own(new RoundedBoxGeometry(0.16, bodyHeight, bodyLength, 2, 0.02)),
+        this.own(new RoundedBoxGeometry(0.09, bodyHeight, bodyLength, 2, 0.02)),
         gunmetal,
       );
       gun.position.z = bodyLength / 2;
-      inkInPlace(gun, ink, 0.09);
+      inkInPlace(gun, ink, 0.05);
       group.add(gun);
 
       const barrel = new THREE.Mesh(
@@ -538,16 +675,26 @@ export class CharacterFactory {
       );
       barrel.rotation.x = Math.PI / 2;
       barrel.position.set(0, bodyHeight * 0.16, bodyLength + barrelLength * 0.5);
-      inkInPlace(barrel, ink, 0.11);
+      inkInPlace(barrel, ink, 0.08);
       group.add(barrel);
+
+      // Grip under the rear of the receiver, where the right hand lands.
+      const grip = new THREE.Mesh(
+        this.own(new RoundedBoxGeometry(0.07, bodyHeight * 0.9, 0.09, 2, 0.015)),
+        gunmetal,
+      );
+      grip.position.set(0, -bodyHeight * 0.75, bodyLength * 0.18);
+      grip.rotation.x = -0.28;
+      inkInPlace(grip, ink, 0.06);
+      group.add(grip);
 
       if (magDepth > 0) {
         const mag = new THREE.Mesh(
-          this.own(new RoundedBoxGeometry(0.1, magDepth, 0.13, 2, 0.02)),
+          this.own(new RoundedBoxGeometry(0.06, magDepth, 0.11, 2, 0.015)),
           gunmetal,
         );
-        mag.position.set(0, -magDepth / 2 - bodyHeight * 0.3, bodyLength * 0.42);
-        inkInPlace(mag, ink, 0.1);
+        mag.position.set(0, -magDepth / 2 - bodyHeight * 0.3, bodyLength * 0.5);
+        inkInPlace(mag, ink, 0.07);
         group.add(mag);
       }
 
@@ -637,25 +784,24 @@ export class CharacterFactory {
 
       rig.mixer.update(dt);
 
-      // Pin the aiming pose *after* the mixer, or the locomotion clip wins and
-      // the arms swing the weapon off target mid-burst.
-      if (rig.aimBones) {
-        const { rightArm, rightForeArm, leftArm, leftForeArm } = rig.aimBones;
-        rightArm?.quaternion.copy(AIM_POSE.rightArm);
-        rightForeArm?.quaternion.copy(AIM_POSE.rightForeArm);
-        leftArm?.quaternion.copy(AIM_POSE.leftArm);
-        leftForeArm?.quaternion.copy(AIM_POSE.leftForeArm);
-      }
+      // Solve the arms *after* the mixer, or the locomotion clip wins and the
+      // arms swing the weapon off target mid-burst. Legs keep walking, upper
+      // body stays on the grip: the twin-stick split.
+      if (rig.aimBones && rig.model) this.poseArmsOnGrip(rig);
     }
 
-    // Hit flash drives the tint materials white, then decays back to unlit.
+    // Hit flash drives the tint materials white, then decays back to the
+    // rig's resting glow (black for the infected, deep blue for the operator).
     if (rig.hitBlend > 0.01) {
       for (const material of rig.tintMaterials) {
         material.emissive.setRGB(rig.hitBlend, rig.hitBlend, rig.hitBlend);
         material.emissiveIntensity = rig.hitBlend * 1.5;
       }
     } else if (rig.hitBlend > 0) {
-      for (const material of rig.tintMaterials) material.emissive.setRGB(0, 0, 0);
+      for (const material of rig.tintMaterials) {
+        material.emissive.setHex(rig.baseGlow.color);
+        material.emissiveIntensity = rig.baseGlow.intensity;
+      }
     }
 
     // Burning outranks chilled when both somehow apply.
@@ -696,6 +842,37 @@ export class CharacterFactory {
       rig.recoilPitch = THREE.MathUtils.lerp(rig.recoilPitch, 0, 1 - Math.exp(-dt * 26));
       rig.weaponGroup.rotation.x = -rig.recoilPitch;
     }
+  }
+
+  /**
+   * Put both hands on the weapon.
+   *
+   * World matrices are stale after the mixer runs (three.js refreshes them at
+   * render time), so the skeleton is brought up to date first; the solve then
+   * reads real joint positions and writes bone rotations the renderer will
+   * pick up this frame.
+   */
+  private poseArmsOnGrip(rig: CharacterRig) {
+    const bones = rig.aimBones;
+    if (!bones || !rig.model) return;
+    rig.model.updateMatrixWorld(true);
+    rig.body.getWorldQuaternion(IK.bodyQuat);
+    const h = rig.spec.height;
+
+    IK.target.copy(AIM_GRIP.rightHand).multiplyScalar(h);
+    rig.body.localToWorld(IK.target);
+    IK.pole.copy(AIM_GRIP.rightPole).applyQuaternion(IK.bodyQuat);
+    solveArm(bones.rightArm, bones.rightForeArm, bones.rightHand, IK.target, IK.pole);
+
+    IK.target.copy(AIM_GRIP.leftHand).multiplyScalar(h);
+    rig.body.localToWorld(IK.target);
+    IK.pole.copy(AIM_GRIP.leftPole).applyQuaternion(IK.bodyQuat);
+    solveArm(bones.leftArm, bones.leftForeArm, bones.leftHand, IK.target, IK.pole);
+
+    // Hands follow their forearms rather than whatever the walk cycle left
+    // them doing, otherwise they flop at the wrist while the arms hold still.
+    bones.rightHand.quaternion.copy(bones.rightHandRest);
+    bones.leftHand.quaternion.copy(bones.leftHandRest);
   }
 
   private own<T extends THREE.BufferGeometry>(geometry: T): T {
