@@ -1727,7 +1727,9 @@ export class GameEngine {
       // Burning Damage-over-time
       if (enemy.burningTimer && enemy.burningTimer > 0) {
         enemy.burningTimer -= dt;
-        enemy.health -= (enemy.burnDps ?? 22) * dt;
+        const burnDamage = (enemy.burnDps ?? 22) * dt;
+        enemy.health -= burnDamage;
+        this.stats.damageDealt += burnDamage;
         enemy.hitFlash = Math.max(enemy.hitFlash, 0.06);
         if (enemy.health <= 0) {
           this.killEnemy(enemy);
@@ -2349,7 +2351,7 @@ export class GameEngine {
     // spawn four more; with Cryo Core's +15% crit that branching went past 1
     // and a single lucky shot into a chilled crowd became a self-sustaining
     // needle storm. Shrapnel comes from bullets only.
-    if (this.activeSynergies.has("shrapnel") && isCrit && source !== "shrapnel") {
+    if (this.activeSynergies.has("shrapnel") && isCrit && source === "bullet") {
       const shrapnelRank = this.activeSynergies.get("shrapnel") ?? 1;
       for (let s = 0; s < 4; s += 1) {
         const sAngle = Math.random() * Math.PI * 2;
@@ -2477,10 +2479,12 @@ export class GameEngine {
 
     // Burning enemy death flame burst
     if (enemy.burningTimer && enemy.burningTimer > 0) {
+      const burstDamage = 35;
       for (let i = this.enemies.length - 1; i >= 0; i -= 1) {
         const other = this.enemies[i];
         if (other.mesh.position.distanceTo(position) < 3.2) {
-          other.health -= 35;
+          other.health -= burstDamage;
+          this.stats.damageDealt += burstDamage;
           other.burningTimer = 2.5;
         }
       }

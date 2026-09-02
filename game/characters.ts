@@ -341,6 +341,8 @@ export class CharacterFactory {
   private assets = new Map<string, Promise<LoadedAsset>>();
   private shadowGeometry = new THREE.CircleGeometry(1, 20);
   private shadowMaterial: THREE.MeshBasicMaterial;
+  /** Shared backing for every status pip; unlike the coloured face, it never changes. */
+  private statusPipInkMaterial: THREE.MeshBasicMaterial;
   private ownedGeometries: THREE.BufferGeometry[] = [];
   /**
    * Signature-part geometry, keyed by archetype and part. Sizes derive from
@@ -353,6 +355,7 @@ export class CharacterFactory {
 
   constructor(private palette: ComicPalette) {
     this.shadowMaterial = palette.flat(COMIC.ink, { transparent: true, opacity: 0.34 });
+    this.statusPipInkMaterial = palette.flat(COMIC.ink);
   }
 
   /** Warm the cache so the first wave does not pop in mid-fight. */
@@ -594,7 +597,7 @@ export class CharacterFactory {
     // Ink backing: a bare diamond washes out against the bright floor.
     const pipInk = new THREE.Mesh(
       this.cachedGeometry(`${kind}:pip-ink`, () => new THREE.PlaneGeometry(h * 0.3, h * 0.3)),
-      this.palette.flat(COMIC.ink),
+      this.statusPipInkMaterial,
     );
     pipInk.position.z = -0.01;
     pip.add(pipInk);
