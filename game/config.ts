@@ -524,3 +524,18 @@ export function getEnemySpeed(
   const scaled = baseSpeed * getWaveScaling(wave).speed * (modifier?.speedMult ?? 1);
   return Math.min(MAX_ENEMY_SPEED, scaled);
 }
+
+/** How much faster a Frenzy elite moves than its archetype. */
+export const FRENZY_SPEED_MULT = 1.4;
+
+/**
+ * A Frenzy elite's move speed.
+ *
+ * The affix multiplied *after* the cap, so a late-wave Blitz runner that had
+ * already been clamped to 5.9 came out at 8.2 against a 6.2 player — the one
+ * thing the ceiling exists to prevent. Frenzy still bites on anything that
+ * was not already at the limit, which is every archetype but the runner.
+ */
+export function getFrenzySpeed(speed: number): number {
+  return Math.min(MAX_ENEMY_SPEED, speed * FRENZY_SPEED_MULT);
+}

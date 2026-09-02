@@ -6,6 +6,7 @@ import {
   getWaveDefinition,
   getWaveScaling,
   getEnemySpeed,
+  getFrenzySpeed,
   HIT_STOP_COOLDOWN,
   HIT_STOP_DURATION,
   getProfilePower,
@@ -20,7 +21,8 @@ import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
 import { selectTouchAimTarget } from "./mobile";
 import { ComicPostProcess, type ComicPostOptions } from "./postfx";
-import { VisualFactory, type CharacterRig } from "./visuals";
+import { createRunStats, type RunStats } from "./stats";
+import { markTransient, VisualFactory, type CharacterRig } from "./visuals";
 import type {
   EliteAffix,
   EnemyDefinition,
@@ -94,9 +96,6 @@ interface EnemyEntity {
   /** Slow multiplier from the chilling card's rank; lower is slower. */
   chillMult?: number;
   bossPhase?: number;
-  bossAttackState?: "idle" | "telegraph_charge" | "charging" | "telegraph_slam" | "slamming";
-  bossStateTimer?: number;
-  bossTelegraphMesh?: THREE.Object3D;
 }
 
 interface ProjectileEntity {
@@ -113,6 +112,13 @@ interface ProjectileEntity {
   hitEnemies?: Set<EnemyEntity>;
   isShrapnel?: boolean;
 }
+
+/**
+ * What dealt a hit. Shrapnel needles must not spawn more shrapnel, or one
+ * lucky crit in a chilled crowd cascades into a needle storm; splash damage
+ * from explosions and hazards counts for nothing on the accuracy tally.
+ */
+type DamageSource = "bullet" | "shrapnel" | "splash";
 
 interface PickupEntity {
   type: PickupId;
@@ -200,6 +206,8 @@ const MAX_ACTIVE_ENEMIES = 36;
  *  works out to roughly a two-metre shove at full force. */
 const MAX_KNOCKBACK_SPEED = 26;
 const CROWD_CELL_SIZE = 2.5;
+/** Live damage-number popups. A shotgun into a crowd can spawn dozens a frame. */
+const MAX_FLOATING_POPUPS = 48;
 
 interface RenderTuning {
   initialPixelRatio: number;
@@ -370,6 +378,7 @@ export class GameEngine {
   private weaponStates = new Map<WeaponId, WeaponInstance>();
   private loadout: WeaponId[];
   private activeWeaponIndex = 0;
+  private stats: RunStats = createRunStats();
 
   private wave = 1;
   /** Once set, wave 10 no longer ends the run. */
@@ -419,6 +428,28 @@ export class GameEngine {
   private needleMaterial = new THREE.MeshBasicMaterial({ color: 0xffe600 });
   private deathBurstGeometry = new THREE.RingGeometry(0.18, 0.48, 16);
   private deathBurstMaterial = new THREE.MeshBasicMaterial({ color: 0x00f5d4, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
+  /**
+   * Shared geometry for everything spawned in volume: pickups, hit sparks,
+   * spit and blast shells. Each used to be a fresh allocation per event that
+   * was detached on expiry but never disposed, so every kill and every hit
+   * left a few GPU buffers behind for the rest of the run.
+   */
+  private coinGeometry = new THREE.CylinderGeometry(0.32, 0.32, 0.09, 14);
+  private crateGeometry = new THREE.BoxGeometry(0.55, 0.38, 0.42);
+  private crossGeometryA = new THREE.BoxGeometry(0.38, 0.06, 0.1);
+  private crossGeometryB = new THREE.BoxGeometry(0.1, 0.06, 0.38);
+  private crossMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  private haloGeometry = new THREE.RingGeometry(0.42, 0.58, 20);
+  private haloMaterials = new Map<PickupId, THREE.MeshBasicMaterial>();
+  private hitSparkGeometries = [0, 1, 2, 3].map(
+    (particle) => new THREE.SphereGeometry(0.045 + particle * 0.015, 6, 4),
+  );
+  private spitCoreGeometry = new THREE.SphereGeometry(0.22, 10, 6);
+  private spitAuraGeometry = new THREE.SphereGeometry(0.32, 8, 6);
+  private spitCoreMaterial = new THREE.MeshBasicMaterial({ color: 0x39ff14 });
+  private spitAuraMaterial = new THREE.MeshBasicMaterial({ color: 0x76ff03, transparent: true, opacity: 0.45 });
+  private boomerBlastGeometry = new THREE.SphereGeometry(1.6, 16, 12);
+  private barrelBlastGeometry = new THREE.SphereGeometry(1.2, 14, 10);
 
   constructor(
     container: HTMLElement,
@@ -476,6 +507,7 @@ export class GameEngine {
     this.endless = wave > CAMPAIGN_WAVES;
     if (wave === 1) {
       this.activeSynergies.clear();
+      this.stats = createRunStats();
     }
     this.audio.configure(this.profile.settings);
     this.audio.start();
@@ -502,6 +534,29 @@ export class GameEngine {
   resetSynergies() {
     this.activeSynergies.clear();
     this.emitHud(true);
+  }
+
+  /**
+   * Re-apply a deck carried across a redeploy, without the per-card fanfare.
+   * Replaying `addSynergy` for each stack fired five acquisition stingers at
+   * once and left the announcement banner showing whichever card came last.
+   */
+  restoreSynergies(deck: Partial<Record<SynergyCardId, number>>) {
+    this.activeSynergies.clear();
+    for (const [id, stacks] of Object.entries(deck)) {
+      if (stacks && stacks > 0) this.activeSynergies.set(id as SynergyCardId, stacks);
+    }
+    this.emitHud(true);
+  }
+
+  getRunStats(): RunStats {
+    return { ...this.stats, missionTime: this.missionElapsed };
+  }
+
+  /** Continue a previous life's tallies after a redeploy rebuilt the engine. */
+  restoreRunStats(stats: RunStats) {
+    this.stats = { ...stats };
+    this.missionElapsed = stats.missionTime;
   }
 
   pause() {
@@ -566,7 +621,10 @@ export class GameEngine {
 
   refillAmmo() {
     let changed = false;
-    for (const id of new Set(this.loadout)) {
+    // The weapons the swap key can actually reach, not just the loadout: with
+    // one slot filled, every owned weapon is available and the second one was
+    // being charged for and skipped.
+    for (const id of new Set(this.getAvailableWeapons())) {
       const state = this.weaponStates.get(id);
       if (!state) continue;
       const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
@@ -649,6 +707,29 @@ export class GameEngine {
     this.needleGeometry.dispose();
     this.needleMaterial.dispose();
     this.deathBurstGeometry.dispose();
+    this.deathBurstMaterial.dispose();
+    for (const geometry of [
+      this.coinGeometry,
+      this.crateGeometry,
+      this.crossGeometryA,
+      this.crossGeometryB,
+      this.haloGeometry,
+      this.spitCoreGeometry,
+      this.spitAuraGeometry,
+      this.boomerBlastGeometry,
+      this.barrelBlastGeometry,
+      ...this.hitSparkGeometries,
+    ]) geometry.dispose();
+    for (const material of [
+      this.coinMaterial,
+      this.ammoMaterial,
+      this.healthMaterial,
+      this.crossMaterial,
+      this.spitCoreMaterial,
+      this.spitAuraMaterial,
+      ...this.haloMaterials.values(),
+    ]) material.dispose();
+    this.haloMaterials.clear();
     this.visuals.dispose(this.scene);
     this.post.dispose();
     this.renderer.dispose();
@@ -719,6 +800,10 @@ export class GameEngine {
 
     const previous = this.currentArena ? this.arenaCache.get(this.currentArena.id) : undefined;
     if (previous) this.arenaRoot.remove(previous.root);
+    // Decals and acid pools sit in the scene, not the arena group, so they
+    // would otherwise carry over and paint the last room's gore onto this one.
+    this.visuals.clearDecals();
+    this.clearHazards();
 
     if (!this.arenaCache.has(arena.id)) {
       const root = new THREE.Group();
@@ -770,6 +855,14 @@ export class GameEngine {
 
     this.arenaHazardTimer = arena.hazard.interval;
     this.clearArenaEvents();
+  }
+
+  private clearHazards() {
+    for (const hazard of this.hazards) {
+      this.scene.remove(hazard.mesh);
+      this.visuals.disposeObject(hazard.mesh);
+    }
+    this.hazards = [];
   }
 
   private clearArenaEvents() {
@@ -1044,6 +1137,12 @@ export class GameEngine {
     }
     if (!valid) candidate.set(12, 0, 12);
 
+    // Every archetype scales with wave depth; without this a wave-20 shambler
+    // would be identical to a wave-1 one and endless mode would be a formality.
+    // Recomputed per spawn so an armory purchase mid-run takes effect on the
+    // very next wave rather than at the next restart.
+    const scaling = getWaveScaling(this.wave, getProfilePower(this.profile));
+
     const eliteChance = this.waveModifier?.eliteChance ?? 0.22;
     const isElite = this.wave >= 4 && type !== "juggernaut" && Math.random() < eliteChance;
     let affix: EliteAffix | undefined;
@@ -1058,7 +1157,9 @@ export class GameEngine {
       const affixes: EliteAffix[] = ["shielded", "frenzy", "toxic"];
       affix = affixes[Math.floor(Math.random() * affixes.length)];
       if (affix === "shielded") {
-        shieldHp = 90;
+        // Scaled like health. A flat 90 was a real wall at wave 4 and a single
+        // rifle round by the time endless got going.
+        shieldHp = Math.round(90 * scaling.health);
         shieldMesh = this.visuals.createEliteShieldMesh(definition.radius * 1.3);
         mesh.add(shieldMesh);
       }
@@ -1072,11 +1173,6 @@ export class GameEngine {
 
     this.scene.add(mesh);
 
-    // Every archetype scales with wave depth; without this a wave-20 shambler
-    // would be identical to a wave-1 one and endless mode would be a formality.
-    // Recomputed per spawn so an armory purchase mid-run takes effect on the
-    // very next wave rather than at the next restart.
-    const scaling = getWaveScaling(this.wave, getProfilePower(this.profile));
     const modHealth = this.waveModifier?.healthMult ?? 1;
     let health = definition.health * scaling.health * modHealth;
     if (type === "juggernaut") {
@@ -1130,31 +1226,29 @@ export class GameEngine {
     const definition = PICKUPS[type];
     const group = new THREE.Group();
     if (type === "coin") {
-      const coin = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.32, 0.32, 0.09, 14),
-        this.coinMaterial,
-      );
+      const coin = new THREE.Mesh(this.coinGeometry, this.coinMaterial);
       coin.rotation.x = Math.PI / 2;
       group.add(coin);
     } else {
       const box = new THREE.Mesh(
-        new THREE.BoxGeometry(0.55, 0.38, 0.42),
+        this.crateGeometry,
         type === "health" ? this.healthMaterial : this.ammoMaterial,
       );
       group.add(box);
       if (type === "health") {
-        const crossMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const crossA = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.06, 0.1), crossMat);
-        const crossB = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.38), crossMat);
+        const crossA = new THREE.Mesh(this.crossGeometryA, this.crossMaterial);
+        const crossB = new THREE.Mesh(this.crossGeometryB, this.crossMaterial);
         crossA.position.y = crossB.position.y = 0.22;
         group.add(crossA, crossB);
       }
     }
 
-    const halo = new THREE.Mesh(
-      new THREE.RingGeometry(0.42, 0.58, 20),
-      new THREE.MeshBasicMaterial({ color: definition.color, transparent: true, opacity: 0.75, side: THREE.DoubleSide }),
-    );
+    let haloMaterial = this.haloMaterials.get(type);
+    if (!haloMaterial) {
+      haloMaterial = new THREE.MeshBasicMaterial({ color: definition.color, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
+      this.haloMaterials.set(type, haloMaterial);
+    }
+    const halo = new THREE.Mesh(this.haloGeometry, haloMaterial);
     halo.rotation.x = -Math.PI / 2;
     halo.position.y = -0.3;
     group.add(halo);
@@ -1212,6 +1306,7 @@ export class GameEngine {
     state.magazine -= 1;
 
     this.bulletCount += 1;
+    this.stats.shotsFired += stats.pellets;
 
     // Adrenaline Surge synergy: +40% fire rate when below 45% HP
     const adrenalineRank = this.adrenalineRank();
@@ -1571,6 +1666,7 @@ export class GameEngine {
     } else if (this.enemies.length === 0) {
       if (this.wave >= CAMPAIGN_WAVES && !this.endless) {
         this.waveActive = false;
+        this.stats.wavesCleared += 1;
         this.pause();
         this.callbacks.onVictory();
         return;
@@ -1597,6 +1693,7 @@ export class GameEngine {
           if (this.extractionTimer >= this.extractionRequiredTime) {
             this.waveCleared = false;
             this.waveActive = false;
+            this.stats.wavesCleared += 1;
             this.extractionTimer = 0;
             if (this.extractionZoneMesh) this.extractionZoneMesh.visible = false;
             this.pause();
@@ -1664,7 +1761,7 @@ export class GameEngine {
             this.announcement = "⚠️ PROTOTYPE JUGGERNAUT PHASE 2: GROUND SLAM!";
             this.announcementTimer = 3.2;
             this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! 💥", "comic-slam");
-            for (let r = 0; r < 2; r += 1) this.spawnEnemy("runner");
+            this.spawnReinforcements("runner", 2);
           }
         } else {
           // Wave 10 Titan Dreadnought Prime: 3 Phases
@@ -1674,14 +1771,14 @@ export class GameEngine {
             this.announcement = "🔥 TITAN ENRAGED: BERSERK STRIKES!";
             this.announcementTimer = 3.5;
             this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "BERSERK! 😡", "comic-rage");
-            for (let r = 0; r < 4; r += 1) this.spawnEnemy("runner");
+            this.spawnReinforcements("runner", 4);
           } else if (hpRatio <= 0.66 && hpRatio > 0.33 && (enemy.bossPhase ?? 1) < 2) {
             enemy.bossPhase = 2;
             this.audio.playBossPhaseShift();
             this.announcement = "⚠️ TITAN PHASE 2: GROUND SLAM & SHOCKWAVES!";
             this.announcementTimer = 3.2;
             this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! 💥", "comic-slam");
-            for (let r = 0; r < 3; r += 1) this.spawnEnemy("runner");
+            this.spawnReinforcements("runner", 3);
           }
         }
       }
@@ -1713,12 +1810,16 @@ export class GameEngine {
       const towardZ = toPlayerZ * inverseDistance;
       let facingX = towardX;
       let facingZ = towardZ;
+      // What the locomotion clip should be told. A retreating spitter used to
+      // report zero and slid backwards in its idle pose.
+      let animSpeed = 0;
 
       const standoff = BEHAVIOURS[enemy.type].standoff;
       // Ranged types hold their range and retreat when crowded, so ignoring a
       // spitter costs you rather than letting you walk it down at leisure.
       if (standoff !== undefined && distance < standoff * 0.62 && enemy.windupTimer <= 0) {
         const retreat = enemy.speed * ((enemy.chilledTimer ?? 0) > 0 ? 0.5 : 1) * 0.85;
+        animSpeed = retreat;
         this.enemyCandidate.set(
           enemy.mesh.position.x - towardX * retreat * dt,
           0,
@@ -1791,10 +1892,11 @@ export class GameEngine {
           }
         } else {
           const isChilled = (enemy.chilledTimer ?? 0) > 0;
-          const frenzyMult = enemy.affix === "frenzy" ? 1.4 : 1.0;
+          const baseSpeed = enemy.affix === "frenzy" ? getFrenzySpeed(enemy.speed) : enemy.speed;
           const chilledMult = isChilled ? (enemy.chillMult ?? 0.7) : 1.0;
           const chargeMult = enemy.chargeRemaining > 0 ? (enemy.bossPhase === 3 ? 3.8 : 3.3) : 1;
-          const speed = enemy.speed * frenzyMult * chilledMult * chargeMult;
+          const speed = baseSpeed * chilledMult * chargeMult;
+          animSpeed = baseSpeed * (enemy.chargeRemaining > 0 ? 2.2 : 1);
 
           let separationX = 0;
           let separationZ = 0;
@@ -1963,7 +2065,7 @@ export class GameEngine {
       this.visuals.animateCharacter(
         enemy.rig,
         dt,
-        distance > enemy.definition.attackRange ? enemy.speed * (enemy.chargeRemaining > 0 ? 2.2 : 1) : 0,
+        animSpeed,
         // Swing animation runs during the wind-up, not on mere proximity —
         // the animation IS the tell the player reads.
         enemy.windupTimer > 0,
@@ -1974,16 +2076,21 @@ export class GameEngine {
     }
   }
 
+  /**
+   * Boss phase adds. Spawned directly while there is room, otherwise pushed to
+   * the front of the queue so the active-enemy cap holds during a titan fight.
+   */
+  private spawnReinforcements(type: EnemyId, count: number) {
+    for (let i = 0; i < count; i += 1) {
+      if (this.enemies.length < MAX_ACTIVE_ENEMIES) this.spawnEnemy(type);
+      else this.spawnQueue.unshift(type);
+    }
+  }
+
   private spawnEnemyProjectile(enemy: EnemyEntity, direction: THREE.Vector3) {
     const group = new THREE.Group();
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 10, 6),
-      new THREE.MeshBasicMaterial({ color: 0x39ff14 }),
-    );
-    const aura = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0x76ff03, transparent: true, opacity: 0.45 }),
-    );
+    const core = new THREE.Mesh(this.spitCoreGeometry, this.spitCoreMaterial);
+    const aura = new THREE.Mesh(this.spitAuraGeometry, this.spitAuraMaterial);
     group.add(core, aura);
     group.position.copy(enemy.mesh.position).add(new THREE.Vector3(0, 1.25, 0));
     this.scene.add(group);
@@ -2007,17 +2114,16 @@ export class GameEngine {
       const distance = other.mesh.position.distanceTo(position);
       if (distance < 5.8) {
         const pushDir = other.mesh.position.clone().sub(position).setY(0).normalize();
-        this.damageEnemy(other, 180 * (1 - distance / 7.0), 16, pushDir);
+        this.damageEnemy(other, 180 * (1 - distance / 7.0), 16, pushDir, "splash");
       }
     }
     if (this.playerMesh.position.distanceTo(position) < 5.8) {
       this.damagePlayer(28);
     }
 
-    const blast = new THREE.Mesh(
-      new THREE.SphereGeometry(1.6, 16, 12),
-      new THREE.MeshBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.78, wireframe: true }),
-    );
+    const blastMaterial = new THREE.MeshBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.78, wireframe: true });
+    const blast = new THREE.Mesh(this.boomerBlastGeometry, blastMaterial);
+    markTransient(blast, { materials: [blastMaterial] });
     blast.position.copy(position).setY(1.0);
     this.scene.add(blast);
     this.effects.push({ mesh: blast, life: 0.45, maxLife: 0.45 });
@@ -2103,7 +2209,13 @@ export class GameEngine {
           if (!projectile.hitEnemies) projectile.hitEnemies = new Set();
           projectile.hitEnemies.add(enemy);
 
-          this.damageEnemy(enemy, projectile.damage, projectile.knockback, projectile.direction);
+          this.damageEnemy(
+            enemy,
+            projectile.damage,
+            projectile.knockback,
+            projectile.direction,
+            projectile.isShrapnel ? "shrapnel" : "bullet",
+          );
           projectile.pierceCount = (projectile.pierceCount ?? 0) + 1;
 
           if (projectile.pierceCount > (projectile.maxPierces ?? 0)) {
@@ -2122,7 +2234,10 @@ export class GameEngine {
     damage: number,
     knockbackForce: number,
     bulletDir: THREE.Vector3,
+    source: DamageSource = "splash",
   ) {
+    if (source === "bullet") this.stats.shotsHit += 1;
+
     // Frontal Armor check on Juggernaut Phase 1
     if (enemy.type === "juggernaut" && (enemy.bossPhase ?? 1) === 1) {
       const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), enemy.mesh.rotation.y);
@@ -2136,6 +2251,7 @@ export class GameEngine {
     // Elite Shield check
     if (enemy.shieldHp && enemy.shieldHp > 0) {
       enemy.shieldHp -= damage;
+      this.stats.damageDealt += damage;
       enemy.hitFlash = 0.08;
       if (enemy.shieldHp <= 0) {
         enemy.shieldHp = 0;
@@ -2160,6 +2276,7 @@ export class GameEngine {
 
     enemy.health -= finalDamage;
     enemy.hitFlash = 0.12;
+    this.stats.damageDealt += finalDamage;
 
     const hitPos = enemy.mesh.position.clone().setY(1.05 * enemy.rig.scale);
 
@@ -2198,8 +2315,10 @@ export class GameEngine {
       this.dashCooldown = Math.max(0, this.dashCooldown - 0.7 * phantomRank);
     }
 
-    // Tesla Arcs Chain Lightning
-    if (this.activeSynergies.has("tesla_arcs") && (isCrit || this.bulletCount % 4 === 0)) {
+    // Tesla Arcs Chain Lightning. The every-fourth-bullet trigger is a bullet
+    // trigger: a shrapnel needle or a barrel blast landing on the right count
+    // is not what the card promised.
+    if (this.activeSynergies.has("tesla_arcs") && (isCrit || (source === "bullet" && this.bulletCount % 4 === 0))) {
       const teslaRank = this.activeSynergies.get("tesla_arcs") ?? 1;
       const zapDamage = 35 * teslaRank;
       const nearby = this.enemies
@@ -2211,6 +2330,7 @@ export class GameEngine {
           points.push(target.mesh.position.clone().setY(1.0));
           target.health -= zapDamage;
           target.hitFlash = 0.12;
+          this.stats.damageDealt += zapDamage;
           this.spawnFloatingText(target.mesh.position.clone().setY(1.3), `${zapDamage} ⚡`, "comic-zap");
         }
         const lightning = this.visuals.createChainLightningMesh(points);
@@ -2221,8 +2341,15 @@ export class GameEngine {
       }
     }
 
-    // Shrapnel burst on crit
-    if (this.activeSynergies.has("shrapnel") && isCrit) {
+    // Shrapnel burst on crit.
+    //
+    // Needles spawn at the victim's centre, so without excluding it they all
+    // struck the same body on the next frame — the card was a flat crit bonus
+    // rather than a spray. And each of those needle hits could itself crit and
+    // spawn four more; with Cryo Core's +15% crit that branching went past 1
+    // and a single lucky shot into a chilled crowd became a self-sustaining
+    // needle storm. Shrapnel comes from bullets only.
+    if (this.activeSynergies.has("shrapnel") && isCrit && source !== "shrapnel") {
       const shrapnelRank = this.activeSynergies.get("shrapnel") ?? 1;
       for (let s = 0; s < 4; s += 1) {
         const sAngle = Math.random() * Math.PI * 2;
@@ -2242,6 +2369,7 @@ export class GameEngine {
           isShrapnel: true,
           maxPierces: 0,
           pierceCount: 0,
+          hitEnemies: new Set([enemy]),
         });
       }
     }
@@ -2322,6 +2450,9 @@ export class GameEngine {
     // live enemy and leaves the dead one walking around.
     const index = this.enemies.indexOf(enemy);
     if (index < 0) return;
+    this.stats.kills += 1;
+    if (enemy.isElite) this.stats.eliteKills += 1;
+    if (enemy.type === "juggernaut") this.stats.bossKills += 1;
     if (this.touchAimTarget === enemy) {
       this.touchAimTarget = null;
       this.hideTouchAimIndicator();
@@ -2357,6 +2488,7 @@ export class GameEngine {
 
     this.comboCount += 1;
     this.comboTimer = 2.8;
+    this.stats.peakCombo = Math.max(this.stats.peakCombo, this.comboCount);
 
     // Spider-Verse Pop-Art Comic Sound Word Bubbles on Kill
     const comicKillWords = ["BAM! 💥", "POW! 💥", "KRAAKOOM! ⚡", "SMASH! 💫", "K.O.! 🥊", "WHAM! 💫"];
@@ -2367,14 +2499,28 @@ export class GameEngine {
       this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.4, 0)), word, "comic-boom");
     }
 
+    let milestone = false;
     if (this.comboCount === 3) {
+      milestone = true;
       this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), "3x COMBO!", "combo");
     } else if (this.comboCount === 5) {
+      milestone = true;
       this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), "5x MULTI-KILL!", "combo");
     } else if (this.comboCount === 8) {
+      milestone = true;
       this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), "8x RAMPAGE!", "combo");
     } else if (this.comboCount >= 10 && this.comboCount % 5 === 0) {
+      milestone = true;
       this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.8, 0)), `${this.comboCount}x UNSTOPPABLE!`, "combo");
+    }
+
+    // Vampiric Leech advertises a heal on multi-kill combos as well as crits;
+    // only the crit half had ever been wired up.
+    const leechRank = this.activeSynergies.get("vampiric_leech") ?? 0;
+    if (milestone && leechRank > 0 && this.playerHealth > 0) {
+      const heal = 4 * leechRank;
+      this.playerHealth = Math.min(this.maxHealth, this.playerHealth + heal);
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `+${heal} HP 🩸`, "comic-leech");
     }
 
     this.createPickup("coin", position, enemy.reward);
@@ -2385,7 +2531,11 @@ export class GameEngine {
       this.createPickup("health", position.clone().add(new THREE.Vector3(-0.55, 0, 0)), 25);
     }
 
-    const burst = new THREE.Mesh(this.deathBurstGeometry, this.deathBurstMaterial);
+    // Cloned: the fade animates opacity, and one shared material had every
+    // simultaneous death ring fading at whichever effect updated last.
+    const burstMaterial = this.deathBurstMaterial.clone();
+    const burst = new THREE.Mesh(this.deathBurstGeometry, burstMaterial);
+    markTransient(burst, { materials: [burstMaterial] });
     burst.rotation.x = -Math.PI / 2;
     burst.position.copy(position).setY(0.06);
     this.scene.add(burst);
@@ -2402,14 +2552,13 @@ export class GameEngine {
       const distance = enemy.mesh.position.distanceTo(position);
       if (distance < 5.6) {
         const pushDir = enemy.mesh.position.clone().sub(position).setY(0).normalize();
-        this.damageEnemy(enemy, 200 * (1 - distance / 6.5), 18, pushDir);
+        this.damageEnemy(enemy, 200 * (1 - distance / 6.5), 18, pushDir, "splash");
       }
     }
 
-    const blast = new THREE.Mesh(
-      new THREE.SphereGeometry(1.2, 14, 10),
-      new THREE.MeshBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.75, wireframe: true }),
-    );
+    const blastMaterial = new THREE.MeshBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.75, wireframe: true });
+    const blast = new THREE.Mesh(this.barrelBlastGeometry, blastMaterial);
+    markTransient(blast, { materials: [blastMaterial] });
     blast.position.copy(position).setY(0.9);
     this.scene.add(blast);
     this.effects.push({ mesh: blast, life: 0.45, maxLife: 0.45 });
@@ -2422,10 +2571,9 @@ export class GameEngine {
   private createDirectionalHitBurst(position: THREE.Vector3, bulletDir: THREE.Vector3, isAcid = false) {
     const colors = isAcid ? [0x39ff14, 0x76ff03, 0x22c55e] : [0xff0055, 0xd90429, 0xef233c];
     for (let particle = 0; particle < 4; particle += 1) {
-      const burst = new THREE.Mesh(
-        new THREE.SphereGeometry(0.045 + particle * 0.015, 6, 4),
-        new THREE.MeshBasicMaterial({ color: colors[particle % colors.length], transparent: true, opacity: 0.9 }),
-      );
+      const material = new THREE.MeshBasicMaterial({ color: colors[particle % colors.length], transparent: true, opacity: 0.9 });
+      const burst = new THREE.Mesh(this.hitSparkGeometries[particle], material);
+      markTransient(burst, { materials: [material] });
       // Spray particles backwards along the bullet angle with spread
       const spray = bulletDir.clone().multiplyScalar(0.4 + particle * 0.15).add(
         new THREE.Vector3(
@@ -2524,7 +2672,7 @@ export class GameEngine {
       const distance = Math.hypot(dx, dz);
       if (distance > radius) continue;
       const push = new THREE.Vector3(dx, 0, dz).normalize();
-      this.damageEnemy(enemy, 85 * rank, 15, push);
+      this.damageEnemy(enemy, 85 * rank, 15, push, "splash");
       // Stagger: interrupt any wind-up so the burst buys real breathing room.
       enemy.windupTimer = 0;
       this.clearTelegraph(enemy);
@@ -2642,7 +2790,7 @@ export class GameEngine {
         if (!enemy) continue;
         if (enemy.mesh.position.distanceTo(impact) > event.radius + enemy.definition.radius) continue;
         const push = enemy.mesh.position.clone().sub(impact).setY(0).normalize();
-        this.damageEnemy(enemy, event.damage * 3, 9, push);
+        this.damageEnemy(enemy, event.damage * 3, 9, push, "splash");
       }
       if (this.playerMesh.position.distanceTo(impact) <= event.radius + 0.5) {
         this.damagePlayer(event.damage);
@@ -2662,7 +2810,7 @@ export class GameEngine {
       const distance = Math.hypot(enemy.mesh.position.x, enemy.mesh.position.z);
       if (distance < inner) continue;
       const push = enemy.mesh.position.clone().setY(0).normalize().multiplyScalar(-1);
-      this.damageEnemy(enemy, event.damage * 2.5, 6, push);
+      this.damageEnemy(enemy, event.damage * 2.5, 6, push, "splash");
     }
     const playerDistance = Math.hypot(this.playerMesh.position.x, this.playerMesh.position.z);
     if (playerDistance >= inner) {
@@ -2693,6 +2841,7 @@ export class GameEngine {
           const dz = enemy.mesh.position.z - hazard.z;
           if (dx * dx + dz * dz > (hazard.radius + enemy.definition.radius) ** 2) continue;
           enemy.health -= hazard.dps * 0.2;
+          this.stats.damageDealt += hazard.dps * 0.2;
           enemy.hitFlash = Math.max(enemy.hitFlash, 0.05);
         }
       }
@@ -2715,8 +2864,10 @@ export class GameEngine {
       }
       effect.mesh.traverse((child) => {
         if (child instanceof THREE.Mesh && child.material) {
-          const mat = child.material as THREE.Material & { opacity?: number };
-          if (typeof mat.opacity === "number") mat.opacity = Math.max(0, 1 - progress);
+          const mat = child.material as THREE.Material;
+          // Opaque materials are shared and cached; only per-instance
+          // transparent ones are safe to animate.
+          if (mat.transparent) mat.opacity = Math.max(0, 1 - progress);
         }
       });
       if (effect.life <= 0) {
@@ -2729,7 +2880,9 @@ export class GameEngine {
 
   private damagePlayer(amount: number) {
     if (this.dashRemaining > 0 || this.playerHealth <= 0) return;
+    const dealt = Math.min(this.playerHealth, amount);
     this.playerHealth = Math.max(0, this.playerHealth - amount);
+    this.stats.damageTaken += dealt;
     this.cameraShake = Math.max(this.cameraShake, 0.48);
     this.audio.playPlayerDamage();
 
@@ -2780,6 +2933,11 @@ export class GameEngine {
     span.textContent = text;
     span.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
 
+    // Oldest out first. Without a ceiling a shotgun into a crowd stacked
+    // hundreds of animating DOM nodes and the layout thread paid for it.
+    while (this.floatingLayer.childElementCount >= MAX_FLOATING_POPUPS) {
+      this.floatingLayer.firstElementChild?.remove();
+    }
     this.floatingLayer.appendChild(span);
     setTimeout(() => {
       span.remove();
@@ -3082,9 +3240,11 @@ export class GameEngine {
     this.camera.fov = width / height < 0.8 ? 56 : 42;
     this.camera.near = 0.1;
     this.camera.far = 110;
-    this.camera.position.set(0, CAMERA_HEIGHT, CAMERA_BACK);
-    this.camera.lookAt(0, 0.42, 0);
     this.camera.updateProjectionMatrix();
+    // Re-place from the live look target rather than snapping back to the
+    // origin: while paused this is the frame that gets drawn, and the old
+    // reset made the view jump to the arena centre on every resize.
+    this.updateCamera(0);
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(width, height, false);
     this.post?.setSize(width, height);

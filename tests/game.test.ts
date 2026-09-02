@@ -7,6 +7,7 @@ import {
   getWaveDefinition,
   getWaveScaling,
   getEnemySpeed,
+  getFrenzySpeed,
   getProfilePower,
   getRandomPerkDraft,
   getWeaponStats,
@@ -23,6 +24,7 @@ import type { SynergyCardId } from "../game/types";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "../game/economy";
 import { normalizeJoystick, resolveInputMode, selectTouchAimTarget, shouldReplaceTouchTarget } from "../game/mobile";
 import { createDefaultProfile, getLocalStorage, loadProfile, PROFILE_KEY, saveProfile, validateProfile } from "../game/profile";
+import { createRunStats, formatMissionTime, getAccuracy } from "../game/stats";
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -612,5 +614,52 @@ describe("hit-stop budget", () => {
 
   it("cannot re-arm before the previous freeze has finished", () => {
     expect(HIT_STOP_COOLDOWN).toBeGreaterThan(HIT_STOP_DURATION);
+  });
+});
+
+describe("run stats", () => {
+  it("starts every tally at zero", () => {
+    const stats = createRunStats();
+    for (const value of Object.values(stats)) expect(value).toBe(0);
+  });
+
+  it("reports no accuracy before a shot is fired", () => {
+    expect(getAccuracy({ shotsFired: 0, shotsHit: 0 })).toBe(0);
+    expect(getAccuracy({ shotsFired: 0, shotsHit: 5 })).toBe(0);
+  });
+
+  it("measures hits against pellets fired", () => {
+    expect(getAccuracy({ shotsFired: 10, shotsHit: 4 })).toBeCloseTo(0.4);
+  });
+
+  it("caps accuracy at 100% when piercing rounds land twice", () => {
+    expect(getAccuracy({ shotsFired: 10, shotsHit: 17 })).toBe(1);
+  });
+
+  it("formats mission time as mm:ss", () => {
+    expect(formatMissionTime(0)).toBe("00:00");
+    expect(formatMissionTime(61.9)).toBe("01:01");
+    expect(formatMissionTime(3599)).toBe("59:59");
+  });
+
+  it("never renders a negative or non-finite time", () => {
+    expect(formatMissionTime(-5)).toBe("00:00");
+    expect(formatMissionTime(Number.NaN)).toBe("00:00");
+    expect(formatMissionTime(Number.POSITIVE_INFINITY)).toBe("00:00");
+    expect(formatMissionTime(1e9)).toBe("99:59");
+  });
+});
+
+describe("frenzy elites", () => {
+  it("still speeds up an archetype that has room under the ceiling", () => {
+    expect(getFrenzySpeed(ENEMIES.shambler.speed)).toBeGreaterThan(ENEMIES.shambler.speed);
+  });
+
+  it("cannot push an already-capped runner past the player", () => {
+    // A deep Blitz runner arrives at the cap; the affix used to multiply on
+    // top of it and produce 8.2 against a 6.2 player.
+    const capped = getEnemySpeed(ENEMIES.runner.speed, 500, WAVE_MODIFIERS.blitz);
+    expect(getFrenzySpeed(capped)).toBeLessThan(PLAYER_BASE_SPEED);
+    expect(getFrenzySpeed(capped)).toBe(capped);
   });
 });

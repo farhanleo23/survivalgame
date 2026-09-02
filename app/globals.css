@@ -2853,3 +2853,35 @@ button:focus-visible {
     gap: 12px;
   }
 }
+
+/* ---------------------------------------------------------------------- */
+/* Run summary: kills, accuracy, damage, time. Shown on death and victory. */
+.run-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 18px;
+  margin: 0 0 18px;
+}
+.run-stats .victory-stat {
+  padding: 10px 0;
+  gap: 8px;
+}
+.run-stats .victory-stat span {
+  min-width: 0;
+}
+.run-stats .victory-stat strong {
+  font-size: 16px;
+  white-space: nowrap;
+}
+@media (max-width: 560px) {
+  .run-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+  }
+}
+[data-handheld="true"] .run-stats {
+  margin-bottom: 10px;
+}
+[data-handheld="true"] .run-stats .victory-stat {
+  padding: 6px 0;
+}

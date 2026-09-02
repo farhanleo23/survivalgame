@@ -16,6 +16,7 @@ import {
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
 import { normalizeJoystick, resolveInputMode, triggerHaptic } from "@/game/mobile";
 import { createDefaultProfile, getLocalStorage, loadProfile, saveProfile } from "@/game/profile";
+import { formatMissionTime, getAccuracy, type RunStats } from "@/game/stats";
 import type { ControlMode, GameScreen, GraphicsMode, HudState, InputMode, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
 import { LobbyHero } from "./LobbyHero";
 
@@ -66,6 +67,9 @@ export function Deadwave() {
   /** Wave the next run begins on, and the deck it carries in. */
   const [runStartWave, setRunStartWave] = useState(1);
   const [carriedSynergies, setCarriedSynergies] = useState<Partial<Record<SynergyCardId, number>>>({});
+  /** Tallies from the life that just ended, and the ones a redeploy resumes. */
+  const [runStats, setRunStats] = useState<RunStats | null>(null);
+  const [carriedStats, setCarriedStats] = useState<RunStats | null>(null);
   const [deathWave, setDeathWave] = useState(1);
   /**
    * In-run redeploys. Spending one resumes the wave with your synergy deck
@@ -187,6 +191,7 @@ export function Deadwave() {
             const deck = engineRef.current?.getSynergies() ?? {};
             setDeathWave(wave);
             setCarriedSynergies(deck);
+            setRunStats(engineRef.current?.getRunStats() ?? null);
             // Bank the checkpoint so it survives a refresh, not just this session.
             commitProfile((current) => ({
               ...current,
@@ -195,6 +200,7 @@ export function Deadwave() {
             setScreen("dead");
           },
           onVictory: () => {
+            setRunStats(engineRef.current?.getRunStats() ?? null);
             commitProfile((current) => ({
               ...current,
               highestWave: 10,
@@ -219,10 +225,10 @@ export function Deadwave() {
         engineRef.current = engine;
         engine.start(runStartWave);
         // start() only clears synergies on wave 1, but the engine itself was
-        // rebuilt, so the deck has to be re-applied for a checkpoint retry.
-        for (const [id, stacks] of Object.entries(carriedSynergies)) {
-          for (let i = 0; i < (stacks ?? 0); i += 1) engine.addSynergy(id as SynergyCardId);
-        }
+        // rebuilt, so the deck and the tallies have to be re-applied for a
+        // redeploy to feel like the same run.
+        if (Object.keys(carriedSynergies).length > 0) engine.restoreSynergies(carriedSynergies);
+        if (carriedStats) engine.restoreRunStats(carriedStats);
         if (!cancelled) setEngineStatus("ready");
       } catch {
         engine?.destroy();
@@ -233,7 +239,7 @@ export function Deadwave() {
     return () => {
       cancelled = true;
     };
-  }, [screen, runToken, profile, commitProfile, runStartWave, carriedSynergies, inputMode, capabilities.touchPrimary]);
+  }, [screen, runToken, profile, commitProfile, runStartWave, carriedSynergies, carriedStats, inputMode, capabilities.touchPrimary]);
 
   useEffect(() => () => engineRef.current?.destroy(), []);
 
@@ -267,6 +273,7 @@ export function Deadwave() {
     wave = 1,
     deck: Partial<Record<SynergyCardId, number>> = {},
     budget = STARTING_REDEPLOYS,
+    stats: RunStats | null = null,
   ) => {
     engineRef.current?.destroy();
     engineRef.current = null;
@@ -275,6 +282,7 @@ export function Deadwave() {
     setEngineStatus("loading");
     setRunStartWave(wave);
     setCarriedSynergies(deck);
+    setCarriedStats(stats);
     setRedeploys(budget);
     setRunToken((token) => token + 1);
     setScreen("playing");
@@ -390,7 +398,7 @@ export function Deadwave() {
         <Lobby
           profile={profile}
           onStart={() => setScreen("loadout")}
-          onOpenArmory={() => setScreen("loadout")}
+          onOpenArmory={() => { setNotice(""); setScreen("shop"); }}
           onResume={() => startNewRun(profile.checkpointWave, {})}
           onToggleSetting={toggleSetting}
           inputMode={inputMode}
@@ -406,6 +414,18 @@ export function Deadwave() {
           onToggleWeapon={toggleLoadoutWeapon}
           onBack={() => setScreen("lobby")}
           onDeploy={() => startNewRun(1, {})}
+        />
+      )}
+
+      {screen === "shop" && (
+        <Armory
+          mode="lobby"
+          profile={profile}
+          notice={notice}
+          onBuyWeapon={buyWeapon}
+          onUpgradeWeapon={buyWeaponUpgrade}
+          onUpgradePerk={buyPerkUpgrade}
+          onContinue={() => setScreen("lobby")}
         />
       )}
 
@@ -508,6 +528,7 @@ export function Deadwave() {
 
       {screen === "armory" && (
         <Armory
+          mode="wave"
           profile={profile}
           wave={hud.wave}
           notice={notice}
@@ -541,12 +562,13 @@ export function Deadwave() {
               </>
             )}
           </p>
+          <RunSummary stats={runStats} />
           <div className="result-actions">
             {redeploys > 0 ? (
               <button
                 className="primary-action"
                 data-testid="redeploy"
-                onClick={() => startNewRun(deathWave, carriedSynergies, redeploys - 1)}
+                onClick={() => startNewRun(deathWave, carriedSynergies, redeploys - 1, runStats)}
               >
                 Redeploy to wave {deathWave} · {redeploys} left <span>→</span>
               </button>
@@ -581,6 +603,7 @@ export function Deadwave() {
               <span className="status-tag">Next Milestone</span>
             </article>
           </div>
+          <RunSummary stats={runStats} />
           <div className="victory-actions">
             <button
               className="primary-action victory-button"
@@ -631,7 +654,6 @@ function Lobby({
   onGraphicsModeChange: (mode: GraphicsMode) => void;
   handheld: boolean;
 }) {
-  const showArmoryOption = profile.highestWave >= 2 || profile.ownedWeapons.length > 1;
   // A banked checkpoint outlives the browser session, so offer it up front.
   const canResume = profile.checkpointWave > 1;
 
@@ -698,11 +720,9 @@ function Lobby({
                 <span aria-hidden="true">▶</span>
               </button>
             )}
-            {showArmoryOption && (
-              <button className="comic-secondary" onClick={onOpenArmory}>
-                Field armory · {profile.ownedWeapons.length} owned
-              </button>
-            )}
+            <button className="comic-secondary" data-testid="open-armory" onClick={onOpenArmory}>
+              Field armory · spend {profile.coins.toLocaleString()} salvage
+            </button>
           </div>
 
           <div className="controls-block">
@@ -843,15 +863,12 @@ function Hud({
 }) {
   const isLowHealth = healthPercent < 30;
   const isReloading = hud.reloading > 0;
+  const formattedTime = formatMissionTime(hud.missionTime ?? 0);
 
-  // Format mission elapsed time mm:ss
-  const totalSeconds = Math.floor(hud.missionTime ?? 0);
-  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
-  const seconds = String(totalSeconds % 60).padStart(2, "0");
-  const formattedTime = `${minutes}:${seconds}`;
-
+  // No aria-live on the container: it re-renders a dozen times a second and a
+  // screen reader would narrate every ammo tick. Only the banner announces.
   return (
-    <div className={`comic-hud ${isLowHealth ? "low-health-warning" : ""}`} aria-live="polite">
+    <div className={`comic-hud ${isLowHealth ? "low-health-warning" : ""}`}>
       {/* 1. TOP-LEFT: KAI HP, Dash Stamina & Angled Isometric Mini-Map */}
       <div className="comic-hud-top-left">
         <div className="operator-vitals-card">
@@ -998,7 +1015,11 @@ function Hud({
 
       {/* Wave Announcement Banner */}
       {hud.announcement && (
-        <div className={`wave-announcement ${hud.extractionZoneActive ? "extraction-announcement" : ""}`}>
+        <div
+          className={`wave-announcement ${hud.extractionZoneActive ? "extraction-announcement" : ""}`}
+          role="status"
+          aria-live="polite"
+        >
           {hud.announcement}
         </div>
       )}
@@ -1433,9 +1454,16 @@ function MobileControls({
   );
 }
 
+/**
+ * The shop. Between waves it sits over the paused run and can refill ammo;
+ * from the lobby it is the same stock without a run behind it, so salvage
+ * banked at the end of one run can be spent before the next instead of
+ * having to survive wave one first.
+ */
 function Armory({
+  mode,
   profile,
-  wave,
+  wave = 1,
   notice,
   onBuyWeapon,
   onUpgradeWeapon,
@@ -1443,25 +1471,33 @@ function Armory({
   onRefill,
   onContinue,
 }: {
+  mode: "wave" | "lobby";
   profile: ProfileV1;
-  wave: number;
+  wave?: number;
   notice: string;
   onBuyWeapon: (id: WeaponId) => void;
   onUpgradeWeapon: (id: WeaponId) => void;
   onUpgradePerk: (id: PerkId) => void;
-  onRefill: () => void;
+  onRefill?: () => void;
   onContinue: () => void;
 }) {
+  const inRun = mode === "wave";
   return (
-    <Modal eyebrow={`WAVE ${wave} SURVIVED`} title="FIELD ARMORY & REQUISITIONS" wide>
+    <Modal
+      eyebrow={inRun ? `WAVE ${wave} SURVIVED` : "COMMAND REQUISITIONS"}
+      title={inRun ? "FIELD ARMORY & REQUISITIONS" : "FIELD ARMORY"}
+      wide
+    >
       <div className="armory-balance">
         <div>
           <span>AVAILABLE SALVAGE</span>
           <strong>◆ {profile.coins}</strong>
         </div>
-        <button className="refill-action" aria-label="Refill all ammo 20" onClick={onRefill}>
-          ⚡ Refill All Ammo (20 Salvage)
-        </button>
+        {inRun && onRefill && (
+          <button className="refill-action" aria-label="Refill all ammo 20" onClick={onRefill}>
+            ⚡ Refill All Ammo (20 Salvage)
+          </button>
+        )}
       </div>
 
       {notice && <div className="armory-notice" role="status" aria-live="polite">{notice}</div>}
@@ -1561,11 +1597,36 @@ function Armory({
 
       <div className="armory-footer">
         <p>All purchased weapons and perk ranks survive refreshes and failed runs.</p>
-        <button className="primary-action" onClick={onContinue}>
-          Begin Wave {wave + 1} <span>→</span>
+        <button className="primary-action" data-testid="armory-continue" onClick={onContinue}>
+          {inRun ? <>Begin Wave {wave + 1} <span>→</span></> : <>Back to Command <span>→</span></>}
         </button>
       </div>
     </Modal>
+  );
+}
+
+/** Kills, accuracy, damage and time for the run that just ended. */
+function RunSummary({ stats }: { stats: RunStats | null }) {
+  if (!stats) return null;
+  const rows: Array<[string, string]> = [
+    ["Kills", stats.kills.toLocaleString()],
+    ["Elites / Titans", `${stats.eliteKills} / ${stats.bossKills}`],
+    ["Accuracy", `${Math.round(getAccuracy(stats) * 100)}%`],
+    ["Damage dealt", Math.round(stats.damageDealt).toLocaleString()],
+    ["Damage taken", Math.round(stats.damageTaken).toLocaleString()],
+    ["Peak combo", `${stats.peakCombo}x`],
+    ["Waves cleared", stats.wavesCleared.toLocaleString()],
+    ["Mission time", formatMissionTime(stats.missionTime)],
+  ];
+  return (
+    <div className="run-stats" data-testid="run-summary" aria-label="Run summary">
+      {rows.map(([label, value]) => (
+        <div className="victory-stat" key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 

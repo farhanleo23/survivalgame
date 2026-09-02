@@ -8,6 +8,25 @@ import type { EnemyDefinition, EnemyId, WeaponId } from "./types";
 export type { CharacterRig } from "./characters";
 
 /**
+ * GPU resources that belong to exactly one object and die with it.
+ *
+ * Almost everything the factory hands out is shared and lives until the
+ * engine does. The exceptions are per-instance materials whose opacity is
+ * animated (a shared one would make every live effect fade in lockstep) and
+ * one-off geometry such as a lightning arc. Those are tagged here so
+ * `disposeObject` can free them, instead of leaking one per shot, hit and
+ * death for the whole run.
+ */
+export interface TransientResources {
+  geometries?: THREE.BufferGeometry[];
+  materials?: THREE.Material[];
+}
+
+export function markTransient(object: THREE.Object3D, resources: TransientResources) {
+  object.userData.transient = resources;
+}
+
+/**
  * Scene construction for the depot arena, drawn as a printed comic panel:
  * flat cel-shaded surfaces, heavy ink outlines, and a bright saturated floor
  * that keeps every silhouette readable from the top-down camera.
@@ -22,6 +41,17 @@ export class VisualFactory {
   private decals: THREE.Mesh[] = [];
   private textures: THREE.Texture[] = [];
   private geometries: THREE.BufferGeometry[] = [];
+  /**
+   * Effect geometry and materials, keyed by every parameter that shapes them.
+   *
+   * A muzzle flash, a telegraph ring, a health bar, a slime pool: each used to
+   * be built from scratch on every call and retained until the engine died,
+   * so a minute of SMG fire left over a thousand dead geometries holding GPU
+   * buffers. The variants are fully determined by their arguments, so a small
+   * cache serves a whole run.
+   */
+  private geometryCache = new Map<string, THREE.BufferGeometry>();
+  private materialCache = new Map<string, THREE.Material>();
   private disposed = false;
 
   constructor(private renderer: THREE.WebGLRenderer) {
@@ -51,6 +81,22 @@ export class VisualFactory {
   private own<T extends THREE.BufferGeometry>(geometry: T): T {
     this.geometries.push(geometry);
     return geometry;
+  }
+
+  private cachedGeometry<T extends THREE.BufferGeometry>(key: string, make: () => T): T {
+    const hit = this.geometryCache.get(key);
+    if (hit) return hit as T;
+    const geometry = this.own(make());
+    this.geometryCache.set(key, geometry);
+    return geometry;
+  }
+
+  private cachedMaterial<T extends THREE.Material>(key: string, make: () => T): T {
+    const hit = this.materialCache.get(key);
+    if (hit) return hit as T;
+    const material = make();
+    this.materialCache.set(key, material);
+    return material;
   }
 
   // ---------------------------------------------------------------- textures
@@ -490,14 +536,14 @@ export class VisualFactory {
     const group = new THREE.Group();
     const ink = this.palette.outlineMaterial();
     const slab = new THREE.Mesh(
-      this.own(new RoundedBoxGeometry(2.3, 0.5, 2.3, 3, 0.05)),
-      this.palette.toon(COMIC.concrete),
+      this.cachedGeometry("debris-slab", () => new RoundedBoxGeometry(2.3, 0.5, 2.3, 3, 0.05)),
+      this.cachedMaterial("debris-slab", () => this.palette.toon(COMIC.concrete)),
     );
     inkInPlace(slab, ink, 0.05);
     group.add(slab);
 
-    const rebarGeometry = this.own(new THREE.CylinderGeometry(0.05, 0.05, 1.1, 5));
-    const rebarMaterial = this.palette.toon(COMIC.steel);
+    const rebarGeometry = this.cachedGeometry("debris-rebar", () => new THREE.CylinderGeometry(0.05, 0.05, 1.1, 5));
+    const rebarMaterial = this.cachedMaterial("debris-rebar", () => this.palette.toon(COMIC.steel));
     for (const [x, z] of [
       [-0.6, -0.5],
       [0.5, 0.6],
@@ -518,8 +564,10 @@ export class VisualFactory {
    */
   createSurgeRing(): THREE.Mesh {
     const ring = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(0.82, 1, 48)),
-      this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+      this.cachedGeometry("surge-ring", () => new THREE.RingGeometry(0.82, 1, 48)),
+      this.cachedMaterial("surge-ring", () =>
+        this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+      ),
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.05;
@@ -671,10 +719,11 @@ export class VisualFactory {
 
   createSlimePool(radius = 1.4) {
     const group = new THREE.Group();
+    const key = radius.toFixed(2);
 
     const pool = new THREE.Mesh(
-      this.own(new THREE.CircleGeometry(radius, 20)),
-      this.palette.flat(COMIC.acid, { transparent: true, opacity: 0.85 }),
+      this.cachedGeometry(`slime:${key}`, () => new THREE.CircleGeometry(radius, 20)),
+      this.cachedMaterial("slime-fill", () => this.palette.flat(COMIC.acid, { transparent: true, opacity: 0.85 })),
     );
     pool.rotation.x = -Math.PI / 2;
     pool.position.y = 0.03;
@@ -682,8 +731,8 @@ export class VisualFactory {
 
     // Darker inner blob gives the puddle an inked edge instead of a soft one.
     const core = new THREE.Mesh(
-      this.own(new THREE.CircleGeometry(radius * 0.62, 16)),
-      this.palette.flat(0x2f9410, { transparent: true, opacity: 0.9 }),
+      this.cachedGeometry(`slime-core:${key}`, () => new THREE.CircleGeometry(radius * 0.62, 16)),
+      this.cachedMaterial("slime-core", () => this.palette.flat(0x2f9410, { transparent: true, opacity: 0.9 })),
     );
     core.rotation.x = -Math.PI / 2;
     core.position.y = 0.032;
@@ -746,8 +795,10 @@ export class VisualFactory {
 
     if (type === "juggernaut") {
       const ring = new THREE.Mesh(
-        this.own(new THREE.RingGeometry(1.5, 1.85, 44)),
-        this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+        this.cachedGeometry("ring:juggernaut", () => new THREE.RingGeometry(1.5, 1.85, 44)),
+        this.cachedMaterial("ring:juggernaut", () =>
+          this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+        ),
       );
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.04;
@@ -755,8 +806,12 @@ export class VisualFactory {
     } else if (isElite) {
       // Gold ring plus gold trim so elites stand out from their own archetype.
       const ring = new THREE.Mesh(
-        this.own(new THREE.RingGeometry(0.62 * rig.scale, 0.82 * rig.scale, 28)),
-        this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+        this.cachedGeometry(`ring:elite:${rig.scale.toFixed(3)}`, () =>
+          new THREE.RingGeometry(0.62 * rig.scale, 0.82 * rig.scale, 28),
+        ),
+        this.cachedMaterial("ring:elite", () =>
+          this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+        ),
       );
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.035;
@@ -775,16 +830,17 @@ export class VisualFactory {
    */
   createEnemyHealthBar(width: number): THREE.Group {
     const group = new THREE.Group();
+    const key = width.toFixed(3);
 
     const back = new THREE.Mesh(
-      this.own(new THREE.PlaneGeometry(width, 0.16)),
-      this.palette.flat(COMIC.ink),
+      this.cachedGeometry(`hp-back:${key}`, () => new THREE.PlaneGeometry(width, 0.16)),
+      this.cachedMaterial("hp-back", () => this.palette.flat(COMIC.ink)),
     );
     group.add(back);
 
     const fill = new THREE.Mesh(
-      this.own(new THREE.PlaneGeometry(width - 0.06, 0.1)),
-      this.palette.flat(COMIC.juggernaut),
+      this.cachedGeometry(`hp-fill:${key}`, () => new THREE.PlaneGeometry(width - 0.06, 0.1)),
+      this.cachedMaterial("hp-fill", () => this.palette.flat(COMIC.juggernaut)),
     );
     fill.position.z = 0.001;
     fill.name = "hp-fill";
@@ -881,10 +937,16 @@ export class VisualFactory {
     const group = new THREE.Group();
 
     // Four-point comic star rather than a soft glow sprite.
-    const star = new THREE.Mesh(this.own(this.createStarGeometry(0.42, 0.16, 4)), this.palette.flat(color));
+    const star = new THREE.Mesh(
+      this.cachedGeometry("flash-star", () => this.createStarGeometry(0.42, 0.16, 4)),
+      this.cachedMaterial(`flash:${color}`, () => this.palette.flat(color)),
+    );
     group.add(star);
 
-    const core = new THREE.Mesh(this.own(new THREE.CircleGeometry(0.13, 10)), this.palette.flat(COMIC.paper));
+    const core = new THREE.Mesh(
+      this.cachedGeometry("flash-core", () => new THREE.CircleGeometry(0.13, 10)),
+      this.cachedMaterial("flash-core", () => this.palette.flat(COMIC.paper)),
+    );
     core.position.z = 0.01;
     group.add(core);
     return group;
@@ -907,8 +969,10 @@ export class VisualFactory {
 
   createRadialSpeedLinesMesh(color = COMIC.electric): THREE.Group {
     const group = new THREE.Group();
-    const material = this.palette.flat(color, { transparent: true, opacity: 0.9 });
-    const geometry = this.own(new THREE.PlaneGeometry(0.09, 1.5));
+    // Faded by the engine, so it cannot be shared with another live burst.
+    const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 });
+    markTransient(group, { materials: [material] });
+    const geometry = this.cachedGeometry("speed-line", () => new THREE.PlaneGeometry(0.09, 1.5));
 
     for (let i = 0; i < 16; i += 1) {
       const angle = (i / 16) * Math.PI * 2;
@@ -923,18 +987,23 @@ export class VisualFactory {
 
   createShockwaveMesh(radius: number, color = COMIC.juggernaut): THREE.Group {
     const group = new THREE.Group();
+    const key = radius.toFixed(2);
+    const ringMaterial = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    const spikeMaterial = new THREE.MeshBasicMaterial({ color: COMIC.paper, transparent: true, opacity: 0.8 });
+    markTransient(group, { materials: [ringMaterial, spikeMaterial] });
 
     const ring = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(radius * 0.72, radius, 40)),
-      this.palette.flat(color, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+      this.cachedGeometry(`shock-ring:${key}`, () => new THREE.RingGeometry(radius * 0.72, radius, 40)),
+      ringMaterial,
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.08;
     group.add(ring);
 
     // Jagged spikes turn a plain ring into a comic impact burst.
-    const spikeGeometry = this.own(new THREE.ConeGeometry(radius * 0.12, radius * 0.4, 3));
-    const spikeMaterial = this.palette.flat(COMIC.paper, { transparent: true, opacity: 0.8 });
+    const spikeGeometry = this.cachedGeometry(`shock-spike:${key}`, () =>
+      new THREE.ConeGeometry(radius * 0.12, radius * 0.4, 3),
+    );
     for (let i = 0; i < 10; i += 1) {
       const angle = (i / 10) * Math.PI * 2;
       const spike = new THREE.Mesh(spikeGeometry, spikeMaterial);
@@ -969,57 +1038,60 @@ export class VisualFactory {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
     const material = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 1 });
-    return new THREE.LineSegments(geometry, material);
+    const lines = new THREE.LineSegments(geometry, material);
+    // Every arc is a different shape, so the geometry is genuinely one-off.
+    markTransient(lines, { geometries: [geometry], materials: [material] });
+    return lines;
   }
 
   createEliteShieldMesh(radius = 1.15): THREE.Mesh {
     const shield = new THREE.Mesh(
-      this.own(new THREE.SphereGeometry(radius, 14, 11)),
-      this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.32 }),
+      this.cachedGeometry(`shield:${radius.toFixed(3)}`, () => new THREE.SphereGeometry(radius, 14, 11)),
+      this.cachedMaterial("shield", () => this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.32 })),
     );
     shield.position.y = radius * 0.85;
     shield.raycast = () => {};
     return shield;
   }
 
-  createTelegraphLine(length: number, width = 1.4): THREE.Mesh {
-    const line = new THREE.Mesh(
-      this.own(new THREE.PlaneGeometry(width, length)),
-      this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.45, side: THREE.DoubleSide }),
-    );
-    line.rotation.x = -Math.PI / 2;
-    line.position.y = 0.06;
-    return line;
-  }
-
   /**
    * Attack telegraph. Read at a glance from the top-down camera over a busy
    * floor, so it is a filled warning disc under a heavy ink rim rather than a
    * thin translucent hoop — the first version was invisible in a crowd.
+   *
+   * One is created for every melee swing in the game, so everything here is
+   * cached: the radii come from a handful of fixed attack ranges.
    */
   createTelegraphCircle(radius = 4.5): THREE.Group {
     const group = new THREE.Group();
+    const key = radius.toFixed(3);
 
     const fill = new THREE.Mesh(
-      this.own(new THREE.CircleGeometry(radius, 32)),
+      this.cachedGeometry(`tele-fill:${key}`, () => new THREE.CircleGeometry(radius, 32)),
       // Kept low: a dozen overlapping discs in a swarm must not become a soup.
-      this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.19, side: THREE.DoubleSide }),
+      this.cachedMaterial("tele-fill", () =>
+        this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.19, side: THREE.DoubleSide }),
+      ),
     );
     fill.rotation.x = -Math.PI / 2;
     fill.position.y = 0.05;
     group.add(fill);
 
     const rim = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(radius * 0.82, radius, 32)),
-      this.palette.flat(COMIC.hazardYellow, { transparent: true, opacity: 0.95, side: THREE.DoubleSide }),
+      this.cachedGeometry(`tele-rim:${key}`, () => new THREE.RingGeometry(radius * 0.82, radius, 32)),
+      this.cachedMaterial("tele-rim", () =>
+        this.palette.flat(COMIC.hazardYellow, { transparent: true, opacity: 0.95, side: THREE.DoubleSide }),
+      ),
     );
     rim.rotation.x = -Math.PI / 2;
     rim.position.y = 0.06;
     group.add(rim);
 
     const ink = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(radius, radius * 1.09, 32)),
-      this.palette.flat(COMIC.ink, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+      this.cachedGeometry(`tele-ink:${key}`, () => new THREE.RingGeometry(radius, radius * 1.09, 32)),
+      this.cachedMaterial("tele-ink", () =>
+        this.palette.flat(COMIC.ink, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+      ),
     );
     ink.rotation.x = -Math.PI / 2;
     ink.position.y = 0.061;
@@ -1034,7 +1106,9 @@ export class VisualFactory {
    */
   createDashGhost(playerGroup: THREE.Group): THREE.Group {
     const ghost = new THREE.Group();
-    const material = this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.55 });
+    // Faded per ghost; the geometry is the player's own and is never freed here.
+    const material = new THREE.MeshBasicMaterial({ color: COMIC.electric, transparent: true, opacity: 0.55 });
+    markTransient(ghost, { materials: [material] });
 
     playerGroup.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
@@ -1076,10 +1150,30 @@ export class VisualFactory {
     }
   }
 
+  /** Wipe the gore. Called when the arena changes, so the floor of the new
+   *  layout does not inherit the last one's splatter at the same coordinates. */
+  clearDecals() {
+    for (const decal of this.decals) decal.removeFromParent();
+    this.decals = [];
+  }
+
   // ----------------------------------------------------------------- cleanup
 
+  /**
+   * Detach an object and free whatever it owns outright.
+   *
+   * Shared geometry and materials are left alone; only resources tagged with
+   * `markTransient` are disposed, since those were made for this one object.
+   */
   disposeObject(root: THREE.Object3D) {
     root.removeFromParent();
+    root.traverse((child) => {
+      const owned = child.userData.transient as TransientResources | undefined;
+      if (!owned) return;
+      for (const geometry of owned.geometries ?? []) geometry.dispose();
+      for (const material of owned.materials ?? []) material.dispose();
+      delete child.userData.transient;
+    });
   }
 
   dispose(scene: THREE.Scene) {
@@ -1093,6 +1187,8 @@ export class VisualFactory {
     for (const geometry of this.geometries) geometry.dispose();
     this.textures = [];
     this.geometries = [];
+    this.geometryCache.clear();
+    this.materialCache.clear();
     this.decalGeometry.dispose();
     void this.renderer;
   }

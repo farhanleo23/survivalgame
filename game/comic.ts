@@ -84,7 +84,12 @@ export interface ToonOptions {
  */
 export class ComicPalette {
   readonly ramp: THREE.DataTexture;
-  private materials: THREE.Material[] = [];
+  /**
+   * Every material handed out, so the palette can free them all at once. A
+   * Set rather than an array so `release` is O(1): characters hand their
+   * materials back on death, and a long run disposes thousands of them.
+   */
+  private materials = new Set<THREE.Material>();
   private outlineMaterials = new Map<number, THREE.MeshBasicMaterial>();
 
   constructor() {
@@ -102,7 +107,7 @@ export class ComicPalette {
       opacity: options.opacity ?? 1,
       side: options.side ?? THREE.FrontSide,
     });
-    this.materials.push(material);
+    this.materials.add(material);
     return material;
   }
 
@@ -114,8 +119,20 @@ export class ComicPalette {
       opacity: options.opacity ?? 1,
       side: options.side ?? THREE.FrontSide,
     });
-    this.materials.push(material);
+    this.materials.add(material);
     return material;
+  }
+
+  /**
+   * Free a material that will never be drawn again.
+   *
+   * Materials made for one character or one effect used to live until the
+   * engine died, because the palette only ever disposed in bulk. Each enemy
+   * spawn allocates several, so an endless run grew without bound.
+   */
+  release(material: THREE.Material) {
+    if (!this.materials.delete(material)) return;
+    material.dispose();
   }
 
   /** Shared back-face ink shell material, cached per colour. */
@@ -124,13 +141,13 @@ export class ComicPalette {
     if (existing) return existing;
     const material = new THREE.MeshBasicMaterial({ color, side: THREE.BackSide });
     this.outlineMaterials.set(color, material);
-    this.materials.push(material);
+    this.materials.add(material);
     return material;
   }
 
   dispose() {
     for (const material of this.materials) material.dispose();
-    this.materials = [];
+    this.materials.clear();
     this.outlineMaterials.clear();
     this.ramp.dispose();
   }

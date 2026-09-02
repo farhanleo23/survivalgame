@@ -1,6 +1,8 @@
 export type GameScreen =
   | "lobby"
   | "loadout"
+  /** The armory opened from the lobby, with no run in progress. */
+  | "shop"
   | "playing"
   | "paused"
   | "armory"

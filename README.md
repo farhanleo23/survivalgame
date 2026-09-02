@@ -9,12 +9,12 @@ Deadwave is a single-player top-down 3D zombie survival shooter for desktop and 
 - Left click — fire
 - `R` — reload
 - `Shift` or `Space` — dash
-- `Q`, `1`, `2` — switch weapons
+- `Q` / `E` or mouse wheel — swap weapon, `1`–`4` — select weapon
 - `Escape` — pause
 
 On touch-first phones and tablets, Deadwave automatically switches to a landscape mobile layout with an analog movement stick, automatic enemy targeting, and Fire, Dash, Reload, Swap, and Pause buttons. Control mode and Automatic, Quality, or Performance graphics can be selected from the lobby or pause menu.
 
-Progress is stored locally in the browser. Weapons, upgrades, perks, settings, completed levels, and banked salvage survive refreshes and failed runs.
+Progress is stored locally in the browser. Weapons, upgrades, perks, settings, completed levels, and banked salvage survive refreshes and failed runs. Salvage can be spent in the armory between waves or from the lobby's **Field armory** before a run starts. Every death and victory screen shows a run summary: kills, accuracy, damage dealt and taken, peak combo, and mission time.
 
 ## Development
 
@@ -39,4 +39,10 @@ For example, if the Mac is `192.168.1.20`, open `http://192.168.1.20:3000` on th
 The game uses vinext/Vite, React and Three.js. Collision is hand-rolled against a
 simple obstacle list rather than a physics engine. Gameplay configuration lives in
 `game/config.ts`; rendering, collision, combat, enemies, pickups and wave
-progression live in `game/GameEngine.ts`.
+progression live in `game/GameEngine.ts`. Arena layouts are data in
+`game/arenas.ts`, the comic art system is `game/comic.ts`, `game/visuals.ts`
+and `game/postfx.ts`, and `game/stats.ts` holds the run summary.
+
+Add `?qa=1` to a localhost URL to enable the QA keys used by the browser
+tests: `K` clears the wave, `L` clears enemies but leaves the beacon flow,
+`M` teleports to the beacon and `J` kills the operator.

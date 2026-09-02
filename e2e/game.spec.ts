@@ -166,3 +166,55 @@ test("advances from wave one through the victory and Level 2 teaser", async ({ p
   await expect(page.getByRole("heading", { name: "Level 01 survived" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Downtown Hospital" })).toBeVisible();
 });
+
+test("spends banked salvage from the lobby armory without starting a run", async ({ page }) => {
+  await seedProfile(page, profileWith({ coins: 900 }));
+  await page.goto("/");
+  await page.getByTestId("open-armory").click();
+  await expect(page.getByRole("heading", { name: "Field armory" })).toBeVisible();
+  // No run behind it, so there is nothing to refill.
+  await expect(page.getByRole("button", { name: "Refill all ammo 20" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Acquire 180" }).click();
+  await expect(page.getByText("Viper SMG added to your loadout.")).toBeVisible();
+  await page.getByTestId("armory-continue").click();
+  await expect(page.getByText("◆ 720")).toBeVisible();
+
+  const savedProfile = await page.evaluate(() => JSON.parse(localStorage.getItem("deadwave.profile.v1") ?? "{}"));
+  expect(savedProfile).toMatchObject({ coins: 720, ownedWeapons: ["pistol", "smg"], equippedLoadout: ["pistol", "smg"] });
+
+  // The purchase is live on the next deployment.
+  await page.getByTestId("start-mission").click();
+  await expect(page.getByRole("button", { name: /Equipped Viper SMG/ })).toBeVisible();
+});
+
+test("shows a run summary on death and carries the tallies across a redeploy", async ({ page }) => {
+  await page.goto("/?qa=1");
+  await page.getByTestId("start-mission").click();
+  await page.getByTestId("deploy").click();
+  await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
+
+  // Spend some ammunition so the summary has something to count.
+  await page.locator(".game-canvas").dispatchEvent("pointerdown", {
+    pointerId: 3, pointerType: "mouse", button: 0, buttons: 1, isPrimary: true, clientX: 640, clientY: 300,
+  });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => {
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 3, pointerType: "mouse", button: 0, bubbles: true }));
+  });
+
+  await page.keyboard.press("j");
+  const summary = page.getByTestId("run-summary");
+  await expect(summary).toBeVisible();
+  await expect(summary).toContainText("Accuracy");
+  await expect(summary).toContainText("Damage taken");
+  await expect(summary).toContainText("Mission time");
+
+  await page.getByTestId("redeploy").click();
+  await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(800);
+  await page.keyboard.press("j");
+  await expect(page.getByTestId("run-summary")).toBeVisible();
+  // Redeploying resumed the same run, so the clock did not restart from zero.
+  await expect(page.getByTestId("run-summary")).not.toContainText("00:00");
+});

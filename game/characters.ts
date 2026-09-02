@@ -50,6 +50,11 @@ export interface CharacterRig {
   tintMaterials: THREE.MeshToonMaterial[];
   /** Untinted colour per material, so a status tint can be undone exactly. */
   baseColors: number[];
+  /**
+   * Every material created for this rig alone, released when it dies. The
+   * shared ones (contact shadow, ink shell) are deliberately not in here.
+   */
+  ownedMaterials: THREE.Material[];
   glowSac?: THREE.Mesh;
   bossCore?: THREE.Mesh;
   /** Small billboarded marker shown while a status is active. */
@@ -220,6 +225,13 @@ export class CharacterFactory {
   private shadowGeometry = new THREE.CircleGeometry(1, 20);
   private shadowMaterial: THREE.MeshBasicMaterial;
   private ownedGeometries: THREE.BufferGeometry[] = [];
+  /**
+   * Signature-part geometry, keyed by archetype and part. Sizes derive from
+   * the archetype's fixed height, so one copy serves every spawn; building a
+   * fresh sphere per spitter and two fresh planes per zombie leaked GPU
+   * buffers for the life of the engine.
+   */
+  private geometryCache = new Map<string, THREE.BufferGeometry>();
   private disposed = false;
 
   constructor(private palette: ComicPalette) {
@@ -272,6 +284,7 @@ export class CharacterFactory {
       actions: {},
       tintMaterials: [],
       baseColors: [],
+      ownedMaterials: [],
       kind,
       spec,
       phase: Math.random() * Math.PI * 2,
@@ -356,7 +369,7 @@ export class CharacterFactory {
       child.receiveShadow = false;
 
       const source = child.material as THREE.MeshStandardMaterial | undefined;
-      const material = this.palette.toon(0xffffff);
+      const material = this.claim(rig, this.palette.toon(0xffffff));
 
       // A tint multiplies against the map, so it can only ever darken. At full
       // strength drop the map instead: the operator has to be findable in a
@@ -384,8 +397,8 @@ export class CharacterFactory {
 
     if (kind === "spitter") {
       const sac = new THREE.Mesh(
-        this.own(new THREE.SphereGeometry(h * 0.16, 12, 9)),
-        this.palette.toon(COMIC.acid, { emissive: COMIC.acid, emissiveIntensity: 1.4 }),
+        this.cachedGeometry(`${kind}:sac`, () => new THREE.SphereGeometry(h * 0.16, 12, 9)),
+        this.claim(rig, this.palette.toon(COMIC.acid, { emissive: COMIC.acid, emissiveIntensity: 1.4 })),
       );
       sac.position.set(0, h * 0.72, h * 0.15);
       inkInPlace(sac, ink, 0.06);
@@ -394,8 +407,8 @@ export class CharacterFactory {
     }
 
     if (kind === "boomer") {
-      const pustuleGeo = this.own(new THREE.SphereGeometry(h * 0.075, 8, 6));
-      const pustuleMat = this.palette.toon(COMIC.acid, { emissive: COMIC.acid, emissiveIntensity: 1.2 });
+      const pustuleGeo = this.cachedGeometry(`${kind}:pustule`, () => new THREE.SphereGeometry(h * 0.075, 8, 6));
+      const pustuleMat = this.claim(rig, this.palette.toon(COMIC.acid, { emissive: COMIC.acid, emissiveIntensity: 1.2 }));
       let last: THREE.Mesh | undefined;
       for (let i = 0; i < 7; i += 1) {
         const angle = (i / 7) * Math.PI * 2;
@@ -414,8 +427,8 @@ export class CharacterFactory {
     if (kind === "brute") {
       // Asymmetric shoulder slab — reads as "flank it".
       const slab = new THREE.Mesh(
-        this.own(new RoundedBoxGeometry(h * 0.34, h * 0.26, h * 0.2, 2, 0.02 * h)),
-        this.palette.toon(0x503586),
+        this.cachedGeometry(`${kind}:slab`, () => new RoundedBoxGeometry(h * 0.34, h * 0.26, h * 0.2, 2, 0.02 * h)),
+        this.claim(rig, this.palette.toon(0x503586)),
       );
       slab.position.set(-h * 0.19, h * 0.72, 0);
       inkInPlace(slab, ink, 0.05);
@@ -424,15 +437,15 @@ export class CharacterFactory {
 
     if (kind === "juggernaut") {
       const core = new THREE.Mesh(
-        this.own(new THREE.SphereGeometry(h * 0.085, 12, 10)),
-        this.palette.toon(COMIC.gold, { emissive: COMIC.fire, emissiveIntensity: 2.2 }),
+        this.cachedGeometry(`${kind}:core`, () => new THREE.SphereGeometry(h * 0.085, 12, 10)),
+        this.claim(rig, this.palette.toon(COMIC.gold, { emissive: COMIC.fire, emissiveIntensity: 2.2 })),
       );
       core.position.set(0, h * 0.52, h * 0.3);
       rig.body.add(core);
       rig.bossCore = core;
 
-      const hornGeo = this.own(new THREE.ConeGeometry(h * 0.045, h * 0.2, 7));
-      const trim = this.palette.toon(0x8c1226);
+      const hornGeo = this.cachedGeometry(`${kind}:horn`, () => new THREE.ConeGeometry(h * 0.045, h * 0.2, 7));
+      const trim = this.claim(rig, this.palette.toon(0x8c1226));
       for (const side of [-1, 1]) {
         const horn = new THREE.Mesh(hornGeo, trim);
         horn.position.set(side * h * 0.17, h * 0.86, h * 0.12);
@@ -449,8 +462,9 @@ export class CharacterFactory {
     // unreadable. A tinted body plus one small diamond says the same thing
     // without covering the silhouette.
     const pip = new THREE.Mesh(
-      this.own(new THREE.PlaneGeometry(h * 0.22, h * 0.22)),
-      this.palette.flat(COMIC.frost),
+      this.cachedGeometry(`${kind}:pip`, () => new THREE.PlaneGeometry(h * 0.22, h * 0.22)),
+      // Per rig: its colour is rewritten as the status changes.
+      this.claim(rig, this.palette.flat(COMIC.frost)),
     );
     pip.position.y = h * 1.08;
     pip.rotation.z = Math.PI / 4;
@@ -458,7 +472,7 @@ export class CharacterFactory {
     pip.raycast = () => {};
     // Ink backing: a bare diamond washes out against the bright floor.
     const pipInk = new THREE.Mesh(
-      this.own(new THREE.PlaneGeometry(h * 0.3, h * 0.3)),
+      this.cachedGeometry(`${kind}:pip-ink`, () => new THREE.PlaneGeometry(h * 0.3, h * 0.3)),
       this.palette.flat(COMIC.ink),
     );
     pipInk.position.z = -0.01;
@@ -689,16 +703,34 @@ export class CharacterFactory {
     return geometry;
   }
 
+  private cachedGeometry<T extends THREE.BufferGeometry>(key: string, make: () => T): T {
+    const hit = this.geometryCache.get(key);
+    if (hit) return hit as T;
+    const geometry = this.own(make());
+    this.geometryCache.set(key, geometry);
+    return geometry;
+  }
+
+  /** Record a material as belonging to one rig, so its death frees it. */
+  private claim<T extends THREE.Material>(rig: CharacterRig, material: T): T {
+    rig.ownedMaterials.push(material);
+    return material;
+  }
+
   disposeCharacter(rig: CharacterRig) {
     rig.mixer?.stopAllAction();
     rig.mixer = undefined;
     rig.root.removeFromParent();
+    for (const material of rig.ownedMaterials) this.palette.release(material);
+    rig.ownedMaterials = [];
+    rig.tintMaterials = [];
   }
 
   dispose() {
     this.disposed = true;
     for (const geometry of this.ownedGeometries) geometry.dispose();
     this.ownedGeometries = [];
+    this.geometryCache.clear();
     this.shadowGeometry.dispose();
     this.assets.clear();
   }
