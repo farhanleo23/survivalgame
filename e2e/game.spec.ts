@@ -54,6 +54,21 @@ test("a narrow desktop viewport keeps keyboard and mouse controls", async ({ pag
   await expect(page.getByText("WASD", { exact: true })).toBeVisible();
 });
 
+test("dashes from a standstill toward the mouse without a movement key", async ({ page }) => {
+  await page.goto("/?qa=1");
+  await page.getByTestId("start-mission").click();
+  await page.getByTestId("deploy").click();
+  const canvas = page.locator(".game-canvas");
+  await expect(canvas).toHaveAttribute("data-player-x", /.+/);
+  const rect = await canvas.boundingBox();
+  if (!rect) throw new Error("Missing arena");
+  await page.mouse.move(rect.x + rect.width * 0.65, rect.y + rect.height * 0.5);
+  await page.keyboard.press("Space");
+  await expect.poll(async () => canvas.evaluate((element) => Math.hypot(
+    Number((element as HTMLElement).dataset.playerX), Number((element as HTMLElement).dataset.playerZ),
+  ))).toBeGreaterThan(1.5);
+});
+
 test("releases the mouse trigger when the pointer is cancelled instead of released", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("start-mission").click();

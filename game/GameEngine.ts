@@ -19,6 +19,7 @@ import {
 import { CRATE_BASE_HP, getArenaForWave, type ArenaDefinition, type ArenaId, type ArenaProp } from "./arenas";
 import { GameAudio } from "./audio";
 import { COMIC } from "./comic";
+import { resolveCircleObstacle, segmentCircleHit, segmentObstacleHit } from "./collision";
 import { selectTouchAimTarget } from "./mobile";
 import { ComicPostProcess, type ComicPostOptions } from "./postfx";
 import { createRunStats, type RunStats } from "./stats";
@@ -198,6 +199,9 @@ interface Obstacle {
 }
 
 const FIXED_STEP = 1 / 60;
+// Keep 60 Hz collision steps through ordinary slow frames without allowing an
+// unbounded catch-up loop after a stall. Eight steps cover frames down to 7.5 Hz.
+const MAX_CATCH_UP_STEPS = 8;
 const ARENA_LIMIT = 18.5;
 const CAMERA_HEIGHT = 18.5;
 const CAMERA_BACK = 15;
@@ -301,6 +305,8 @@ export class GameEngine {
   private cameraLook = new THREE.Vector3();
   private cameraRecoil = new THREE.Vector3();
   private cameraShake = 0;
+  private viewportWidth = 1;
+  private viewportHeight = 1;
   private playerHealth = 100;
   /** False until the first applyPerks call has seeded health. */
   private perksInitialised = false;
@@ -309,6 +315,7 @@ export class GameEngine {
   private moveSpeed = 6.2;
   private pickupRadius = 2.2;
   private dashCooldown = 0;
+  private dashCooldownTotal = 2.8;
   private dashRemaining = 0;
   private dashTotal = 0.22;
   private dashDirection = new THREE.Vector3(0, 0, 1);
@@ -390,6 +397,10 @@ export class GameEngine {
   private hazardBloomTimer = 0;
   private audio = new GameAudio();
   private enemyCandidate = new THREE.Vector3();
+  private projectileStart = new THREE.Vector3();
+  private projectileEnd = new THREE.Vector3();
+  private projectileNormal = new THREE.Vector3();
+  private projectileUp = new THREE.Vector3(0, 1, 0);
 
   // Shared pre-allocated materials to eliminate shader recompilation lag
   private coinMaterial = new THREE.MeshStandardMaterial({
@@ -599,14 +610,24 @@ export class GameEngine {
   }
 
   setProfile(profile: ProfileV1) {
+    const previous = this.profile;
+    const previousWeapon = this.getActiveWeaponId();
     this.profile = profile;
-    this.audio.configure(profile.settings);
-    this.applyPerks(profile.perkRanks);
+    if (
+      previous.settings === profile.settings && previous.perkRanks === profile.perkRanks &&
+      previous.ownedWeapons === profile.ownedWeapons && previous.weaponRanks === profile.weaponRanks &&
+      previous.equippedLoadout === profile.equippedLoadout
+    ) return;
+    if (previous.settings !== profile.settings) this.audio.configure(profile.settings);
+    if (previous.perkRanks !== profile.perkRanks) this.applyPerks(profile.perkRanks);
     for (const id of profile.ownedWeapons) this.ensureWeaponState(id);
     if (profile.equippedLoadout && profile.equippedLoadout.length) {
       this.loadout = [...profile.equippedLoadout];
     } else if (profile.ownedWeapons && profile.ownedWeapons.length) {
       this.loadout = [...profile.ownedWeapons];
+    }
+    if (this.playerRig && previousWeapon !== this.getActiveWeaponId()) {
+      this.visuals.setPlayerWeapon(this.playerRig, this.getActiveWeaponId());
     }
     this.emitHud(true);
   }
@@ -616,6 +637,7 @@ export class GameEngine {
     if (!this.loadout.length) this.loadout = this.profile.ownedWeapons.length ? [...this.profile.ownedWeapons] : ["pistol"];
     this.activeWeaponIndex = 0;
     for (const id of this.loadout) this.ensureWeaponState(id);
+    if (this.playerRig) this.visuals.setPlayerWeapon(this.playerRig, this.getActiveWeaponId());
     this.emitHud(true);
   }
 
@@ -1074,6 +1096,22 @@ export class GameEngine {
   }
 
   private startWave(wave: number) {
+    // A new wave starts with fresh combat space, including when reusing an arena.
+    for (let index = this.projectiles.length - 1; index >= 0; index -= 1) this.removeProjectile(index);
+    this.clearHazards();
+    for (const effect of this.effects) {
+      this.scene.remove(effect.mesh);
+      this.visuals.disposeObject(effect.mesh);
+    }
+    this.effects = [];
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.hitStopTimer = 0;
+    for (const pickup of this.pickups) {
+      this.scene.remove(pickup.mesh);
+      this.visuals.disposeObject(pickup.mesh);
+    }
+    this.pickups = [];
     this.wave = wave;
     this.waveActive = true;
     this.waveCleared = false;
@@ -1443,15 +1481,14 @@ export class GameEngine {
       (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0) + this.virtualMove.y,
     );
     const hasInput = inputDir.lengthSq() > 0;
-    if (hasInput) inputDir.normalize();
+    // Preserve the stick's analog magnitude; only clamp combined/diagonal input.
+    if (inputDir.lengthSq() > 1) inputDir.normalize();
 
     // Natural responsive acceleration & deceleration friction
     // +12% move speed per Adrenaline stack while wounded, as advertised.
     const adrenalineSpeed = 1 + 0.12 * this.adrenalineRank();
     const targetSpeed = this.dashRemaining > 0 ? 18.5 : this.moveSpeed * adrenalineSpeed;
-    const targetVelocity = hasInput
-      ? (this.dashRemaining > 0 ? this.dashDirection : inputDir).clone().multiplyScalar(targetSpeed)
-      : new THREE.Vector3(0, 0, 0);
+    const targetVelocity = (this.dashRemaining > 0 ? this.dashDirection : inputDir).clone().multiplyScalar(targetSpeed);
 
     const accelRate = this.dashRemaining > 0 ? 90 : hasInput ? 54 : 18;
     this.playerVelocity.lerp(targetVelocity, 1 - Math.exp(-dt * accelRate));
@@ -1463,46 +1500,7 @@ export class GameEngine {
     const playerRadius = 0.48;
 
     for (const obstacle of this.obstacles) {
-      if (obstacle.radius) {
-        // Cylindrical vat collision
-        const dx = nextPos.x - obstacle.x;
-        const dz = nextPos.z - obstacle.z;
-        const distSq = dx * dx + dz * dz;
-        const minDist = obstacle.radius + playerRadius;
-        if (distSq < minDist * minDist) {
-          const dist = Math.sqrt(distSq) || 0.001;
-          const normalX = dx / dist;
-          const normalZ = dz / dist;
-          nextPos.x = obstacle.x + normalX * minDist;
-          nextPos.z = obstacle.z + normalZ * minDist;
-          // Tangential sliding: remove normal component of velocity
-          const dot = this.playerVelocity.x * normalX + this.playerVelocity.z * normalZ;
-          if (dot < 0) {
-            this.playerVelocity.x -= dot * normalX;
-            this.playerVelocity.z -= dot * normalZ;
-          }
-        }
-      } else {
-        // AABB Obstacle collision with rounded slide
-        const clampedX = THREE.MathUtils.clamp(nextPos.x, obstacle.x - obstacle.hx, obstacle.x + obstacle.hx);
-        const clampedZ = THREE.MathUtils.clamp(nextPos.z, obstacle.z - obstacle.hz, obstacle.z + obstacle.hz);
-        const dx = nextPos.x - clampedX;
-        const dz = nextPos.z - clampedZ;
-        const distSq = dx * dx + dz * dz;
-
-        if (distSq < playerRadius * playerRadius) {
-          const dist = Math.sqrt(distSq) || 0.001;
-          const normalX = dx / dist;
-          const normalZ = dz / dist;
-          nextPos.x = clampedX + normalX * playerRadius;
-          nextPos.z = clampedZ + normalZ * playerRadius;
-          const dot = this.playerVelocity.x * normalX + this.playerVelocity.z * normalZ;
-          if (dot < 0) {
-            this.playerVelocity.x -= dot * normalX;
-            this.playerVelocity.z -= dot * normalZ;
-          }
-        }
-      }
+      resolveCircleObstacle(nextPos, playerRadius, obstacle, this.playerVelocity);
     }
 
     // Arena boundary clamp
@@ -1665,10 +1663,7 @@ export class GameEngine {
       }
     } else if (this.enemies.length === 0) {
       if (this.wave >= CAMPAIGN_WAVES && !this.endless) {
-        this.waveActive = false;
-        this.stats.wavesCleared += 1;
-        this.pause();
-        this.callbacks.onVictory();
+        this.completeWave();
         return;
       }
 
@@ -1692,18 +1687,36 @@ export class GameEngine {
           this.extractionTimer += dt;
           if (this.extractionTimer >= this.extractionRequiredTime) {
             this.waveCleared = false;
-            this.waveActive = false;
-            this.stats.wavesCleared += 1;
             this.extractionTimer = 0;
             if (this.extractionZoneMesh) this.extractionZoneMesh.visible = false;
-            this.pause();
-            this.callbacks.onWaveComplete(this.wave);
+            this.completeWave();
           }
         } else {
           this.extractionTimer = Math.max(0, this.extractionTimer - dt * 2.0);
         }
       }
     }
+  }
+
+  private completeWave() {
+    this.waveActive = false;
+    this.stats.wavesCleared += 1;
+    // Extraction banks the cleared arena's salvage, including the final boss
+    // drop; the victory screen otherwise opens before it can be collected.
+    let salvage = 0;
+    for (let index = this.pickups.length - 1; index >= 0; index -= 1) {
+      const pickup = this.pickups[index];
+      if (pickup.type !== "coin") continue;
+      salvage += pickup.value;
+      this.scene.remove(pickup.mesh);
+      this.visuals.disposeObject(pickup.mesh);
+      this.pickups.splice(index, 1);
+    }
+    if (salvage > 0) this.callbacks.onCoins(salvage);
+    this.pause();
+    this.emitHud(true);
+    if (this.wave >= CAMPAIGN_WAVES && !this.endless) this.callbacks.onVictory();
+    else this.callbacks.onWaveComplete(this.wave);
   }
 
   private updateEnemies(dt: number) {
@@ -2137,97 +2150,103 @@ export class GameEngine {
   }
 
   private updateProjectiles(dt: number) {
+    const from = this.projectileStart;
+    const to = this.projectileEnd;
     for (let index = this.projectiles.length - 1; index >= 0; index -= 1) {
       const projectile = this.projectiles[index];
+      from.copy(projectile.mesh.position);
+      to.copy(from).addScaledVector(projectile.velocity, Math.min(dt, projectile.life));
       projectile.life -= dt;
-      projectile.mesh.position.addScaledVector(projectile.velocity, dt);
 
-      if (projectile.life <= 0 || Math.abs(projectile.mesh.position.x) > 21 || Math.abs(projectile.mesh.position.z) > 21) {
-        this.removeProjectile(index);
-        continue;
-      }
-      const struck = this.obstacleAt(projectile.mesh.position.x, projectile.mesh.position.z);
-      if (struck) {
-        // Player fire opens lanes; enemy spit does not, so the layout only ever
-        // changes as a result of a decision the player made.
-        if (!projectile.enemy && struck.health !== undefined) {
-          this.damageObstacle(struck, projectile.damage, projectile.mesh.position);
-          this.removeProjectile(index);
-          continue;
+      // Sweep the whole travelled segment, and resolve the nearest contact
+      // first. Endpoint tests miss thin cover and grazing hits at rifle speed.
+      let stopped = false;
+      for (let contacts = this.enemies.length + 1; contacts > 0; contacts -= 1) {
+        let hitTime = Infinity;
+        let obstacle: Obstacle | null = null;
+        let barrel: BarrelEntity | null = null;
+        let target: EnemyEntity | null = null;
+        let playerHit = false;
+        for (const candidate of this.obstacles) {
+          const t = segmentObstacleHit(from, to, candidate);
+          if (t !== null && t < hitTime) { hitTime = t; obstacle = candidate; }
         }
-        if (projectile.bouncesRemaining && projectile.bouncesRemaining > 0) {
-          projectile.bouncesRemaining -= 1;
-          projectile.velocity.x *= -1;
-          projectile.velocity.z *= -1;
-          // Steer towards nearest enemy if available
-          let closestDist = 12.0;
-          let closestEnemy: EnemyEntity | null = null;
-          for (const enemy of this.enemies) {
-            const d = enemy.mesh.position.distanceTo(projectile.mesh.position);
-            if (d < closestDist) {
-              closestDist = d;
-              closestEnemy = enemy;
-            }
+        if (projectile.enemy) {
+          const height = from.y - 1;
+          const radiusSq = 0.9 ** 2 - height * height;
+          const t = radiusSq > 0 ? segmentCircleHit(from, to, this.playerMesh.position, Math.sqrt(radiusSq)) : null;
+          if (t !== null && t < hitTime) { hitTime = t; obstacle = null; playerHit = true; }
+        } else {
+          for (const candidate of this.barrels) {
+            if (!candidate.active) continue;
+            const t = segmentCircleHit(from, to, candidate.mesh.position, 0.72);
+            if (t !== null && t < hitTime) { hitTime = t; obstacle = null; barrel = candidate; }
           }
-          if (closestEnemy) {
-            const steer = closestEnemy.mesh.position.clone().sub(projectile.mesh.position).setY(0).normalize();
-            projectile.velocity.copy(steer.multiplyScalar(38));
-            projectile.direction.copy(steer);
+          for (const candidate of this.enemies) {
+            if (candidate.health <= 0 || projectile.hitEnemies?.has(candidate)) continue;
+            const t = segmentCircleHit(from, to, candidate.mesh.position, candidate.definition.radius + 0.2);
+            if (t !== null && t < hitTime) { hitTime = t; obstacle = null; barrel = null; target = candidate; }
           }
-          this.audio.tone(420, 0.03, 0.04, "triangle");
-          continue;
         }
-        this.removeProjectile(index);
-        continue;
-      }
-
-      if (projectile.enemy) {
-        if (projectile.mesh.position.distanceTo(this.playerMesh.position.clone().setY(1)) < 0.9) {
-          this.damagePlayer(projectile.damage);
-          this.removeProjectile(index);
-        }
-        continue;
-      }
-
-      const barrel = this.barrels.find(
-        (item) => item.active && item.mesh.position.distanceTo(projectile.mesh.position.clone().setY(0)) < 0.72,
-      );
-      if (barrel) {
-        this.explodeBarrel(barrel);
-        this.removeProjectile(index);
-        continue;
-      }
-
-      let hit = false;
-      for (let enemyIndex = this.enemies.length - 1; enemyIndex >= 0; enemyIndex -= 1) {
-        // One hit can detonate a boomer, whose blast kills several more, so the
-        // array can be shorter than when this loop captured its start index.
-        const enemy = this.enemies[enemyIndex];
-        if (!enemy) continue;
-        if (projectile.hitEnemies?.has(enemy)) continue;
-        const dx = projectile.mesh.position.x - enemy.mesh.position.x;
-        const dz = projectile.mesh.position.z - enemy.mesh.position.z;
-        if (dx * dx + dz * dz <= (enemy.definition.radius + 0.2) ** 2) {
-          if (!projectile.hitEnemies) projectile.hitEnemies = new Set();
-          projectile.hitEnemies.add(enemy);
-
-          this.damageEnemy(
-            enemy,
-            projectile.damage,
-            projectile.knockback,
-            projectile.direction,
-            projectile.isShrapnel ? "shrapnel" : "bullet",
-          );
+        if (!Number.isFinite(hitTime)) break;
+        projectile.mesh.position.lerpVectors(from, to, hitTime);
+        if (target) {
+          projectile.hitEnemies ??= new Set();
+          projectile.hitEnemies.add(target);
+          this.damageEnemy(target, projectile.damage, projectile.knockback, projectile.direction,
+            projectile.isShrapnel ? "shrapnel" : "bullet");
           projectile.pierceCount = (projectile.pierceCount ?? 0) + 1;
-
-          if (projectile.pierceCount > (projectile.maxPierces ?? 0)) {
-            this.removeProjectile(index);
-            hit = true;
+          if (projectile.pierceCount <= (projectile.maxPierces ?? 0)) continue;
+        } else if (obstacle) {
+          if (!projectile.enemy && obstacle.health !== undefined) {
+            this.damageObstacle(obstacle, projectile.damage, projectile.mesh.position);
+          } else if ((projectile.bouncesRemaining ?? 0) > 0) {
+            projectile.bouncesRemaining! -= 1;
+            const normal = this.projectileNormal;
+            if (obstacle.radius) {
+              normal.set(projectile.mesh.position.x - obstacle.x, 0, projectile.mesh.position.z - obstacle.z).normalize();
+            } else {
+              const dx = projectile.mesh.position.x - obstacle.x;
+              const dz = projectile.mesh.position.z - obstacle.z;
+              if (Math.abs(Math.abs(dx) - obstacle.hx) <= Math.abs(Math.abs(dz) - obstacle.hz)) normal.set(Math.sign(dx) || 1, 0, 0);
+              else normal.set(0, 0, Math.sign(dz) || 1);
+            }
+            const speed = projectile.velocity.length();
+            projectile.direction.copy(projectile.velocity).normalize().reflect(normal);
+            // Retain assisted ricochets, but only toward targets on this side
+            // of cover. Direction stays unit length for consistent knockback.
+            let nearest = 12 ** 2;
+            for (const enemy of this.enemies) {
+              if (enemy.health <= 0 || projectile.hitEnemies?.has(enemy)) continue;
+              const dx = enemy.mesh.position.x - projectile.mesh.position.x;
+              const dz = enemy.mesh.position.z - projectile.mesh.position.z;
+              const distanceSq = dx * dx + dz * dz;
+              if (distanceSq > 0 && distanceSq < nearest && dx * normal.x + dz * normal.z > 0) {
+                nearest = distanceSq;
+                projectile.direction.set(dx, 0, dz).normalize();
+              }
+            }
+            projectile.velocity.copy(projectile.direction).multiplyScalar(speed);
+            projectile.mesh.position.addScaledVector(normal, 0.002);
+            projectile.mesh.quaternion.setFromUnitVectors(this.projectileUp, projectile.direction);
+            this.audio.tone(420, 0.03, 0.04, "triangle");
+            stopped = true;
             break;
           }
-        }
+        } else if (barrel) this.explodeBarrel(barrel);
+        else if (playerHit) this.damagePlayer(projectile.damage);
+
+        this.removeProjectile(index);
+        stopped = true;
+        break;
       }
-      if (hit) continue;
+      if (this.paused) return;
+      if (stopped) {
+        if (this.projectiles[index] === projectile && projectile.life <= 0) this.removeProjectile(index);
+        continue;
+      }
+      projectile.mesh.position.copy(to);
+      if (projectile.life <= 0 || Math.abs(to.x) > 21 || Math.abs(to.z) > 21) this.removeProjectile(index);
     }
   }
 
@@ -2593,6 +2612,8 @@ export class GameEngine {
   }
 
   private updatePickups(dt: number) {
+    if (this.playerHealth <= 0) return;
+    let coinsCollected = 0;
     for (let index = this.pickups.length - 1; index >= 0; index -= 1) {
       const pickup = this.pickups[index];
       pickup.age += dt;
@@ -2606,10 +2627,16 @@ export class GameEngine {
       }
 
       if (distance < 1.1) {
+        if (pickup.type === "health" && this.playerHealth >= this.maxHealth) continue;
+        if (pickup.type === "ammo") {
+          const id = this.getActiveWeaponId();
+          const state = this.weaponStates.get(id);
+          if (!state || state.reserve >= getWeaponStats(id, this.profile.weaponRanks[id]).reserve) continue;
+        }
         const pickupPos = pickup.mesh.position.clone().setY(1.2);
         this.audio.playPickup(pickup.type);
         if (pickup.type === "coin") {
-          this.callbacks.onCoins(pickup.value);
+          coinsCollected += pickup.value;
           this.spawnFloatingText(pickupPos, `+${pickup.value} 🪙`, "coin");
         } else if (pickup.type === "ammo") {
           const id = this.getActiveWeaponId();
@@ -2620,14 +2647,17 @@ export class GameEngine {
           }
           this.spawnFloatingText(pickupPos, "+AMMO ⚡", "ammo");
         } else {
-          this.playerHealth = Math.min(this.maxHealth, this.playerHealth + pickup.value);
-          this.spawnFloatingText(pickupPos, `+${pickup.value} HP 💚`, "health");
+          const healed = Math.min(pickup.value, this.maxHealth - this.playerHealth);
+          this.playerHealth += healed;
+          this.spawnFloatingText(pickupPos, `+${healed} HP 💚`, "health");
         }
         this.scene.remove(pickup.mesh);
         this.visuals.disposeObject(pickup.mesh);
         this.pickups.splice(index, 1);
       }
     }
+    // A magnet sweep can collect a whole horde's drops in one tick.
+    if (coinsCollected > 0) this.callbacks.onCoins(coinsCollected);
   }
 
   /** Drop a lingering damage zone on the ground. */
@@ -2927,8 +2957,8 @@ export class GameEngine {
     const projected = worldPos.clone().project(this.camera);
     if (projected.z < -1 || projected.z > 1) return;
 
-    const width = this.container.clientWidth || 800;
-    const height = this.container.clientHeight || 600;
+    const width = this.viewportWidth;
+    const height = this.viewportHeight;
     const screenX = ((projected.x + 1) / 2) * width + THREE.MathUtils.randFloatSpread(18);
     const screenY = ((-projected.y + 1) / 2) * height + THREE.MathUtils.randFloatSpread(12);
 
@@ -2957,31 +2987,7 @@ export class GameEngine {
   private resolveEnemyPosition(position: THREE.Vector3, radius: number) {
     const boundary = ARENA_LIMIT - radius - 0.25;
     for (const obstacle of this.obstacles) {
-      if (obstacle.radius) {
-        const dx = position.x - obstacle.x;
-        const dz = position.z - obstacle.z;
-        const distSq = dx * dx + dz * dz;
-        const minDist = obstacle.radius + radius;
-        if (distSq < minDist * minDist) {
-          const dist = Math.sqrt(distSq) || 0.001;
-          position.x = obstacle.x + (dx / dist) * minDist;
-          position.z = obstacle.z + (dz / dist) * minDist;
-        }
-      } else {
-        // Continuous smooth rounded AABB capsule sliding
-        const clampedX = THREE.MathUtils.clamp(position.x, obstacle.x - obstacle.hx, obstacle.x + obstacle.hx);
-        const clampedZ = THREE.MathUtils.clamp(position.z, obstacle.z - obstacle.hz, obstacle.z + obstacle.hz);
-        const dx = position.x - clampedX;
-        const dz = position.z - clampedZ;
-        const distSq = dx * dx + dz * dz;
-        if (distSq < radius * radius) {
-          const dist = Math.sqrt(distSq) || 0.001;
-          const nx = dx / dist;
-          const nz = dz / dist;
-          position.x = clampedX + nx * radius;
-          position.z = clampedZ + nz * radius;
-        }
-      }
+      resolveCircleObstacle(position, radius, obstacle);
     }
     // Hard clamp within playable arena perimeter to prevent corner wedging
     position.x = THREE.MathUtils.clamp(position.x, -boundary, boundary);
@@ -3082,7 +3088,7 @@ export class GameEngine {
       magazine: state?.magazine ?? 0,
       reserve: state?.reserve ?? 0,
       reloading: state?.reloading ?? 0,
-      dash: 1 - Math.min(1, this.dashCooldown / 2.8),
+      dash: 1 - Math.min(1, this.dashCooldown / this.dashCooldownTotal),
       bossHealth: boss?.health,
       bossMaxHealth: boss?.maxHealth,
       bossPhase: boss?.bossPhase ?? (boss ? 1 : undefined),
@@ -3135,13 +3141,19 @@ export class GameEngine {
 
     this.updatePlayer(dt);
     this.updateWave(dt);
+    if (this.paused) return;
     this.updateEnemies(dt);
+    if (this.paused) return;
     this.updateProjectiles(dt);
+    if (this.paused) return;
     this.updateHazards(dt);
+    if (this.paused) return;
     this.updateArenaHazards(dt);
+    if (this.paused) return;
     // After projectiles, so indirect damage (chain lightning, burn splash,
     // explosions) resolves into deaths on the same frame it was dealt.
     this.reapDead();
+    if (this.paused) return;
     this.updatePickups(dt);
     this.updateEffects(dt);
     this.updateAtmosphere();
@@ -3180,8 +3192,6 @@ export class GameEngine {
 
     this.cameraShake = Math.max(0, this.cameraShake - dt * 3.2);
 
-    const dust = this.scene.getObjectByName("ambient-dust");
-    if (dust) dust.rotation.y += dt * 0.012;
   }
 
   /**
@@ -3203,16 +3213,20 @@ export class GameEngine {
   }
 
   private animate = () => {
+    this.renderFrame();
+  };
+
+  private renderFrame() {
     this.frame = 0;
     if (this.destroyed || this.paused) return;
     this.timer.update();
-    const delta = Math.min(0.05, this.timer.getDelta());
+    const delta = Math.min(0.25, this.timer.getDelta());
     this.frameTimeAverage += (delta - this.frameTimeAverage) * 0.04;
     this.performanceSampleTime += delta;
-    if (this.performanceSampleTime >= 2) {
+    if (!this.qaMode && this.performanceSampleTime >= 2) {
       this.performanceSampleTime = 0;
       const maximum = Math.min(window.devicePixelRatio, this.maxPixelRatio);
-      const minimum = this.qaMode ? 0.5 : this.minPixelRatio;
+      const minimum = Math.min(maximum, this.minPixelRatio);
       const nextRatio =
         this.frameTimeAverage > 0.021
           ? Math.max(minimum, this.pixelRatio - 0.15)
@@ -3225,7 +3239,7 @@ export class GameEngine {
         this.resize();
       }
     }
-    this.accumulator = Math.min(this.accumulator + delta, FIXED_STEP * 5);
+    this.accumulator = Math.min(this.accumulator + delta, FIXED_STEP * MAX_CATCH_UP_STEPS);
     while (this.accumulator >= FIXED_STEP && !this.paused) {
       this.step(FIXED_STEP);
       this.accumulator -= FIXED_STEP;
@@ -3235,11 +3249,13 @@ export class GameEngine {
       this.qaFramesRendered += 1;
     }
     this.scheduleFrame();
-  };
+  }
 
   private resize = () => {
     const width = Math.max(1, this.container.clientWidth);
     const height = Math.max(1, this.container.clientHeight);
+    this.viewportWidth = width;
+    this.viewportHeight = height;
     this.camera.aspect = width / height;
     this.camera.fov = width / height < 0.8 ? 56 : 42;
     this.camera.near = 0.1;
@@ -3359,11 +3375,7 @@ export class GameEngine {
       }
       this.enemies = [];
       this.spawnQueue = [];
-      this.waveActive = false;
-      this.pause();
-      this.emitHud(true);
-      if (this.wave >= CAMPAIGN_WAVES && !this.endless) this.callbacks.onVictory();
-      else this.callbacks.onWaveComplete(this.wave);
+      this.completeWave();
     }
   };
 
@@ -3397,7 +3409,8 @@ export class GameEngine {
     // Phantom Reflex shortens the cooldown itself — the card advertised this
     // and only the elite-hit refund was ever implemented.
     const phantomRank = this.activeSynergies.get("phantom_reflex") ?? 0;
-    this.dashCooldown = 2.8 * Math.max(0.4, 1 - 0.18 * phantomRank);
+    this.dashCooldownTotal = 2.8 * Math.max(0.4, 1 - 0.18 * phantomRank);
+    this.dashCooldown = this.dashCooldownTotal;
     this.cameraShake = Math.max(this.cameraShake, 0.18);
     this.audio.playDash();
 

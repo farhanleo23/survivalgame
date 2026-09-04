@@ -380,7 +380,7 @@ export class GameAudio {
     // Opened up from 480Hz. The old bed was a survival-horror pad — three
     // sub-bass drones under a slow descending minor line — which read as dread
     // rather than as the pulpy action the visuals now promise.
-    this.musicFilter.frequency.value = 1150;
+    this.musicFilter.frequency.value = 950 + this.intensity * 900;
     this.musicFilter.Q.value = 0.6;
     this.musicBus.connect(this.musicFilter).connect(this.master);
     this.sfxBus.connect(this.master);
@@ -441,7 +441,9 @@ export class GameAudio {
    * as a run goes deep instead of looping at one mood forever.
    */
   setIntensity(value: number) {
-    this.intensity = Math.max(0, Math.min(1, value));
+    const next = Math.max(0, Math.min(1, value));
+    if (next === this.intensity) return;
+    this.intensity = next;
     if (this.musicFilter && this.context) {
       this.musicFilter.frequency.setTargetAtTime(
         950 + this.intensity * 900,

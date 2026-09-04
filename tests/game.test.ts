@@ -138,6 +138,11 @@ describe("adaptive mobile controls", () => {
       expect(selectTouchAimTarget([far, near], distance, far)).toBe(near);
     });
 
+    it("picks the nearest challenger independently of spawn order", () => {
+      expect(selectTouchAimTarget([far, middle, near], distance, far)).toBe(near);
+      expect(selectTouchAimTarget([near, middle, far], distance, far)).toBe(near);
+    });
+
     it("has nothing to aim at in an empty arena", () => {
       expect(selectTouchAimTarget([], distance, null)).toBeNull();
     });

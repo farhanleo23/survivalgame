@@ -14,6 +14,8 @@ Deadwave is a single-player top-down 3D zombie survival shooter for desktop and 
 
 On touch-first phones and tablets, Deadwave automatically switches to a landscape mobile layout with an analog movement stick, automatic enemy targeting, and Fire, Dash, Reload, Swap, and Pause buttons. Control mode and Automatic, Quality, or Performance graphics can be selected from the lobby or pause menu.
 
+Move the touch stick partway for slower movement. Dash follows movement when moving and aim when standing still. Unneeded health and ammo remain available on the ground during the wave. Reaching the extraction beacon banks all remaining salvage; the final wave banks it automatically. Each new wave clears old projectiles, hazards, and unused supplies.
+
 Progress is stored locally in the browser. Weapons, upgrades, perks, settings, completed levels, and banked salvage survive refreshes and failed runs. Salvage can be spent in the armory between waves or from the lobby's **Field armory** before a run starts. Every death and victory screen shows a run summary: kills, accuracy, damage dealt and taken, peak combo, and mission time.
 
 ## Development

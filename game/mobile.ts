@@ -56,20 +56,19 @@ export function selectTouchAimTarget<T>(
 ): T | null {
   if (candidates.length === 0) return null;
   const holding = current !== null && candidates.includes(current);
-  let best = holding ? (current as T) : candidates[0];
+  let best = candidates[0];
   let bestDistance = distanceSquared(best);
   for (const candidate of candidates) {
     if (candidate === best) continue;
     const distance = distanceSquared(candidate);
-    const replaces = holding
-      ? shouldReplaceTouchTarget(bestDistance, distance)
-      : distance < bestDistance;
-    if (replaces) {
+    if (distance < bestDistance) {
       best = candidate;
       bestDistance = distance;
     }
   }
-  return best;
+  // Compare the nearest challenger against the original lock once. Updating
+  // the lock while scanning made the result depend on enemy spawn order.
+  return holding && !shouldReplaceTouchTarget(distanceSquared(current as T), bestDistance) ? current : best;
 }
 
 /** Safe haptic feedback trigger for mobile devices supporting vibration */
@@ -82,4 +81,3 @@ export function triggerHaptic(pattern: number | number[] = 12) {
     // Ignore environments where vibrate is restricted or blocked
   }
 }
-

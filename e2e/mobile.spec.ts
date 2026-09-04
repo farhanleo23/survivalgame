@@ -74,6 +74,27 @@ test("automatically presents touch instructions and omits the live lobby rendere
   await expect(page.locator("main")).toHaveAttribute("data-input-mode", "touch");
 });
 
+test("the dash button moves a stationary operator without holding the stick", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.goto("/?qa=1");
+  await deploy(page);
+  const canvas = page.locator(".game-canvas");
+  await expect(canvas).toHaveAttribute("data-player-x", /.+/);
+  await dispatchTouch(page.getByRole("button", { name: "DASH", exact: true }), "touchstart", 31);
+  await expect.poll(async () => canvas.evaluate((element) => Math.hypot(
+    Number((element as HTMLElement).dataset.playerX), Number((element as HTMLElement).dataset.playerZ),
+  ))).toBeGreaterThan(1.5);
+  const fire = page.getByRole("button", { name: "Fire weapon with automatic aim" });
+  await dispatchTouch(fire, "touchstart", 32);
+  await dispatchTouch(fire, "touchend", 32);
+  const stick = page.getByTestId("mobile-joystick");
+  await dispatchTouch(stick, "touchstart", 33, { x: 0.8, y: 0.5 });
+  await dispatchTouch(stick, "touchend", 33);
+  expect(errors).toEqual([]);
+});
+
 test("blocks portrait combat, resumes in landscape, and exposes analog controls", async ({ page }) => {
   await page.goto("/");
   await deploy(page);

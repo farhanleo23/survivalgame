@@ -56,6 +56,7 @@ const MAX_REDEPLOYS = 3;
 
 export function Deadwave() {
   const [profile, setProfile] = useState<ProfileV1>(() => createDefaultProfile());
+  const profileRef = useRef(profile);
   const [screen, setScreen] = useState<GameScreen>("lobby");
   const [hud, setHud] = useState<HudState>(initialHud);
   const [hydrated, setHydrated] = useState(false);
@@ -90,7 +91,9 @@ export function Deadwave() {
       // The whole game sits behind this flag, so nothing a stored profile can
       // do is allowed to strand the player on the boot screen.
       try {
-        setProfile(loadProfile(getLocalStorage()));
+        const saved = loadProfile(getLocalStorage());
+        profileRef.current = saved;
+        setProfile(saved);
       } finally {
         setHydrated(true);
       }
@@ -149,12 +152,13 @@ export function Deadwave() {
   const orientationBlocked = inputMode === "touch" && capabilities.portrait && screen === "playing";
 
   const commitProfile = useCallback((updater: (current: ProfileV1) => ProfileV1) => {
-    setProfile((current) => {
-      const next = updater(current);
-      saveProfile(getLocalStorage(), next);
-      engineRef.current?.setProfile(next);
-      return next;
-    });
+    // Keep commits synchronous for consecutive pickups/purchases, but perform
+    // storage and engine callbacks outside React's replayable state updater.
+    const next = updater(profileRef.current);
+    profileRef.current = next;
+    saveProfile(getLocalStorage(), next);
+    engineRef.current?.setProfile(next);
+    setProfile(next);
   }, []);
 
   useEffect(() => {
@@ -1150,6 +1154,7 @@ function MobileControls({
   reloading: boolean;
   onPause: () => void;
 }) {
+  const controlsRef = useRef<HTMLDivElement>(null);
   const joystickRef = useRef<HTMLDivElement>(null);
   const knobRef = useRef<HTMLSpanElement>(null);
   const fireButtonRef = useRef<HTMLButtonElement>(null);
@@ -1226,19 +1231,16 @@ function MobileControls({
     onMoveRef.current(vector.x, vector.z);
   }, []);
 
-  // React registers its root touchstart listener as passive, so the
-  // preventDefault() in the JSX handler below is silently dropped. The stick is
-  // the one control where that matters: a drag that the browser is still free
-  // to interpret picks up a text selection or a scroll on the way. Claim the
-  // gesture here, non-passively, on the element itself.
+  // React's touchstart listener is passive. Claim gestures natively for the
+  // whole control pad so sticks and buttons cannot trigger scroll/ghost clicks.
   useEffect(() => {
-    const stick = joystickRef.current;
-    if (!stick) return;
+    const controls = controlsRef.current;
+    if (!controls) return;
     const claimGesture = (event: globalThis.TouchEvent) => {
       if (event.cancelable) event.preventDefault();
     };
-    stick.addEventListener("touchstart", claimGesture, { passive: false });
-    return () => stick.removeEventListener("touchstart", claimGesture);
+    controls.addEventListener("touchstart", claimGesture, { passive: false });
+    return () => controls.removeEventListener("touchstart", claimGesture);
   }, []);
 
   useEffect(() => {
@@ -1301,14 +1303,14 @@ function MobileControls({
     event: React.SyntheticEvent,
     action: "dash" | "reload" | "swap",
   ) => {
-    event.preventDefault();
+    if (event.type !== "touchstart") event.preventDefault();
     event.stopPropagation();
     triggerHaptic(action === "dash" ? 18 : action === "reload" ? [10, 30, 10] : 12);
     onAction(action);
   };
 
   return (
-    <div className="mobile-combat-controls" aria-label="Touch combat controls" data-testid="mobile-controls">
+    <div ref={controlsRef} className="mobile-combat-controls" aria-label="Touch combat controls" data-testid="mobile-controls">
       <div
         ref={joystickRef}
         className="mobile-joystick"
@@ -1316,7 +1318,6 @@ function MobileControls({
         aria-label="Analog movement joystick"
         data-testid="mobile-joystick"
         onTouchStart={(event) => {
-          event.preventDefault();
           event.stopPropagation();
           if (moveContactRef.current !== null) return;
           const touch = event.changedTouches[0];
@@ -1370,7 +1371,6 @@ function MobileControls({
           className="touch-action touch-pause"
           aria-label="Pause operation"
           onTouchStart={(event) => {
-            event.preventDefault();
             event.stopPropagation();
             onPause();
           }}
@@ -1421,7 +1421,6 @@ function MobileControls({
           className="touch-fire"
           aria-label="Fire weapon with automatic aim"
           onTouchStart={(event) => {
-            event.preventDefault();
             event.stopPropagation();
             const touch = event.changedTouches[0];
             if (!touch || !beginFiring()) return;
