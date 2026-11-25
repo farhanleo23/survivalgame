@@ -1,0 +1,32 @@
+[
+  {
+    "device": "desktop",
+    "seed": 19092026,
+    "enemies": 36,
+    "frames": 240,
+    "dpr": 1,
+    "cpuMedianMs": 2.4000000059604645,
+    "cpuP95Ms": 2.9000000059604645,
+    "frameMedianMs": 70.5,
+    "frameP95Ms": 82.39999997615814,
+    "calls": 1,
+    "triangles": 2,
+    "geometries": 124,
+    "textures": 51
+  },
+  {
+    "device": "mobile-emulation",
+    "seed": 19092026,
+    "enemies": 36,
+    "frames": 240,
+    "dpr": 1,
+    "cpuMedianMs": 2.2000000178813934,
+    "cpuP95Ms": 2.600000023841858,
+    "frameMedianMs": 32.099999994039536,
+    "frameP95Ms": 34.60000002384186,
+    "calls": 1,
+    "triangles": 2,
+    "geometries": 80,
+    "textures": 51
+  }
+]

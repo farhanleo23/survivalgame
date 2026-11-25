@@ -30,6 +30,12 @@ interface EngineMethods {
   updatePlayer(dt: number): void;
   updateProjectiles(dt: number): void;
   updatePickups(dt: number): void;
+  updateHazards(dt: number): void;
+  updateBarrels(dt: number): void;
+  explodeBarrel(barrel: { mesh: THREE.Group; active: boolean; chainTimer?: number }): void;
+  damagePlayer(amount: number): void;
+  reload(): void;
+  triggerOverdrive(): void;
   completeWave(): void;
   startWave(wave: number): void;
   setProfile(profile: ProfileV1): void;
@@ -188,7 +194,7 @@ describe("supplies and wave transitions", () => {
     engine.playerHealth = 90; engine.weaponStates.get("pistol")!.reserve = 0;
     engine.updatePickups(1 / 60);
     expect(engine.pickups).toHaveLength(0); expect(engine.playerHealth).toBe(100);
-    expect(engine.spawnFloatingText).toHaveBeenCalledWith(expect.anything(), "+10 HP 💚", "health");
+    expect(engine.spawnFloatingText).toHaveBeenCalledWith(expect.anything(), "+10 HP", "health");
   });
 
   it("banks a magnet sweep in one profile update", () => {
@@ -262,5 +268,189 @@ describe("collision math", () => {
     const position = { x: 1.2, z: 0 }; const velocity = { x: -2, z: 3 };
     resolveCircleObstacle(position, 0.5, { x: 0, z: 0, hx: 1, hz: 1 }, velocity);
     expect(position.x).toBeCloseTo(1.5); expect(velocity).toEqual({ x: 0, z: 3 });
+  });
+});
+
+describe("kinetic combat systems and bug regressions", () => {
+  it("completes an active tactical reload inside the sweet spot and overcharges the magazine", () => {
+    const engine = engineHarness();
+    const pistol = engine.weaponStates.get("pistol")!;
+    pistol.magazine = 0;
+    pistol.reloading = 0.45;
+    pistol.reloadDuration = 1.0; // progress = 0.55 (inside 0.48..0.72)
+    engine.reload();
+    expect(pistol.reloading).toBe(0);
+    expect(pistol.magazine).toBe(WEAPONS.pistol.magazine);
+    expect(pistol.overchargedRounds).toBe(WEAPONS.pistol.magazine);
+    expect((engine as unknown as { overdriveCharge: number }).overdriveCharge).toBe(15);
+  });
+
+  it("penalizes a missed active tactical reload with a jam delay", () => {
+    const engine = engineHarness();
+    const pistol = engine.weaponStates.get("pistol")!;
+    pistol.magazine = 0;
+    pistol.reloading = 0.9;
+    pistol.reloadDuration = 1.0; // progress = 0.10 (too early)
+    engine.reload();
+    expect(pistol.reloading).toBeCloseTo(1.15);
+    expect(pistol.overchargedRounds ?? 0).toBe(0);
+  });
+
+  it("triggers Perfect Dodge once per dash when evading an incoming hit", () => {
+    const engine = engineHarness();
+    delete (engine as unknown as Record<string, unknown>).damagePlayer;
+    engine.startDash();
+    const beforeCooldown = engine.dashCooldown;
+    engine.damagePlayer(25);
+    expect(engine.playerHealth).toBe(100);
+    expect(engine.dashCooldown).toBeLessThan(beforeCooldown);
+    expect((engine as unknown as { overdriveCharge: number }).overdriveCharge).toBe(22);
+    expect((engine as unknown as { perfectDodgeShotBuff: boolean }).perfectDodgeShotBuff).toBe(true);
+    // Second hit in the same dash does not double-trigger Perfect Dodge.
+    engine.damagePlayer(25);
+    expect((engine as unknown as { overdriveCharge: number }).overdriveCharge).toBe(22);
+  });
+
+  it("activates Overdrive at 100% charge, refills the active magazine, and pushes back nearby enemies", () => {
+    const engine = engineHarness();
+    const closeEnemy = enemy(2, 0, 0.5);
+    engine.enemies = [closeEnemy];
+    engine.weaponStates.get("pistol")!.magazine = 2;
+    (engine as unknown as { overdriveCharge: number }).overdriveCharge = 100;
+    (engine as unknown as { clearTelegraph: () => void }).clearTelegraph = vi.fn();
+    engine.triggerOverdrive();
+    expect((engine as unknown as { overdriveRemaining: number }).overdriveRemaining).toBeGreaterThan(0);
+    expect((engine as unknown as { overdriveCharge: number }).overdriveCharge).toBe(0);
+    expect(engine.weaponStates.get("pistol")!.magazine).toBe(WEAPONS.pistol.magazine);
+    expect(closeEnemy.health).toBeLessThan(100);
+  });
+
+  it("refills a dry holstered secondary weapon when the active weapon is already full", () => {
+    const engine = engineHarness();
+    engine.profile = { ...engine.profile, ownedWeapons: ["pistol", "smg"], equippedLoadout: ["pistol", "smg"] };
+    engine.loadout = ["pistol", "smg"];
+    engine.weaponStates.set("smg", {
+      id: "smg", rank: 1, magazine: WEAPONS.smg.magazine, reserve: 0, cooldown: 0, reloading: 0,
+    });
+    engine.pickups = [pickup("ammo")];
+    engine.updatePickups(1 / 60);
+    expect(engine.pickups).toHaveLength(0);
+    expect(engine.weaponStates.get("smg")!.reserve).toBeGreaterThan(0);
+  });
+
+  it("damages the operator inside hostile Toxic Bloom pools while friendly acid trails stay safe", () => {
+    const engine = engineHarness();
+    (engine as unknown as { hazards: Array<Record<string, unknown>> }).hazards = [
+      { mesh: new THREE.Group(), x: 0, z: 0, radius: 2, dps: 40, life: 5, maxLife: 5, tickTimer: 0, hostile: false },
+    ];
+    engine.updateHazards(1 / 60);
+    expect(engine.damagePlayer).not.toHaveBeenCalled();
+
+    (engine as unknown as { hazards: Array<Record<string, unknown>> }).hazards = [
+      { mesh: new THREE.Group(), x: 0, z: 0, radius: 2, dps: 26, life: 5, maxLife: 5, tickTimer: 0, hostile: true },
+    ];
+    engine.updateHazards(1 / 60);
+    expect(engine.damagePlayer).toHaveBeenCalledOnce();
+  });
+
+  it("amplifies ricochet damage and refreshes piercing when Rail-Bounce fusion is active", () => {
+    const engine = engineHarness();
+    (engine as unknown as { unlockedFusions: Set<string> }).unlockedFusions = new Set(["rail_bounce"]);
+    const shot = bullet({ bouncesRemaining: 1, maxPierces: 1, damage: 20 });
+    (shot as unknown as { pierceCount: number }).pierceCount = 1;
+    engine.obstacles = [{ x: 0.7, z: 0, hx: 0.1, hz: 1 }];
+    engine.enemies = [enemy(-2, 2)];
+    engine.projectiles = [shot];
+    engine.updateProjectiles(1 / 60);
+    expect(shot.damage).toBe(29);
+    expect((shot as unknown as { pierceCount: number }).pierceCount).toBe(0);
+  });
+
+  it("chain-detonates nearby explosive barrels after a short fuse delay", () => {
+    const engine = engineHarness();
+    delete (engine as unknown as Record<string, unknown>).explodeBarrel;
+    const barrelA = { mesh: new THREE.Group(), active: true };
+    const barrelB = { mesh: new THREE.Group(), active: true };
+    barrelB.mesh.position.set(3, 0, 0);
+    engine.barrels = [barrelA, barrelB];
+    (engine as unknown as { audio: Record<string, unknown> }).audio.playExplosion = vi.fn();
+    (engine as unknown as { visuals: Record<string, unknown> }).visuals.addBloodDecal = vi.fn();
+    (engine as unknown as { barrelBlastGeometry: THREE.BufferGeometry }).barrelBlastGeometry = new THREE.SphereGeometry(1, 4, 4);
+    engine.explodeBarrel(barrelA);
+    expect(barrelA.active).toBe(false);
+    expect((barrelB as { chainTimer?: number }).chainTimer).toBeGreaterThan(0);
+    engine.updateBarrels(0.2);
+    expect(barrelB.active).toBe(false);
+  });
+
+  it("throws a tactical frag grenade that detonates after its fuse and damages nearby enemies", () => {
+    const engine = engineHarness();
+    const target = enemy(3, 0, 0.5);
+    engine.enemies = [target];
+    (engine as unknown as { mouseWorldPos: THREE.Vector3 }).mouseWorldPos = new THREE.Vector3(3, 0, 0);
+    (engine as unknown as { grenades: unknown[] }).grenades = [];
+    (engine as unknown as { grenadeCooldown: number }).grenadeCooldown = 0;
+    (engine as unknown as { grenadeCooldownTotal: number }).grenadeCooldownTotal = 8;
+    (engine as unknown as { clearTelegraph: () => void }).clearTelegraph = vi.fn();
+    (engine as unknown as { audio: Record<string, unknown> }).audio.playExplosion = vi.fn();
+    (engine as unknown as { throwGrenade(): void }).throwGrenade();
+    expect((engine as unknown as { grenades: unknown[] }).grenades).toHaveLength(1);
+    expect((engine as unknown as { grenadeCooldown: number }).grenadeCooldown).toBe(8);
+    for (let i = 0; i < 60; i += 1) (engine as unknown as { updateGrenades(dt: number): void }).updateGrenades(1 / 60);
+    expect((engine as unknown as { grenades: unknown[] }).grenades).toHaveLength(0);
+    expect(target.health).toBeLessThan(100);
+  });
+
+  it("teleport-executes a wounded enemy with Cyber-Blade, refills ammo, heals, and resets cooldown", () => {
+    const engine = engineHarness();
+    const wounded = enemy(5, 0, 0.5) as TestEnemy & { maxHealth: number };
+    wounded.health = 30;
+    wounded.maxHealth = 100;
+    engine.enemies = [wounded];
+    engine.playerHealth = 70;
+    engine.weaponStates.get("pistol")!.magazine = 2;
+    (engine as unknown as { bladeCooldown: number }).bladeCooldown = 0;
+    (engine as unknown as { techEnergy: number }).techEnergy = 40;
+    (engine as unknown as { clearTelegraph: () => void }).clearTelegraph = vi.fn();
+    (engine as unknown as { performBladeSlash(): void }).performBladeSlash();
+    expect(engine.playerMesh.position.x).toBeGreaterThan(4);
+    expect(wounded.health).toBeLessThanOrEqual(0);
+    expect(engine.playerHealth).toBe(80);
+    expect(engine.weaponStates.get("pistol")!.magazine).toBe(WEAPONS.pistol.magazine);
+    expect((engine as unknown as { bladeCooldown: number }).bladeCooldown).toBeLessThan(0.2);
+  });
+
+  it("deflects incoming enemy projectiles back toward hostiles on Cyber-Blade slash", () => {
+    const engine = engineHarness();
+    const spit = bullet({ enemy: true, damage: 15, velocity: new THREE.Vector3(-9, 0, 0) });
+    spit.mesh.position.set(1.5, 1, 0);
+    engine.projectiles = [spit];
+    (engine as unknown as { bladeCooldown: number }).bladeCooldown = 0;
+    (engine as unknown as { performBladeSlash(): void }).performBladeSlash();
+    expect(spit.enemy).toBe(false);
+    expect(spit.velocity.x).toBeGreaterThan(0);
+    expect(spit.damage).toBeGreaterThanOrEqual(60);
+  });
+
+  it("links two deployed Tesla Pylons into a damaging electric laser fence", () => {
+    const engine = engineHarness();
+    (engine as unknown as { techEnergy: number }).techEnergy = 100;
+    (engine as unknown as { deployables: unknown[] }).deployables = [];
+    (engine as unknown as { laserFences: unknown[] }).laserFences = [];
+    (engine as unknown as { visuals: Record<string, unknown> }).visuals.createTeslaPylon = () => new THREE.Group();
+    (engine as unknown as { visuals: Record<string, unknown> }).visuals.createLaserFenceBeam = () => new THREE.Group();
+    (engine as unknown as { visuals: Record<string, unknown> }).visuals.createShockwaveMesh = () => new THREE.Group();
+    (engine as unknown as { damageFeedback: { add: ReturnType<typeof vi.fn> } }).damageFeedback = { add: vi.fn() };
+    engine.playerMesh.position.set(0, 0, 0);
+    engine.aim.set(1, 0, 0);
+    (engine as unknown as { deployPylon(): void }).deployPylon();
+    engine.playerMesh.position.set(5, 0, 0);
+    (engine as unknown as { deployPylon(): void }).deployPylon();
+    expect((engine as unknown as { laserFences: unknown[] }).laserFences).toHaveLength(1);
+
+    const crossing = enemy(4.5, 0, 0.5);
+    engine.enemies = [crossing];
+    (engine as unknown as { updateDeployables(dt: number): void }).updateDeployables(0.2);
+    expect(crossing.health).toBeLessThan(100);
   });
 });

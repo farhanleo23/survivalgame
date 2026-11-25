@@ -1,0 +1,10 @@
+Deadwave includes selected glTF exports from the Quaternius Zombie Apocalypse Kit:
+https://quaternius.com/packs/zombieapocalypsekit.html
+
+The pack is released under the Creative Commons Zero (CC0) Public Domain
+Dedication. The selected character models and animation clips are bundled
+locally in this directory and are used under that dedication.
+
+Kit creator: Quaternius
+License: CC0 1.0 Universal
+https://creativecommons.org/publicdomain/zero/1.0/

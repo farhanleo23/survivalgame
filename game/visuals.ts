@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { COMIC, ComicPalette, inkInPlace, inkOutline } from "./comic";
 import { CharacterFactory, type CharacterKind, type CharacterRig } from "./characters";
+import { EnvironmentAssets } from "./environment-assets";
 import type { ArenaTheme } from "./arenas";
 import type { EnemyDefinition, EnemyId, WeaponId } from "./types";
 
@@ -37,6 +38,7 @@ export class VisualFactory {
 
   private bloodMaterial: THREE.MeshBasicMaterial;
   private acidMaterial: THREE.MeshBasicMaterial;
+  private scorchMaterial: THREE.MeshBasicMaterial;
   private decalGeometry = new THREE.PlaneGeometry(1, 1);
   private decals: THREE.Mesh[] = [];
   private textures: THREE.Texture[] = [];
@@ -53,21 +55,28 @@ export class VisualFactory {
   private geometryCache = new Map<string, THREE.BufferGeometry>();
   private materialCache = new Map<string, THREE.Material>();
   private disposed = false;
+  private environment = new EnvironmentAssets();
+  private concreteTexture?: THREE.Texture;
+  private puddleRoughnessTexture?: THREE.Texture;
+  private identity: ArenaTheme["identity"] = "depot";
 
   constructor(private renderer: THREE.WebGLRenderer) {
     this.characters = new CharacterFactory(this.palette);
     this.bloodMaterial = this.palette.flat(COMIC.blood, { transparent: true, opacity: 0.9 });
-    this.bloodMaterial.map = this.track(this.createSplatTexture("#d11a4a", "#8c0f30"));
-    this.acidMaterial = this.palette.flat(COMIC.acid, { transparent: true, opacity: 0.9 });
-    this.acidMaterial.map = this.track(this.createSplatTexture("#6dff2f", "#2f9410"));
+    this.bloodMaterial.map = this.track(this.createSplatTexture("#d11a4a", "#780b28"));
+    this.acidMaterial = this.palette.flat(COMIC.acid, { transparent: true, opacity: 0.88 });
+    this.acidMaterial.map = this.track(this.createSplatTexture("#5eff3b", "#1d7a14"));
+    this.scorchMaterial = this.palette.flat(0x0b0f15, { transparent: true, opacity: 0.82 });
+    this.scorchMaterial.map = this.track(this.createSplatTexture("#090d12", "#261c18"));
     this.bloodMaterial.depthWrite = false;
     this.acidMaterial.depthWrite = false;
+    this.scorchMaterial.depthWrite = false;
   }
 
   /** Resolves once every character model is decoded and cached. */
   async ready() {
     try {
-      await this.characters.preload();
+      await Promise.all([this.characters.preload(), this.environment.ready()]);
     } catch (error) {
       console.warn("Character models could not be preloaded.", error);
     }
@@ -135,40 +144,21 @@ export class VisualFactory {
     return new THREE.CanvasTexture(canvas);
   }
 
-  /** Painted concrete: bright slab colour with inked seams and speckle. */
-  private createFloorTexture(theme: ArenaTheme): THREE.CanvasTexture {
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = theme.floorLight;
-      ctx.fillRect(0, 0, 256, 256);
-
-      ctx.fillStyle = theme.floorDark;
-      ctx.fillRect(0, 0, 128, 128);
-      ctx.fillRect(128, 128, 128, 128);
-
-      // Bold slab seams — the comic equivalent of grout lines.
-      ctx.strokeStyle = theme.seam;
-      ctx.lineWidth = 5;
-      ctx.beginPath();
-      ctx.moveTo(128, 0);
-      ctx.lineTo(128, 256);
-      ctx.moveTo(0, 128);
-      ctx.lineTo(256, 128);
-      ctx.stroke();
-
-      ctx.fillStyle = theme.speckle;
-      for (let i = 0; i < 90; i += 1) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        ctx.fillRect(x, y, 2 + Math.random() * 3, 2 + Math.random() * 3);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
+  /** Quiet albedo under arena-specific wear; no checkerboard or screen-space texture. */
+  private createFloorTexture(): THREE.Texture {
+    if (this.concreteTexture) return this.concreteTexture;
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1024;
+    const context = canvas.getContext("2d");
+    if (context) { context.fillStyle = "#8e9ba2"; context.fillRect(0, 0, 1024, 1024); }
+    const texture: THREE.Texture = new THREE.CanvasTexture(canvas);
+    this.concreteTexture = texture;
+    new THREE.TextureLoader().load("/textures/depot-concrete.jpg", loaded => {
+      if (!this.disposed) { texture.image = loaded.image; texture.needsUpdate = true; }
+      loaded.dispose();
+    }, undefined, () => { /* Keep the neutral fallback. */ });
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(11, 11);
-    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.repeat.set(7, 7); texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
     return texture;
   }
 
@@ -178,9 +168,9 @@ export class VisualFactory {
     canvas.width = canvas.height = 64;
     const ctx = canvas.getContext("2d");
     if (ctx) {
-      ctx.fillStyle = "#ffc61e";
+      ctx.fillStyle = "#bba16c";
       ctx.fillRect(0, 0, 64, 64);
-      ctx.fillStyle = "#191324";
+      ctx.fillStyle = "#37434a";
       ctx.lineWidth = 0;
       for (let i = -64; i < 128; i += 32) {
         ctx.beginPath();
@@ -198,51 +188,130 @@ export class VisualFactory {
     return texture;
   }
 
+  /** Procedural rain-puddle roughness map so dynamic lights shimmer across wet patches. */
+  private createPuddleRoughnessTexture(): THREE.Texture {
+    if (this.puddleRoughnessTexture) return this.puddleRoughnessTexture;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 512;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#c8c8c8"; // dry matte concrete
+      ctx.fillRect(0, 0, 512, 512);
+      // Organic wet rain puddles with low roughness (dark values)
+      for (let i = 0; i < 22; i += 1) {
+        const x = ((i * 97) % 440) + 36;
+        const y = ((i * 151) % 440) + 36;
+        const r = 24 + (i % 5) * 14;
+        const grad = ctx.createRadialGradient(x, y, r * 0.2, x, y, r);
+        grad.addColorStop(0, "#1c1c1c");
+        grad.addColorStop(0.65, "#3a3a3a");
+        grad.addColorStop(1, "rgba(200,200,200,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Subtle concrete panel seams
+      ctx.strokeStyle = "#888888";
+      ctx.lineWidth = 2;
+      for (let p = 0; p < 512; p += 128) {
+        ctx.beginPath();
+        ctx.moveTo(p, 0);
+        ctx.lineTo(p, 512);
+        ctx.moveTo(0, p);
+        ctx.lineTo(512, p);
+        ctx.stroke();
+      }
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(3, 3);
+    this.puddleRoughnessTexture = this.track(texture);
+    return texture;
+  }
+
   // ------------------------------------------------------------------ ground
 
   createGround(theme: ArenaTheme) {
+    this.identity = theme.identity;
     const group = new THREE.Group();
 
-    const floorMaterial = this.palette.toon(0xffffff);
-    floorMaterial.map = this.track(this.createFloorTexture(theme));
+    // Moody wet PBR concrete/asphalt floor so muzzle flashes, fireballs,
+    // operator headlamp, and neon floodlights gleam across the surface!
+    const floorTint =
+      theme.identity === "floodbay"
+        ? 0x204757
+        : theme.identity === "garage"
+          ? 0x2c333c
+          : theme.identity === "rooftop"
+            ? 0x3f3936
+            : 0x33414e;
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: floorTint,
+      map: this.track(this.createFloorTexture()),
+      roughnessMap: this.createPuddleRoughnessTexture(),
+      roughness: theme.identity === "floodbay" ? 0.32 : 0.68,
+      metalness: theme.identity === "floodbay" ? 0.42 : 0.22,
+    });
     const floor = new THREE.Mesh(this.own(new THREE.PlaneGeometry(46, 46)), floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     group.add(floor);
 
-    // Painted centre pad. Full-strength paint, not the old 8%-opacity ghosting.
+    // Subtle tactical concrete expansion grid
+    const seams = this.palette.flat(0x0d161e, { transparent: true, opacity: 0.35 });
+    const seamGeoV = this.own(new THREE.PlaneGeometry(0.05, 37));
+    const seamGeoH = this.own(new THREE.PlaneGeometry(37, 0.05));
+    for (const pos of [-12, -4, 4, 12]) {
+      const jointV = new THREE.Mesh(seamGeoV, seams);
+      jointV.rotation.x = -Math.PI / 2;
+      jointV.position.set(pos, 0.011, 0);
+      group.add(jointV);
+
+      const jointH = new THREE.Mesh(seamGeoH, seams);
+      jointH.rotation.x = -Math.PI / 2;
+      jointH.position.set(0, 0.011, pos);
+      group.add(jointH);
+    }
+
+    // Central tactical evacuation helipad stencil markings
     const padOuter = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(6.8, 7.2, 64)),
-      this.palette.flat(theme.paint, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+      this.own(new THREE.RingGeometry(3.45, 3.65, 48)),
+      this.palette.flat(theme.paint, { transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
     );
     padOuter.rotation.x = -Math.PI / 2;
-    padOuter.position.y = 0.02;
+    padOuter.position.y = 0.015;
     group.add(padOuter);
 
     const padInner = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(3.5, 3.78, 48)),
-      this.palette.flat(COMIC.hazardStripe, { transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+      this.own(new THREE.RingGeometry(1.7, 1.78, 36)),
+      this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.22, side: THREE.DoubleSide }),
     );
     padInner.rotation.x = -Math.PI / 2;
-    padInner.position.y = 0.021;
+    padInner.position.y = 0.016;
     group.add(padInner);
 
-    const tickMaterial = this.palette.flat(COMIC.paper, { transparent: true, opacity: 0.7, side: THREE.DoubleSide });
-    const tickGeometry = this.own(new THREE.PlaneGeometry(0.42, 1.9));
+    const tickGeo = this.own(new THREE.PlaneGeometry(0.18, 0.95));
+    const tickMat = this.palette.flat(theme.paint, { transparent: true, opacity: 0.42 });
     for (let i = 0; i < 4; i += 1) {
       const angle = (i * Math.PI) / 2;
-      const tick = new THREE.Mesh(tickGeometry, tickMaterial);
+      const tick = new THREE.Mesh(tickGeo, tickMat);
       tick.rotation.x = -Math.PI / 2;
       tick.rotation.z = angle;
-      tick.position.set(Math.cos(angle) * 5.3, 0.022, Math.sin(angle) * 5.3);
+      tick.position.set(Math.sin(angle) * 4.2, 0.016, Math.cos(angle) * 4.2);
       group.add(tick);
     }
 
-    // Hazard kerbs marking the playable boundary.
+    // Hazard kerbs marking the playable boundary + thin glowing neon edge strips
     const hazardMaterial = this.palette.flat(0xffffff, { side: THREE.DoubleSide });
     hazardMaterial.map = this.track(this.createHazardTexture());
     hazardMaterial.map.repeat.set(24, 1);
-    const stripeGeometry = this.own(new THREE.PlaneGeometry(37, 0.9));
+    const stripeGeometry = this.own(new THREE.PlaneGeometry(37, 0.32));
+    const glowStripGeo = this.own(new THREE.PlaneGeometry(36.4, 0.06));
+    const glowStripMat = this.palette.flat(theme.identity === "floodbay" ? COMIC.electric : COMIC.hazardYellow, {
+      transparent: true,
+      opacity: 0.65,
+    });
     for (const [x, z, rotation] of [
       [0, -18.2, 0],
       [0, 18.2, 0],
@@ -252,19 +321,25 @@ export class VisualFactory {
       const stripe = new THREE.Mesh(stripeGeometry, hazardMaterial);
       stripe.rotation.x = -Math.PI / 2;
       stripe.rotation.z = rotation;
-      stripe.position.set(x, 0.023, z);
+      stripe.position.set(x, 0.02, z);
       group.add(stripe);
+
+      const glowStrip = new THREE.Mesh(glowStripGeo, glowStripMat);
+      glowStrip.rotation.x = -Math.PI / 2;
+      glowStrip.rotation.z = rotation;
+      glowStrip.position.set(x * 0.975, 0.022, z * 0.975);
+      group.add(glowStrip);
     }
 
-    // Lane guides give the eye some structure across the open middle.
-    const laneMaterial = this.palette.flat(COMIC.paper, { transparent: true, opacity: 0.28 });
-    const laneGeometry = this.own(new THREE.PlaneGeometry(0.16, 2.6));
+    // Subtle worn bay lane dashes
+    const laneMaterial = this.palette.flat(theme.paint, { transparent: true, opacity: 0.18 });
+    const laneGeometry = this.own(new THREE.PlaneGeometry(0.14, 2.2));
     for (let i = -3; i <= 3; i += 1) {
       for (let j = -2; j <= 2; j += 1) {
         if (Math.abs(i) < 2 && Math.abs(j) < 2) continue;
         const lane = new THREE.Mesh(laneGeometry, laneMaterial);
         lane.rotation.x = -Math.PI / 2;
-        lane.position.set(i * 4.6, 0.019, j * 6.2);
+        lane.position.set(i * 4.6, 0.018, j * 6.2);
         group.add(lane);
       }
     }
@@ -313,67 +388,28 @@ export class VisualFactory {
   }
 
   addSetDressing(scene: THREE.Object3D, theme: ArenaTheme) {
-    const ink = this.palette.outlineMaterial();
-
-    // Distant silhouetted skyline: flat unlit blocks that read as backdrop art.
-    const skylineMaterial = this.palette.flat(theme.skyline);
-    const skylineGeometry = this.own(new THREE.BoxGeometry(1, 1, 1));
-    for (let i = 0; i < 26; i += 1) {
-      const angle = (i / 26) * Math.PI * 2;
-      const distance = 30 + Math.random() * 9;
-      const height = 6 + Math.random() * 15;
-      const building = new THREE.Mesh(skylineGeometry, skylineMaterial);
-      building.position.set(Math.cos(angle) * distance, height / 2, Math.sin(angle) * distance);
-      building.scale.set(3 + Math.random() * 4, height, 3 + Math.random() * 4);
-      building.rotation.y = Math.random() * Math.PI;
-      scene.add(building);
+    for (const [x, z, rotation] of [[-13, -25, 0], [11, -25, 0], [-25, 7, Math.PI / 2], [25, 7, Math.PI / 2]]) {
+      const name = theme.identity === "rooftop" ? "building-h" : "building-a";
+      const prop = this.industrial(name, 14, 7, theme.identity === "garage" ? 6 : 8);
+      prop.position.set(x, 0, z); prop.rotation.y = rotation; scene.add(prop);
     }
-
-    // Overhead gantry frames the arena and casts long graphic shadows.
-    const beamMaterial = this.palette.toon(COMIC.rust);
-    const beamGeometry = this.own(new RoundedBoxGeometry(40, 0.55, 0.55, 2, 0.06));
-    for (const z of [-13, 13]) {
-      const beam = new THREE.Mesh(beamGeometry, beamMaterial);
-      beam.position.set(0, 7.4, z);
-      inkInPlace(beam, ink, 0.05);
-      scene.add(beam);
+    const feature = theme.identity === "rooftop" ? "solar-panel-landscape" : theme.identity === "floodbay" ? "water-tower" : theme.identity === "garage" ? "pickup-truck" : "shipping-container-a";
+    for (const x of [-14, 14]) {
+      const prop = this.industrial(feature, theme.identity === "garage" ? 5 : 4, 3, theme.identity === "floodbay" ? 6 : 2);
+      prop.position.set(x, 0, 23); scene.add(prop);
     }
   }
 
-  // ------------------------------------------------------------------- props
+  private industrial(name: string, width: number, depth: number, height: number) {
+    const shell = new THREE.Mesh(this.cachedGeometry(`cover:${width}:${depth}:${height}`, () => new THREE.BoxGeometry(width, height, depth)),
+      this.cachedMaterial("cover:steel", () => this.palette.toon(COMIC.steel)));
+    shell.position.y = height / 2; shell.castShadow = true; shell.receiveShadow = true;
+    return this.environment.create(name, width, depth, height, shell);
+  }
 
   createDepotStructure(width: number, depth: number, colorVariant = COMIC.steel) {
-    const group = new THREE.Group();
-    const ink = this.palette.outlineMaterial();
-    const height = 2.3;
-
-    const shell = inkOutline(
-      this.own(new RoundedBoxGeometry(width, height, depth, 3, 0.08)),
-      this.palette.toon(colorVariant),
-      ink,
-      0.022,
-    );
-    shell.position.y = height / 2;
-    group.add(shell);
-
-    const roof = new THREE.Mesh(
-      this.own(new RoundedBoxGeometry(width * 1.08, 0.28, depth * 1.08, 2, 0.05)),
-      this.palette.toon(COMIC.hazardStripe),
-    );
-    roof.position.y = height + 0.1;
-    inkInPlace(roof, ink, 0.03);
-    group.add(roof);
-
-    // Lit windows punch holes in the mass so it doesn't read as a solid slab.
-    const windowMaterial = this.palette.flat(COMIC.hazardYellow);
-    const windowGeometry = this.own(new THREE.PlaneGeometry(0.42, 0.55));
-    for (let i = -1; i <= 1; i += 1) {
-      const pane = new THREE.Mesh(windowGeometry, windowMaterial);
-      pane.position.set(i * width * 0.28, height * 0.62, depth / 2 + 0.01);
-      group.add(pane);
-    }
-
-    return group;
+    void colorVariant;
+    return this.industrial(this.identity === "depot" ? "shipping-container-a" : "building-h", width, depth, this.identity === "rooftop" ? 1.7 : 2.3);
   }
 
   createBarricade(width: number, depth: number) {
@@ -579,26 +615,37 @@ export class VisualFactory {
     const ink = this.palette.outlineMaterial();
 
     const body = new THREE.Mesh(
-      this.own(new THREE.CylinderGeometry(0.42, 0.42, 1.12, 14)),
-      this.palette.toon(COMIC.hazardStripe),
+      this.own(new THREE.CylinderGeometry(0.44, 0.44, 1.15, 14)),
+      this.palette.toon(0xd93829, { emissive: 0x4a0b06, emissiveIntensity: 0.6 }),
     );
-    body.position.y = 0.56;
+    body.position.y = 0.57;
     inkInPlace(body, ink, 0.05);
     group.add(body);
 
-    const bandGeometry = this.own(new THREE.CylinderGeometry(0.45, 0.45, 0.1, 14));
-    const bandMaterial = this.palette.toon(COMIC.hazardYellow);
-    for (const y of [0.28, 0.84]) {
+    const bandGeometry = this.own(new THREE.CylinderGeometry(0.47, 0.47, 0.11, 14));
+    const bandMaterial = this.palette.flat(COMIC.hazardYellow);
+    for (const y of [0.28, 0.86]) {
       const band = new THREE.Mesh(bandGeometry, bandMaterial);
       band.position.y = y;
       group.add(band);
     }
 
-    // Hazard diamond marks it as shootable.
-    const mark = new THREE.Mesh(this.own(new THREE.PlaneGeometry(0.3, 0.3)), this.palette.flat(COMIC.ink));
-    mark.position.set(0, 0.6, 0.43);
-    mark.rotation.z = Math.PI / 4;
-    group.add(mark);
+    // Glowing red ignition cap so explosive barrels pop cleanly in low light
+    const cap = new THREE.Mesh(
+      this.own(new THREE.CylinderGeometry(0.16, 0.18, 0.08, 10)),
+      this.palette.flat(0xff5238),
+    );
+    cap.position.y = 1.18;
+    group.add(cap);
+
+    // Subtle danger halo on floor
+    const halo = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(0.48, 0.58, 18)),
+      this.palette.flat(0xff4422, { transparent: true, opacity: 0.42, side: THREE.DoubleSide }),
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = 0.03;
+    group.add(halo);
     return group;
   }
 
@@ -680,10 +727,28 @@ export class VisualFactory {
     inkInPlace(housing, ink, 0.05);
     group.add(housing);
 
-    const lens = new THREE.Mesh(this.own(new THREE.PlaneGeometry(0.8, 0.5)), this.palette.flat(color));
+    const lens = new THREE.Mesh(this.own(new THREE.PlaneGeometry(0.84, 0.54)), this.palette.flat(color));
     lens.position.set(0, 4.9, 0.44);
     lens.rotation.x = 0.45;
     group.add(lens);
+
+    // Translucent volumetric floodlight beam & soft ground light pool
+    const cone = new THREE.Mesh(
+      this.own(new THREE.ConeGeometry(2.8, 5.4, 16, 1, true)),
+      this.palette.flat(color, { transparent: true, opacity: 0.075, side: THREE.DoubleSide }),
+    );
+    cone.position.set(0, 2.35, 1.5);
+    cone.rotation.x = -0.35;
+    cone.renderOrder = 2;
+    group.add(cone);
+
+    const pool = new THREE.Mesh(
+      this.own(new THREE.CircleGeometry(3.4, 24)),
+      this.palette.flat(color, { transparent: true, opacity: 0.09, side: THREE.DoubleSide }),
+    );
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(0, 0.025, 2.5);
+    group.add(pool);
     return group;
   }
 
@@ -707,36 +772,116 @@ export class VisualFactory {
     inkInPlace(drum, ink, 0.05);
     group.add(drum);
 
-    const fire = new THREE.Mesh(this.own(new THREE.ConeGeometry(0.5, 1.0, 9)), this.palette.flat(COMIC.fire));
-    fire.position.y = 2.75;
+    const fire = new THREE.Mesh(this.own(new THREE.ConeGeometry(0.54, 1.15, 9)), this.palette.flat(COMIC.fire));
+    fire.position.y = 2.8;
     group.add(fire);
 
-    const flameTip = new THREE.Mesh(this.own(new THREE.ConeGeometry(0.26, 0.6, 8)), this.palette.flat(COMIC.hazardYellow));
-    flameTip.position.y = 2.95;
+    const flameTip = new THREE.Mesh(this.own(new THREE.ConeGeometry(0.3, 0.72, 8)), this.palette.flat(0xfff1a8));
+    flameTip.position.y = 3.0;
     group.add(flameTip);
+
+    // Warm glowing ember pool cast on the concrete below the furnace
+    const glowPool = new THREE.Mesh(
+      this.own(new THREE.CircleGeometry(3.1, 24)),
+      this.palette.flat(COMIC.fire, { transparent: true, opacity: 0.12, side: THREE.DoubleSide }),
+    );
+    glowPool.rotation.x = -Math.PI / 2;
+    glowPool.position.y = 0.026;
+    group.add(glowPool);
     return group;
   }
 
-  createSlimePool(radius = 1.4) {
+  createSlimePool(radius = 1.4, variant: "acid" | "toxic" | "napalm" = "acid") {
     const group = new THREE.Group();
     const key = radius.toFixed(2);
+    const outerColor = variant === "toxic" ? 0xd938ff : variant === "napalm" ? COMIC.fire : 0x26c736;
+    const innerColor = variant === "toxic" ? 0xff70f0 : variant === "napalm" ? 0xffe478 : 0x7aff5c;
+
+    // Dark recessed corroded ring gives depth against the concrete floor
+    const recess = new THREE.Mesh(
+      this.cachedGeometry(`slime-recess:${key}`, () => new THREE.CircleGeometry(radius * 1.08, 22)),
+      this.cachedMaterial("slime-recess", () => this.palette.flat(0x0a1414, { transparent: true, opacity: 0.72 })),
+    );
+    recess.rotation.x = -Math.PI / 2;
+    recess.position.y = 0.025;
+    group.add(recess);
 
     const pool = new THREE.Mesh(
-      this.cachedGeometry(`slime:${key}`, () => new THREE.CircleGeometry(radius, 20)),
-      this.cachedMaterial("slime-fill", () => this.palette.flat(COMIC.acid, { transparent: true, opacity: 0.85 })),
+      this.cachedGeometry(`slime:${key}`, () => new THREE.CircleGeometry(radius, 22)),
+      this.cachedMaterial(`slime-fill:${variant}`, () => this.palette.flat(outerColor, { transparent: true, opacity: 0.56 })),
     );
     pool.rotation.x = -Math.PI / 2;
-    pool.position.y = 0.03;
+    pool.position.y = 0.031;
     group.add(pool);
 
-    // Darker inner blob gives the puddle an inked edge instead of a soft one.
+    // Bright glowing toxic core + concentric bio-vein ring
     const core = new THREE.Mesh(
-      this.cachedGeometry(`slime-core:${key}`, () => new THREE.CircleGeometry(radius * 0.62, 16)),
-      this.cachedMaterial("slime-core", () => this.palette.flat(0x2f9410, { transparent: true, opacity: 0.9 })),
+      this.cachedGeometry(`slime-core:${key}`, () => new THREE.CircleGeometry(radius * 0.45, 16)),
+      this.cachedMaterial(`slime-core:${variant}`, () => this.palette.flat(innerColor, { transparent: true, opacity: 0.78 })),
     );
     core.rotation.x = -Math.PI / 2;
-    core.position.y = 0.032;
+    core.position.y = 0.036;
     group.add(core);
+
+    const rim = new THREE.Mesh(
+      this.cachedGeometry(`slime-rim:${key}`, () => new THREE.RingGeometry(Math.max(0.1, radius - 0.1), radius + 0.02, 24)),
+      this.cachedMaterial(`slime-rim:${variant}`, () =>
+        this.palette.flat(innerColor, { transparent: true, opacity: variant === "toxic" ? 0.92 : 0.6, side: THREE.DoubleSide }),
+      ),
+    );
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = 0.042;
+    group.add(rim);
+
+    // Three glossy bio-bubbles sitting on the surface
+    const bubbleGeo = this.cachedGeometry("slime-bubble", () => new THREE.SphereGeometry(0.11, 8, 6));
+    const bubbleMat = this.cachedMaterial(`slime-bubble:${variant}`, () => this.palette.flat(innerColor, { transparent: true, opacity: 0.9 }));
+    for (let i = 0; i < 3; i += 1) {
+      const a = i * 2.15 + 0.4;
+      const dist = radius * (0.28 + i * 0.16);
+      const bubble = new THREE.Mesh(bubbleGeo, bubbleMat);
+      bubble.scale.setScalar(0.75 + (i % 2) * 0.5);
+      bubble.position.set(Math.cos(a) * dist, 0.06, Math.sin(a) * dist);
+      group.add(bubble);
+    }
+    return group;
+  }
+
+  /**
+   * Orbiting golden-cyan ring and chevrons attached to Kai while Overdrive is active.
+   */
+  createOverdriveAura(): THREE.Group {
+    const group = new THREE.Group();
+    group.name = "overdrive-aura";
+
+    const outerRing = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(0.95, 1.12, 36)),
+      this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.92, side: THREE.DoubleSide }),
+    );
+    outerRing.rotation.x = -Math.PI / 2;
+    outerRing.position.y = 0.06;
+    group.add(outerRing);
+
+    const innerRing = new THREE.Mesh(
+      this.own(new THREE.RingGeometry(0.76, 0.84, 32)),
+      this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+    );
+    innerRing.rotation.x = -Math.PI / 2;
+    innerRing.position.y = 0.065;
+    group.add(innerRing);
+
+    const shardGeometry = this.own(new THREE.ConeGeometry(0.12, 0.42, 3));
+    const shardMaterial = this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.95 });
+    for (let i = 0; i < 6; i += 1) {
+      const angle = (i / 6) * Math.PI * 2;
+      const shard = new THREE.Mesh(shardGeometry, shardMaterial);
+      shard.position.set(Math.cos(angle) * 1.18, 0.35 + (i % 2) * 0.25, Math.sin(angle) * 1.18);
+      shard.rotation.z = -angle + Math.PI / 2;
+      shard.rotation.x = Math.PI / 2;
+      group.add(shard);
+    }
+
+    group.visible = false;
     return group;
   }
 
@@ -744,7 +889,7 @@ export class VisualFactory {
     const group = new THREE.Group();
 
     const ring = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(2.5, 3.2, 40)),
+      this.own(new THREE.RingGeometry(3.08, 3.2, 40)),
       this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
@@ -752,7 +897,7 @@ export class VisualFactory {
     group.add(ring);
 
     const innerRing = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(1.2, 1.6, 32)),
+      this.own(new THREE.RingGeometry(0.22, 0.3, 24)),
       this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
     );
     innerRing.rotation.x = -Math.PI / 2;
@@ -760,12 +905,12 @@ export class VisualFactory {
     group.add(innerRing);
 
     // Beam pillars mark the zone from across the arena.
-    const pillarGeometry = this.own(new THREE.CylinderGeometry(0.14, 0.14, 5.5, 8));
+    const pillarGeometry = this.own(new THREE.CylinderGeometry(0.065, 0.065, 3.8, 6));
     const pillarMaterial = this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.5 });
-    for (let i = 0; i < 6; i += 1) {
-      const angle = (i / 6) * Math.PI * 2;
+    for (let i = 0; i < 3; i += 1) {
+      const angle = (i / 3) * Math.PI * 2;
       const pillar = new THREE.Mesh(pillarGeometry, pillarMaterial);
-      pillar.position.set(Math.cos(angle) * 2.85, 2.75, Math.sin(angle) * 2.85);
+      pillar.position.set(Math.cos(angle) * 3.1, 1.9, Math.sin(angle) * 3.1);
       group.add(pillar);
     }
     return group;
@@ -778,7 +923,7 @@ export class VisualFactory {
 
     // Bright selection ring — the fastest way to find yourself in a crowd.
     const ring = new THREE.Mesh(
-      this.own(new THREE.RingGeometry(0.72, 0.94, 32)),
+      this.own(new THREE.RingGeometry(0.7, 0.77, 32)),
       this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
@@ -923,9 +1068,10 @@ export class VisualFactory {
     this.characters.setWeapon(rig, weaponId);
   }
 
+  beginDeath(rig: CharacterRig) { this.characters.beginDeath(rig); }
+
   disposeCharacter(rig: CharacterRig) {
     if (rig.disposed) return;
-    rig.disposed = true;
     // Must go through the factory so the AnimationMixer is stopped; a leaked
     // mixer keeps updating a detached skeleton every frame.
     this.characters.disposeCharacter(rig);
@@ -1062,6 +1208,11 @@ export class VisualFactory {
    * One is created for every melee swing in the game, so everything here is
    * cached: the radii come from a handful of fixed attack ranges.
    */
+  createTelegraphAnnulus(inner: number, outer: number) {
+    return new THREE.Mesh(this.cachedGeometry(`annulus:${inner}:${outer}`, () => new THREE.RingGeometry(inner, outer, 64)),
+      this.cachedMaterial("annulus:warning", () => this.palette.flat(0xef706b, { transparent: true, opacity: 0.22, side: THREE.DoubleSide })));
+  }
+
   createTelegraphCircle(radius = 4.5): THREE.Group {
     const group = new THREE.Group();
     const key = radius.toFixed(3);
@@ -1070,17 +1221,18 @@ export class VisualFactory {
       this.cachedGeometry(`tele-fill:${key}`, () => new THREE.CircleGeometry(radius, 32)),
       // Kept low: a dozen overlapping discs in a swarm must not become a soup.
       this.cachedMaterial("tele-fill", () =>
-        this.palette.flat(COMIC.juggernaut, { transparent: true, opacity: 0.19, side: THREE.DoubleSide }),
+        this.palette.flat(0xef706b, { transparent: true, opacity: 0.16, side: THREE.DoubleSide }),
       ),
     );
+    fill.name = "telegraph-fill";
     fill.rotation.x = -Math.PI / 2;
     fill.position.y = 0.05;
     group.add(fill);
 
     const rim = new THREE.Mesh(
-      this.cachedGeometry(`tele-rim:${key}`, () => new THREE.RingGeometry(radius * 0.82, radius, 32)),
+      this.cachedGeometry(`tele-rim:${key}`, () => new THREE.RingGeometry(Math.max(0, radius - 0.08), radius, 32)),
       this.cachedMaterial("tele-rim", () =>
-        this.palette.flat(COMIC.hazardYellow, { transparent: true, opacity: 0.95, side: THREE.DoubleSide }),
+        this.palette.flat(0xef706b, { transparent: true, opacity: 0.95, side: THREE.DoubleSide }),
       ),
     );
     rim.rotation.x = -Math.PI / 2;
@@ -1088,7 +1240,7 @@ export class VisualFactory {
     group.add(rim);
 
     const ink = new THREE.Mesh(
-      this.cachedGeometry(`tele-ink:${key}`, () => new THREE.RingGeometry(radius, radius * 1.09, 32)),
+      this.cachedGeometry(`tele-ink:${key}`, () => new THREE.RingGeometry(radius, radius + 0.03, 32)),
       this.cachedMaterial("tele-ink", () =>
         this.palette.flat(COMIC.ink, { transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
       ),
@@ -1123,6 +1275,380 @@ export class VisualFactory {
     return ghost;
   }
 
+  /**
+   * Tactical laser sight extending from Kai's muzzle to the first cover/enemy hit.
+   */
+  createLaserSight(): { group: THREE.Group; beam: THREE.Mesh; dot: THREE.Mesh; beamMaterial: THREE.MeshBasicMaterial; dotMaterial: THREE.MeshBasicMaterial } {
+    const group = new THREE.Group();
+    const beamMaterial = new THREE.MeshBasicMaterial({ color: COMIC.electric, transparent: true, opacity: 0.52 });
+    const dotMaterial = new THREE.MeshBasicMaterial({ color: 0xe6ffff, transparent: true, opacity: 0.95 });
+    const beamGeo = this.own(new THREE.CylinderGeometry(0.014, 0.014, 1, 6));
+    beamGeo.rotateX(Math.PI / 2);
+    beamGeo.translate(0, 0, 0.5);
+    const beam = new THREE.Mesh(beamGeo, beamMaterial);
+    const dot = new THREE.Mesh(this.own(new THREE.SphereGeometry(0.085, 8, 6)), dotMaterial);
+    group.add(beam, dot);
+    return { group, beam, dot, beamMaterial, dotMaterial };
+  }
+
+  /**
+   * Layered 3D plasma-comic fireball explosion (core flash + blazing shell + shock ring).
+   */
+  createFireballExplosion(radius = 2.6, color = COMIC.fire): THREE.Group {
+    const group = new THREE.Group();
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xfff8d6, transparent: true, opacity: 0.96 });
+    const outerMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
+    const ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+    markTransient(group, { materials: [coreMat, outerMat, ringMat] });
+
+    const core = new THREE.Mesh(this.cachedGeometry("fireball-core", () => new THREE.IcosahedronGeometry(0.65, 1)), coreMat);
+    core.position.y = 0.7;
+    group.add(core);
+
+    const outer = new THREE.Mesh(this.cachedGeometry("fireball-outer", () => new THREE.IcosahedronGeometry(1.15, 1)), outerMat);
+    outer.position.y = 0.85;
+    group.add(outer);
+
+    const puffGeo = this.cachedGeometry("fireball-puff", () => new THREE.IcosahedronGeometry(0.45, 0));
+    for (let i = 0; i < 5; i += 1) {
+      const a = (i / 5) * Math.PI * 2;
+      const puff = new THREE.Mesh(puffGeo, outerMat);
+      puff.position.set(Math.cos(a) * 0.75, 0.55 + (i % 2) * 0.45, Math.sin(a) * 0.75);
+      group.add(puff);
+    }
+
+    const ring = new THREE.Mesh(
+      this.cachedGeometry(`fireball-ring:${radius.toFixed(1)}`, () => new THREE.RingGeometry(radius * 0.65, radius, 32)),
+      ringMat,
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.09;
+    group.add(ring);
+
+    group.userData.baseScale = Math.max(0.7, radius / 2.6);
+    return group;
+  }
+
+  createShellCasing(): THREE.Mesh {
+    return new THREE.Mesh(
+      this.cachedGeometry("shell-casing", () => new THREE.CylinderGeometry(0.022, 0.022, 0.11, 6)),
+      this.cachedMaterial("shell-casing", () => this.palette.flat(0xffd260)),
+    );
+  }
+
+  createFragGrenade(): THREE.Group {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(
+      this.cachedGeometry("frag-body", () => new THREE.IcosahedronGeometry(0.22, 0)),
+      this.cachedMaterial("frag-body", () => this.palette.toon(0x303f49)),
+    );
+    const band = new THREE.Mesh(
+      this.cachedGeometry("frag-band", () => new THREE.TorusGeometry(0.2, 0.045, 6, 12)),
+      this.cachedMaterial("frag-band", () => this.palette.flat(0xff5226)),
+    );
+    band.rotation.x = Math.PI / 2;
+    group.add(body, band);
+    return group;
+  }
+
+  /** Blazing plasma crescent arc for Cyber-Blade Slash & Teleport-Execute. */
+  createBladeSlashArc(isExecute = false): THREE.Group {
+    const group = new THREE.Group();
+    const outerColor = isExecute ? COMIC.gold : COMIC.electric;
+    const outerMat = new THREE.MeshBasicMaterial({ color: outerColor, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
+    markTransient(group, { materials: [outerMat, coreMat] });
+
+    const radius = isExecute ? 3.2 : 2.6;
+    const arcOuter = new THREE.Mesh(
+      this.cachedGeometry(`blade-arc:${radius}`, () => new THREE.RingGeometry(radius * 0.56, radius, 26, 1, -Math.PI * 0.62, Math.PI * 1.24)),
+      outerMat,
+    );
+    arcOuter.rotation.x = -Math.PI / 2;
+    arcOuter.position.y = 1.05;
+    group.add(arcOuter);
+
+    const arcCore = new THREE.Mesh(
+      this.cachedGeometry(`blade-core:${radius}`, () => new THREE.RingGeometry(radius * 0.78, radius * 0.94, 24, 1, -Math.PI * 0.52, Math.PI * 1.04)),
+      coreMat,
+    );
+    arcCore.rotation.x = -Math.PI / 2;
+    arcCore.position.y = 1.07;
+    group.add(arcCore);
+
+    return group;
+  }
+
+  /** Pulsing golden execution ring shown under wounded enemies ready to be teleport-slashed. */
+  createExecuteMarker(radius: number): THREE.Group {
+    const group = new THREE.Group();
+    const key = radius.toFixed(2);
+    const ring = new THREE.Mesh(
+      this.cachedGeometry(`exec-ring:${key}`, () => new THREE.RingGeometry(radius * 0.95, radius * 1.18, 28)),
+      this.cachedMaterial("exec-ring", () => this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.95, side: THREE.DoubleSide })),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.08;
+    group.add(ring);
+
+    const pip = new THREE.Mesh(
+      this.cachedGeometry("exec-pip", () => new THREE.OctahedronGeometry(0.22, 0)),
+      this.cachedMaterial("exec-pip", () => this.palette.flat(COMIC.gold)),
+    );
+    pip.position.y = 2.15;
+    pip.name = "exec-pip";
+    group.add(pip);
+    return group;
+  }
+
+  /** Deployable Twin-Barrel Orbital Auto-Turret with rotating head and laser eye. */
+  createAutoTurret(): THREE.Group {
+    const group = new THREE.Group();
+    const ink = this.palette.outlineMaterial();
+
+    const base = new THREE.Mesh(
+      this.cachedGeometry("turret-base", () => new THREE.CylinderGeometry(0.55, 0.72, 0.42, 8)),
+      this.cachedMaterial("turret-base", () => this.palette.toon(COMIC.steel)),
+    );
+    base.position.y = 0.21;
+    inkInPlace(base, ink, 0.05);
+    group.add(base);
+
+    const ring = new THREE.Mesh(
+      this.cachedGeometry("turret-ring", () => new THREE.RingGeometry(0.75, 0.88, 24)),
+      this.cachedMaterial("turret-ring", () => this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.75, side: THREE.DoubleSide })),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.04;
+    group.add(ring);
+
+    const head = new THREE.Group();
+    head.name = "turret-head";
+    head.position.y = 0.72;
+
+    const housing = new THREE.Mesh(
+      this.cachedGeometry("turret-head", () => new RoundedBoxGeometry(0.68, 0.48, 0.85, 2, 0.06)),
+      this.cachedMaterial("turret-head", () => this.palette.toon(0x284354)),
+    );
+    inkInPlace(housing, ink, 0.05);
+    head.add(housing);
+
+    const barrelGeo = this.cachedGeometry("turret-barrel", () => new THREE.CylinderGeometry(0.06, 0.06, 0.82, 8));
+    const barrelMat = this.cachedMaterial("turret-barrel", () => this.palette.toon(0x9fb8c9));
+    for (const side of [-0.18, 0.18]) {
+      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(side, 0.04, 0.65);
+      head.add(barrel);
+    }
+
+    const sensor = new THREE.Mesh(
+      this.cachedGeometry("turret-eye", () => new THREE.BoxGeometry(0.28, 0.14, 0.12)),
+      this.cachedMaterial("turret-eye", () => this.palette.flat(COMIC.electric)),
+    );
+    sensor.position.set(0, 0.24, 0.32);
+    head.add(sensor);
+
+    group.add(head);
+    return group;
+  }
+
+  /** Deployable Tesla Shock Pylon that arcs lightning and links laser fences to nearby pylons. */
+  createTeslaPylon(): THREE.Group {
+    const group = new THREE.Group();
+    const ink = this.palette.outlineMaterial();
+
+    const base = new THREE.Mesh(
+      this.cachedGeometry("pylon-base", () => new THREE.CylinderGeometry(0.45, 0.65, 0.4, 8)),
+      this.cachedMaterial("pylon-base", () => this.palette.toon(COMIC.steel)),
+    );
+    base.position.y = 0.2;
+    inkInPlace(base, ink, 0.05);
+    group.add(base);
+
+    const spire = new THREE.Mesh(
+      this.cachedGeometry("pylon-spire", () => new THREE.CylinderGeometry(0.14, 0.24, 1.85, 8)),
+      this.cachedMaterial("pylon-spire", () => this.palette.toon(0x273d4d)),
+    );
+    spire.position.y = 1.15;
+    inkInPlace(spire, ink, 0.05);
+    group.add(spire);
+
+    const coilGeo = this.cachedGeometry("pylon-coil", () => new THREE.TorusGeometry(0.32, 0.055, 6, 16));
+    const coilMat = this.cachedMaterial("pylon-coil", () => this.palette.flat(COMIC.electric));
+    for (const y of [0.9, 1.35, 1.8]) {
+      const coil = new THREE.Mesh(coilGeo, coilMat);
+      coil.rotation.x = Math.PI / 2;
+      coil.position.y = y;
+      group.add(coil);
+    }
+
+    const orb = new THREE.Mesh(
+      this.cachedGeometry("pylon-orb", () => new THREE.OctahedronGeometry(0.3, 1)),
+      this.cachedMaterial("pylon-orb", () => this.palette.flat(0xb8ffff)),
+    );
+    orb.position.y = 2.25;
+    orb.name = "pylon-orb";
+    group.add(orb);
+
+    const aura = new THREE.Mesh(
+      this.cachedGeometry("pylon-aura", () => new THREE.RingGeometry(0.65, 0.78, 24)),
+      this.cachedMaterial("pylon-aura", () => this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.7, side: THREE.DoubleSide })),
+    );
+    aura.rotation.x = -Math.PI / 2;
+    aura.position.y = 0.04;
+    group.add(aura);
+
+    return group;
+  }
+
+  /** Glowing dual-rail electric laser fence linking two Tesla Pylons. */
+  createLaserFenceBeam(from: THREE.Vector3, to: THREE.Vector3): THREE.Group {
+    const group = new THREE.Group();
+    const delta = to.clone().sub(from);
+    const length = Math.max(0.1, delta.length());
+    const midpoint = from.clone().add(to).multiplyScalar(0.5);
+    const angle = Math.atan2(delta.x, delta.z);
+
+    const railMat = this.cachedMaterial("fence-rail", () => this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.92 }));
+    const wallMat = this.cachedMaterial("fence-wall", () => this.palette.flat(COMIC.electric, { transparent: true, opacity: 0.22, side: THREE.DoubleSide }));
+
+    const railGeo = new THREE.CylinderGeometry(0.045, 0.045, length, 6);
+    railGeo.rotateX(Math.PI / 2);
+    const wallGeo = new THREE.PlaneGeometry(length, 1.35);
+    wallGeo.rotateY(Math.PI / 2);
+    markTransient(group, { geometries: [railGeo, wallGeo] });
+
+    for (const y of [0.6, 1.35, 2.0]) {
+      const rail = new THREE.Mesh(railGeo, railMat);
+      rail.position.y = y;
+      group.add(rail);
+    }
+    const wall = new THREE.Mesh(wallGeo, wallMat);
+    wall.position.y = 1.25;
+    group.add(wall);
+
+    group.position.set(midpoint.x, 0, midpoint.z);
+    group.rotation.y = angle;
+    return group;
+  }
+
+  /** Dramatic sky-column laser telegraph + descending orbital drop pod. */
+  createOrbitalSkyBeam(color: number): THREE.Group {
+    const group = new THREE.Group();
+    const beamMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, side: THREE.DoubleSide });
+    const ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
+    markTransient(group, { materials: [beamMat, ringMat] });
+
+    const beam = new THREE.Mesh(this.cachedGeometry("orbital-beam", () => new THREE.CylinderGeometry(0.45, 1.15, 24, 14, 1, true)), beamMat);
+    beam.position.y = 12;
+    group.add(beam);
+
+    const ring = new THREE.Mesh(this.cachedGeometry("orbital-ring", () => new THREE.RingGeometry(1.5, 1.85, 32)), ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.06;
+    group.add(ring);
+    return group;
+  }
+
+  createOrbitalDropPod(color: number): THREE.Group {
+    const group = new THREE.Group();
+    const ink = this.palette.outlineMaterial();
+    const pod = new THREE.Mesh(
+      this.cachedGeometry("orbital-pod", () => new THREE.CylinderGeometry(0.72, 0.95, 1.65, 8)),
+      this.cachedMaterial("orbital-pod", () => this.palette.toon(0x283a47)),
+    );
+    pod.position.y = 0.82;
+    inkInPlace(pod, ink, 0.04);
+    group.add(pod);
+
+    const glowMat = new THREE.MeshBasicMaterial({ color });
+    markTransient(group, { materials: [glowMat] });
+    const beacon = new THREE.Mesh(this.cachedGeometry("orbital-pod-cap", () => new THREE.OctahedronGeometry(0.42, 0)), glowMat);
+    beacon.position.y = 1.95;
+    beacon.name = "pod-beacon";
+    group.add(beacon);
+
+    const halo = new THREE.Mesh(
+      this.cachedGeometry("orbital-pod-halo", () => new THREE.RingGeometry(1.15, 1.38, 28)),
+      this.cachedMaterial("orbital-pod-halo", () => this.palette.flat(COMIC.gold, { transparent: true, opacity: 0.85, side: THREE.DoubleSide })),
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = 0.05;
+    group.add(halo);
+    return group;
+  }
+
+  /** Massive hyper-velocity screen-splitting Railcannon beam. */
+  createRailgunBeam(from: THREE.Vector3, to: THREE.Vector3, color = COMIC.electric): THREE.Group {
+    const group = new THREE.Group();
+    const delta = to.clone().sub(from);
+    const length = Math.max(0.2, delta.length());
+    const coreGeo = new THREE.CylinderGeometry(0.11, 0.11, length, 8);
+    coreGeo.rotateX(Math.PI / 2);
+    const glowGeo = new THREE.CylinderGeometry(0.34, 0.34, length, 8);
+    glowGeo.rotateX(Math.PI / 2);
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.98 });
+    const glowMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.65 });
+    markTransient(group, { geometries: [coreGeo, glowGeo], materials: [coreMat, glowMat] });
+
+    const core = new THREE.Mesh(coreGeo, coreMat);
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    group.add(glow, core);
+    group.position.copy(from).addScaledVector(delta, 0.5);
+    group.lookAt(to);
+    group.userData.muzzle = true; // prevent radial scaling on updateEffects
+    return group;
+  }
+
+  /** Spinning glowing Ripper Sawblade projectile. */
+  createSawbladeProjectile(): THREE.Group {
+    const group = new THREE.Group();
+    const disc = new THREE.Mesh(
+      this.cachedGeometry("sawblade-disc", () => new THREE.CylinderGeometry(0.52, 0.52, 0.08, 12)),
+      this.cachedMaterial("sawblade-disc", () => this.palette.flat(COMIC.gold)),
+    );
+    const core = new THREE.Mesh(
+      this.cachedGeometry("sawblade-core", () => new THREE.CylinderGeometry(0.22, 0.22, 0.12, 8)),
+      this.cachedMaterial("sawblade-core", () => this.palette.flat(0xffffff)),
+    );
+    group.add(disc, core);
+    return group;
+  }
+
+  /**
+   * 3D atmospheric particle field tailored per arena (fire embers, storm rain, welding sparks, ash).
+   */
+  createWeatherField(identity: ArenaTheme["identity"]): THREE.Points {
+    const count = 150;
+    const positions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i += 1) {
+      positions[i * 3] = (Math.random() - 0.5) * 38;
+      positions[i * 3 + 1] = Math.random() * 9 + 0.2;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 38;
+    }
+    const geometry = this.own(new THREE.BufferGeometry());
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const color =
+      identity === "floodbay"
+        ? 0x7ae8ff
+        : identity === "garage"
+          ? 0xffbd4a
+          : identity === "rooftop"
+            ? 0xd6c8bc
+            : 0xff8c38;
+    const material = new THREE.PointsMaterial({
+      color,
+      size: identity === "floodbay" ? 0.11 : 0.14,
+      transparent: true,
+      opacity: identity === "floodbay" ? 0.55 : 0.78,
+      depthWrite: false,
+    });
+    const points = new THREE.Points(geometry, material);
+    points.userData.weatherIdentity = identity;
+    return points;
+  }
+
   // ------------------------------------------------------------------ decals
 
   addBloodDecal(scene: THREE.Scene, position: THREE.Vector3, scale = 1) {
@@ -1131,6 +1657,10 @@ export class VisualFactory {
 
   addAcidDecal(scene: THREE.Scene, position: THREE.Vector3, scale = 1) {
     this.addDecal(scene, position, scale * 2.2, this.acidMaterial);
+  }
+
+  addScorchDecal(scene: THREE.Scene, position: THREE.Vector3, scale = 1) {
+    this.addDecal(scene, position, scale * 2.8, this.scorchMaterial);
   }
 
   private addDecal(scene: THREE.Scene, position: THREE.Vector3, size: number, material: THREE.Material) {
@@ -1182,6 +1712,7 @@ export class VisualFactory {
     this.decals = [];
     scene.clear();
     this.characters.dispose();
+    this.environment.dispose();
     this.palette.dispose();
     for (const texture of this.textures) texture.dispose();
     for (const geometry of this.geometries) geometry.dispose();

@@ -6,9 +6,14 @@ Deadwave is a single-player top-down 3D zombie survival shooter for desktop and 
 
 - `WASD` — move
 - Mouse — aim
-- Left click — fire
-- `R` — reload
-- `Shift` or `Space` — dash
+- Left click — fire (or fire active Orbital Super-Weapon)
+- Right click or `V` — **Cyber-Blade Slash / Teleport Execute / Projectile Deflect** (teleport-executing wounded foes heals, refills mag, and resets cooldown for instant chains)
+- `T` — deploy **Auto-Turret** (40 Tech Energy, max 3)
+- `C` — deploy **Tesla Shock Pylon** (45 Tech Energy, max 4; nearby pylons link into electric laser fences)
+- `G` or Middle click — throw **Tactical Frag Grenade** (8s cooldown, kills refund 0.5s)
+- `F` — activate **Overdrive Surge** at 100% charge (infinite mag, 100% crit, +45% fire rate, kill extensions)
+- `R` — reload (tap `R` again inside the gold sweet spot for an Active Tactical Reload & Overcharged Mag)
+- `Shift` or `Space` — dash (dash through an incoming hit for a Perfect Dodge bullet-time slip)
 - `Q` / `E` or mouse wheel — swap weapon, `1`–`4` — select weapon
 - `Escape` — pause
 

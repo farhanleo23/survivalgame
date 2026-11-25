@@ -226,6 +226,7 @@ test("reaches the lobby when the browser blocks local storage", async ({ page })
 
 test("persists a keyboard override on a touch device", async ({ page }) => {
   await page.goto("/");
+  await page.getByTestId("open-settings").click();
   await page.getByRole("group", { name: "Control mode" }).getByRole("button", { name: "Keyboard & Mouse" }).click();
   await expect(page.locator("main")).toHaveAttribute("data-input-mode", "keyboard");
   await page.reload();
@@ -238,7 +239,9 @@ test("persists a keyboard override on a touch device", async ({ page }) => {
 test("persists graphics quality and renders above one device pixel", async ({ page }) => {
   await page.setViewportSize({ width: 844, height: 390 });
   await page.goto("/");
+  await page.getByTestId("open-settings").click();
   await page.getByRole("group", { name: "Graphics quality" }).getByRole("button", { name: "Quality" }).click();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.locator("main")).toHaveAttribute("data-graphics-mode", "quality");
   await deploy(page);
 

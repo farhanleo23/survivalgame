@@ -52,6 +52,10 @@ export default defineConfig(async () => {
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        // The macOS seatbelt rejects the Miniflare inspector socket. It is
+        // optional for the local preview and otherwise prevents the game from
+        // starting at all in the validation environment.
+        inspectorPort: isCodexSeatbeltSandbox ? false : undefined,
         config: localBindingConfig,
       }),
     ],

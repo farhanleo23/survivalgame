@@ -1,3 +1,64 @@
+import { DamageFeedback, normalizedReloadProgress } from "./presentation";
+import {
+  ACTIVE_RELOAD_JAM_PENALTY,
+  BARREL_CHAIN_DELAY,
+  BARREL_CHAIN_RADIUS,
+  evaluateActiveReload,
+  getActiveFusions,
+  getComboSalvageMultiplier,
+  OVERCHARGE_CRIT_BONUS,
+  OVERCHARGE_DAMAGE_MULT,
+  OVERDRIVE_BASE_DURATION,
+  OVERDRIVE_DASH_COOLDOWN_MULT,
+  OVERDRIVE_FIRE_RATE_MULT,
+  OVERDRIVE_KILL_EXTENSION,
+  OVERDRIVE_MAX_CHARGE,
+  OVERDRIVE_MAX_EXTENSION,
+  OVERDRIVE_SHOCKWAVE_RADIUS,
+  OVERDRIVE_SPEED_MULT,
+  PERFECT_DODGE_DASH_REFUND,
+  PERFECT_DODGE_OVERDRIVE_GAIN,
+  PERFECT_DODGE_SHOT_BONUS,
+  PERFECT_DODGE_SLOWMO_DURATION,
+  PERFECT_DODGE_SLOWMO_SCALE,
+  rotatedBoxHalfExtents,
+  SYNERGY_FUSIONS,
+} from "./combat-systems";
+import {
+  BLADE_COOLDOWN,
+  BLADE_DEFLECT_RADIUS,
+  BLADE_EXECUTE_HEAL,
+  BLADE_EXECUTE_RANGE,
+  BLADE_SLASH_DAMAGE,
+  BLADE_SLASH_RANGE,
+  isEnemyExecutable,
+  ORBITAL_POD_FALL_TIME,
+  ORBITAL_POD_FIRST_DELAY,
+  ORBITAL_POD_IMPACT_RADIUS,
+  ORBITAL_POD_INTERVAL,
+  pickRandomSuperWeapon,
+  pointToSegmentDistanceSq,
+  PYLON_COST,
+  PYLON_FENCE_DPS,
+  PYLON_FENCE_MAX_DIST,
+  PYLON_HEALTH,
+  PYLON_MAX_ACTIVE,
+  PYLON_PULSE_DAMAGE,
+  PYLON_PULSE_INTERVAL,
+  PYLON_PULSE_RADIUS,
+  SUPER_WEAPONS,
+  TECH_ENERGY_EXECUTE_GAIN,
+  TECH_ENERGY_KILL_GAIN,
+  TECH_ENERGY_MAX,
+  TECH_ENERGY_REGEN_PER_SEC,
+  TECH_ENERGY_START,
+  TURRET_COST,
+  TURRET_DAMAGE,
+  TURRET_FIRE_INTERVAL,
+  TURRET_HEALTH,
+  TURRET_MAX_ACTIVE,
+  TURRET_RANGE,
+} from "./tactical-overhaul";
 import * as THREE from "three";
 import {
   BEHAVIOURS,
@@ -35,6 +96,8 @@ import type {
   PickupId,
   ProfileV1,
   SynergyCardId,
+  SynergyFusionId,
+  SuperWeaponId,
   WeaponId,
   WeaponInstance,
 } from "./types";
@@ -75,8 +138,11 @@ interface EnemyEntity {
   unstickSign: number;
   /** Telegraph ring shown during a wind-up. */
   telegraph?: THREE.Object3D;
+  specialTelegraph?: THREE.Object3D;
   /** Floating health bar, revealed on first damage. */
   healthBar?: THREE.Group;
+  /** Pulsing golden execution marker shown when wounded enough for Cyber-Blade Teleport Execute. */
+  executeMarker?: THREE.Group;
   mesh: THREE.Group;
   rig: CharacterRig;
   health: number;
@@ -112,6 +178,14 @@ interface ProjectileEntity {
   bouncesRemaining?: number;
   hitEnemies?: Set<EnemyEntity>;
   isShrapnel?: boolean;
+  /** Guaranteed critical hit (Overdrive or Perfect Dodge shot). */
+  forceCrit?: boolean;
+  /** Active-reload overcharged round (+15% crit chance). */
+  overcharged?: boolean;
+  /** Spinning Ripper Sawblade super-weapon projectile. */
+  isSawblade?: boolean;
+  /** Ignites target on hit (Hellfire Minigun). */
+  ignites?: boolean;
 }
 
 /**
@@ -131,9 +205,11 @@ interface PickupEntity {
 interface BarrelEntity {
   mesh: THREE.Group;
   active: boolean;
+  /** Countdown until a chain-reaction detonation fires. */
+  chainTimer?: number;
 }
 
-/** Lingering ground zone that damages enemies standing in it. */
+/** Lingering ground zone that damages enemies (and optionally the player if hostile). */
 interface HazardEntity {
   mesh: THREE.Object3D;
   x: number;
@@ -144,6 +220,10 @@ interface HazardEntity {
   maxLife: number;
   /** Damage accrues between ticks so DPS is frame-rate independent. */
   tickTimer: number;
+  /** True for environmental/wave-modifier pools (Toxic Bloom) that threaten the operator. */
+  hostile?: boolean;
+  /** True for Napalm Wake pools that ignite enemies on contact. */
+  ignites?: boolean;
 }
 
 /**
@@ -157,6 +237,52 @@ interface BuiltArena {
   root: THREE.Group;
   obstacles: Obstacle[];
   barrels: BarrelEntity[];
+  weather?: THREE.Points;
+  accentLights?: THREE.PointLight[];
+}
+
+interface ShellCasingEntity {
+  mesh: THREE.Mesh;
+  velocity: THREE.Vector3;
+  spin: THREE.Vector3;
+  life: number;
+}
+
+interface FragGrenadeEntity {
+  mesh: THREE.Group;
+  marker: THREE.Object3D;
+  velocity: THREE.Vector3;
+  fuse: number;
+  maxFuse: number;
+  bounced: boolean;
+}
+
+interface DeployableEntity {
+  kind: "turret" | "pylon";
+  mesh: THREE.Group;
+  x: number;
+  z: number;
+  health: number;
+  maxHealth: number;
+  life: number;
+  cooldown: number;
+}
+
+interface LaserFenceEntity {
+  a: DeployableEntity;
+  b: DeployableEntity;
+  mesh: THREE.Group;
+  tickTimer: number;
+}
+
+interface OrbitalPodEntity {
+  weaponId: SuperWeaponId;
+  x: number;
+  z: number;
+  state: "falling" | "landed";
+  timer: number;
+  podMesh: THREE.Group;
+  beamMesh?: THREE.Group;
 }
 
 /**
@@ -203,8 +329,8 @@ const FIXED_STEP = 1 / 60;
 // unbounded catch-up loop after a stall. Eight steps cover frames down to 7.5 Hz.
 const MAX_CATCH_UP_STEPS = 8;
 const ARENA_LIMIT = 18.5;
-const CAMERA_HEIGHT = 18.5;
-const CAMERA_BACK = 15;
+const CAMERA_HEIGHT = 16.2;
+const CAMERA_BACK = 13.6;
 const MAX_ACTIVE_ENEMIES = 36;
 /** Ceiling on knockback speed in world units/sec. Decay is ~1/14s, so this
  *  works out to roughly a two-metre shove at full force. */
@@ -230,7 +356,7 @@ function getRenderTuning(mode: GraphicsMode, mobile: boolean): RenderTuning {
       maxPixelRatio: mobile ? 1 : 1.1,
       shadows: false,
       shadowMapSize: 512,
-      post: { outlineStrength: 0.82, halftoneStrength: 0.26, grainStrength: 0.014 },
+      post: { outlineStrength: 0.58, halftoneStrength: 0.04, grainStrength: 0.003 },
     };
   }
   if (mode === "quality") {
@@ -240,7 +366,7 @@ function getRenderTuning(mode: GraphicsMode, mobile: boolean): RenderTuning {
       maxPixelRatio: mobile ? 1.75 : 2,
       shadows: true,
       shadowMapSize: mobile ? 1024 : 2048,
-      post: { outlineStrength: 0.95, halftoneStrength: 0.44, grainStrength: 0.026 },
+      post: { outlineStrength: 0.58, halftoneStrength: 0.04, grainStrength: 0.003 },
     };
   }
   if (mobile) {
@@ -250,7 +376,7 @@ function getRenderTuning(mode: GraphicsMode, mobile: boolean): RenderTuning {
       maxPixelRatio: 1.5,
       shadows: true,
       shadowMapSize: 1024,
-      post: { outlineStrength: 0.9, halftoneStrength: 0.36, grainStrength: 0.02 },
+      post: { outlineStrength: 0.58, halftoneStrength: 0.04, grainStrength: 0.003 },
     };
   }
   return {
@@ -259,7 +385,7 @@ function getRenderTuning(mode: GraphicsMode, mobile: boolean): RenderTuning {
     maxPixelRatio: 1.5,
     shadows: true,
     shadowMapSize: 2048,
-    post: { outlineStrength: 1, halftoneStrength: 0.5, grainStrength: 0.045 },
+    post: { outlineStrength: 0.58, halftoneStrength: 0.04, grainStrength: 0.003 },
   };
 }
 
@@ -353,9 +479,52 @@ export class GameEngine {
   private projectiles: ProjectileEntity[] = [];
   private pickups: PickupEntity[] = [];
   private barrels: BarrelEntity[] = [];
+  private corpses: { rig: CharacterRig; life: number }[] = [];
+  private damageFeedback = new DamageFeedback<EnemyEntity>();
+  private footstepTravel = 0;
   private effects: EffectEntity[] = [];
   private hazards: HazardEntity[] = [];
   private activeSynergies = new Map<SynergyCardId, number>();
+  private unlockedFusions = new Set<SynergyFusionId>();
+  private overdriveCharge = 0;
+  private overdriveRemaining = 0;
+  private overdriveDuration = OVERDRIVE_BASE_DURATION;
+  private overdriveExtensionUsed = 0;
+  private overdriveAura: THREE.Group | null = null;
+  private bulletTimeTimer = 0;
+  private bulletTimeScale = 1;
+  private dashPerfectUsed = false;
+  private perfectDodgeShotBuff = false;
+  private baseCameraFov = 42;
+  private grenadeCooldown = 0;
+  private readonly grenadeCooldownTotal = 8.0;
+  private grenades: FragGrenadeEntity[] = [];
+  private bladeCooldown = 0;
+  private techEnergy = TECH_ENERGY_START;
+  private deployables: DeployableEntity[] = [];
+  private laserFences: LaserFenceEntity[] = [];
+  private orbitalPods: OrbitalPodEntity[] = [];
+  private orbitalPodTimer = ORBITAL_POD_FIRST_DELAY;
+  private activeSuperWeapon: { id: SuperWeaponId; ammo: number; maxAmmo: number } | null = null;
+  private superWeaponCooldown = 0;
+  private shellCasings: ShellCasingEntity[] = [];
+  private operatorLight: THREE.PointLight | null = null;
+  private muzzleLight: THREE.PointLight | null = null;
+  private blastLight: THREE.PointLight | null = null;
+  private muzzleLightTimer = 0;
+  private blastLightTimer = 0;
+  private postChromatic = 0;
+  private postHitFlash = 0;
+  private postOverdrive = 0;
+  private activeWeather: THREE.Points | null = null;
+  private activeAccentLights: THREE.PointLight[] = [];
+  private laserSight: {
+    group: THREE.Group;
+    beam: THREE.Mesh;
+    dot: THREE.Mesh;
+    beamMaterial: THREE.MeshBasicMaterial;
+    dotMaterial: THREE.MeshBasicMaterial;
+  } | null = null;
   private bulletCount = 0;
   private acidTrailTimer = 0;
   private obstacles: Obstacle[] = [];
@@ -518,6 +687,15 @@ export class GameEngine {
     this.endless = wave > CAMPAIGN_WAVES;
     if (wave === 1) {
       this.activeSynergies.clear();
+      this.unlockedFusions.clear();
+      this.overdriveCharge = 0;
+      this.overdriveRemaining = 0;
+      this.overdriveDuration = OVERDRIVE_BASE_DURATION;
+      this.overdriveExtensionUsed = 0;
+      this.bulletTimeTimer = 0;
+      this.perfectDodgeShotBuff = false;
+      this.techEnergy = TECH_ENERGY_START;
+      this.activeSuperWeapon = null;
       this.stats = createRunStats();
     }
     this.audio.configure(this.profile.settings);
@@ -532,9 +710,20 @@ export class GameEngine {
   addSynergy(id: SynergyCardId) {
     const current = this.activeSynergies.get(id) ?? 0;
     this.activeSynergies.set(id, current + 1);
-    this.audio.playPerkSelect();
-    this.announcement = `SYNERGY ACQUIRED: ${id.replace(/_/g, " ").toUpperCase()}`;
-    this.announcementTimer = 2.4;
+    const activeFusions = getActiveFusions(this.activeSynergies);
+    const newlyUnlocked = activeFusions.find((fusionId) => !this.unlockedFusions.has(fusionId));
+    for (const fusionId of activeFusions) this.unlockedFusions.add(fusionId);
+
+    if (newlyUnlocked) {
+      const fusion = SYNERGY_FUSIONS[newlyUnlocked];
+      this.audio.playFusionUnlock?.();
+      this.announcement = `FUSION UNLOCKED: ${fusion.name.toUpperCase()} — ${fusion.description}`;
+      this.announcementTimer = 3.8;
+    } else {
+      this.audio.playPerkSelect();
+      this.announcement = `SYNERGY ACQUIRED: ${id.replace(/_/g, " ").toUpperCase()}`;
+      this.announcementTimer = 2.4;
+    }
     this.emitHud(true);
   }
 
@@ -544,6 +733,7 @@ export class GameEngine {
 
   resetSynergies() {
     this.activeSynergies.clear();
+    this.unlockedFusions.clear();
     this.emitHud(true);
   }
 
@@ -554,8 +744,12 @@ export class GameEngine {
    */
   restoreSynergies(deck: Partial<Record<SynergyCardId, number>>) {
     this.activeSynergies.clear();
+    this.unlockedFusions.clear();
     for (const [id, stacks] of Object.entries(deck)) {
       if (stacks && stacks > 0) this.activeSynergies.set(id as SynergyCardId, stacks);
+    }
+    for (const fusionId of getActiveFusions(this.activeSynergies)) {
+      this.unlockedFusions.add(fusionId);
     }
     this.emitHud(true);
   }
@@ -620,7 +814,18 @@ export class GameEngine {
     ) return;
     if (previous.settings !== profile.settings) this.audio.configure(profile.settings);
     if (previous.perkRanks !== profile.perkRanks) this.applyPerks(profile.perkRanks);
-    for (const id of profile.ownedWeapons) this.ensureWeaponState(id);
+    for (const id of profile.ownedWeapons) {
+      this.ensureWeaponState(id);
+      const state = this.weaponStates.get(id);
+      const nextRank = profile.weaponRanks[id];
+      if (state && nextRank > state.rank) {
+        const previousStats = getWeaponStats(id, state.rank);
+        const nextStats = getWeaponStats(id, nextRank);
+        const magGain = Math.max(0, nextStats.magazine - previousStats.magazine);
+        state.rank = nextRank;
+        state.magazine = Math.min(nextStats.magazine, state.magazine + magGain);
+      }
+    }
     if (profile.equippedLoadout && profile.equippedLoadout.length) {
       this.loadout = [...profile.equippedLoadout];
     } else if (profile.ownedWeapons && profile.ownedWeapons.length) {
@@ -672,10 +877,15 @@ export class GameEngine {
     this.firing = active;
   }
 
-  triggerVirtualAction(action: "dash" | "reload" | "swap") {
+  triggerVirtualAction(action: "dash" | "reload" | "swap" | "overdrive" | "grenade" | "blade" | "turret" | "pylon") {
     if (this.inputMode !== "touch") return;
     if (action === "dash") this.startDash();
     else if (action === "reload") this.reload();
+    else if (action === "overdrive") this.triggerOverdrive();
+    else if (action === "grenade") this.throwGrenade();
+    else if (action === "blade") this.performBladeSlash();
+    else if (action === "turret") this.deployTurret();
+    else if (action === "pylon") this.deployPylon();
     else this.switchWeapon();
   }
 
@@ -719,6 +929,7 @@ export class GameEngine {
     this.frame = 0;
     this.unbindEvents();
     this.audio.stop();
+    this.clearPresentation();
     this.timer.dispose();
     if (this.playerRig) this.visuals.disposeCharacter(this.playerRig);
     for (const enemy of this.enemies) this.visuals.disposeCharacter(enemy.rig);
@@ -760,26 +971,19 @@ export class GameEngine {
   }
 
   private setupScene() {
-    // Comic panel, not a dark room: a saturated sky wash and no fog at all.
-    // Depth comes from ink outlines and flat colour separation instead.
-    // The wash itself is per-arena and set by activateArena.
+    // Neon-noir tactical atmosphere: deep twilight sky, subtle depth fog,
+    // dramatic moonlight key + electric cyan rim light, plus live dynamic lights
+    // for Kai's headlamp, muzzle flashes, and explosive fireballs.
     this.scene.background = new THREE.Color(COMIC.sky);
-    this.scene.fog = null;
+    this.scene.fog = new THREE.FogExp2(COMIC.sky, 0.0145);
 
-    // Cel shading needs the *total* irradiance to land near 1.0. With no tone
-    // curve to roll off the top end, anything hotter clips every saturated
-    // surface to flat white — the palette disappears just as badly as it did
-    // in the dark. Ambient carries the shadow band, the key carries the step.
-    const ambient = new THREE.HemisphereLight(0xdfe8ff, 0x6b7799, 0.5);
+    const ambient = new THREE.HemisphereLight(0x5b8fb8, 0x101824, 0.62);
     this.scene.add(ambient);
 
-    const key = new THREE.DirectionalLight(0xfff6e2, 0.72);
+    const key = new THREE.DirectionalLight(0xffcb94, 1.38);
     key.position.set(-14, 26, -10);
     key.castShadow = true;
     key.shadow.mapSize.setScalar(this.shadowMapSize);
-    // Must enclose the 46-unit ground plus the perimeter walls. Ground outside
-    // the shadow frustum samples as fully shadowed, which darkened the arena
-    // corners and undid the flat lighting exactly where it was least expected.
     key.shadow.camera.left = -32;
     key.shadow.camera.right = 32;
     key.shadow.camera.top = 32;
@@ -789,10 +993,26 @@ export class GameEngine {
     this.keyLight = key;
     this.scene.add(key);
 
-    // Cool bounce keeps shadowed sides coloured rather than grey.
-    const coolFill = new THREE.DirectionalLight(0x8ecbff, 0.16);
-    coolFill.position.set(14, 12, 16);
+    // Vivid electric cyan rim fill keeps silhouettes razor-sharp in the dark.
+    const coolFill = new THREE.DirectionalLight(0x3ad8ff, 0.52);
+    coolFill.position.set(16, 12, 16);
     this.scene.add(coolFill);
+
+    // Dynamic tactical point lights (budgeted to 3 reusable lights for 60fps!)
+    this.operatorLight = new THREE.PointLight(0x66e8ff, 2.8, 12.5, 1.65);
+    this.operatorLight.position.set(0, 2.3, 0);
+    this.scene.add(this.operatorLight);
+
+    this.muzzleLight = new THREE.PointLight(0xffcb66, 0, 11, 1.8);
+    this.muzzleLight.position.set(0, 1.5, 0);
+    this.scene.add(this.muzzleLight);
+
+    this.blastLight = new THREE.PointLight(0xff6b24, 0, 18, 1.45);
+    this.blastLight.position.set(0, 2.0, 0);
+    this.scene.add(this.blastLight);
+
+    this.laserSight = this.visuals.createLaserSight();
+    this.scene.add(this.laserSight.group);
 
     this.scene.add(this.arenaRoot);
     this.buildArena(getArenaForWave(this.wave));
@@ -842,7 +1062,25 @@ export class GameEngine {
       this.visuals.addSetDressing(root, arena.theme);
       for (const prop of arena.props) this.addArenaProp(prop);
 
-      this.arenaCache.set(arena.id, { root, obstacles: this.obstacles, barrels: this.barrels });
+      const weather = this.visuals.createWeatherField(arena.theme.identity);
+      root.add(weather);
+
+      // Two subtle colored atmospheric accent lights per arena so furnaces/vats/lamps
+      // cast rich warm-amber or electric-cyan pools onto nearby wet concrete!
+      const accentLights: THREE.PointLight[] = [];
+      const accentColorA = arena.theme.identity === "floodbay" ? 0x26e6ff : 0xff7b29;
+      const accentColorB = arena.theme.identity === "garage" ? 0xffb845 : 0x35e6ff;
+      const lightA = new THREE.PointLight(accentColorA, 4.2, 22, 1.5);
+      lightA.position.set(-11, 3.8, 5.5);
+      root.add(lightA);
+      accentLights.push(lightA);
+
+      const lightB = new THREE.PointLight(accentColorB, 3.8, 22, 1.5);
+      lightB.position.set(11.5, 3.8, -5.5);
+      root.add(lightB);
+      accentLights.push(lightB);
+
+      this.arenaCache.set(arena.id, { root, obstacles: this.obstacles, barrels: this.barrels, weather, accentLights });
       this.arenaRoot = restore;
     }
 
@@ -859,8 +1097,12 @@ export class GameEngine {
     const built = this.arenaCache.get(arena.id);
     if (!built) return;
     this.currentArena = arena;
-    this.skyCool.setHex(arena.theme.sky);
-    this.scene.background = new THREE.Color(arena.theme.sky);
+    this.activeWeather = built.weather ?? null;
+    this.activeAccentLights = built.accentLights ?? [];
+    const darkSky = new THREE.Color(arena.theme.sky).multiplyScalar(0.55);
+    this.skyCool.copy(darkSky);
+    this.scene.background = darkSky.clone();
+    this.scene.fog = new THREE.FogExp2(darkSky.getHex(), 0.0145);
 
     // Copied, not aliased: destroying a crate splices the live list, and the
     // template has to survive that to rebuild the arena next time round.
@@ -872,7 +1114,7 @@ export class GameEngine {
       this.visuals.damageCrate(obstacle.mesh, 1);
     }
 
-    this.barrels = built.barrels.map((barrel) => ({ ...barrel, active: true }));
+    this.barrels = built.barrels.map((barrel) => ({ ...barrel, active: true, chainTimer: undefined }));
     for (const barrel of this.barrels) barrel.mesh.visible = true;
 
     this.arenaHazardTimer = arena.hazard.interval;
@@ -970,8 +1212,7 @@ export class GameEngine {
     barricade.position.set(x, 0, z);
     barricade.rotation.y = rotation;
     this.arenaRoot.add(barricade);
-    const hx = 1.2;
-    const hz = 0.3;
+    const { hx, hz } = rotatedBoxHalfExtents(2.4, 0.6, rotation);
     this.obstacles.push({ x, z, hx, hz });
   }
 
@@ -1045,6 +1286,8 @@ export class GameEngine {
   private createPlayer() {
     this.playerRig = this.visuals.createPlayer();
     this.playerMesh = this.playerRig.root;
+    this.overdriveAura = this.visuals.createOverdriveAura();
+    this.playerMesh.add(this.overdriveAura);
     this.scene.add(this.playerMesh);
     this.visuals.setPlayerWeapon(this.playerRig, this.getActiveWeaponId());
   }
@@ -1096,6 +1339,7 @@ export class GameEngine {
   }
 
   private startWave(wave: number) {
+    this.clearPresentation();
     // A new wave starts with fresh combat space, including when reusing an arena.
     for (let index = this.projectiles.length - 1; index >= 0; index -= 1) this.removeProjectile(index);
     this.clearHazards();
@@ -1104,6 +1348,21 @@ export class GameEngine {
       this.visuals.disposeObject(effect.mesh);
     }
     this.effects = [];
+    for (const casing of this.shellCasings ?? []) {
+      this.scene.remove(casing.mesh);
+    }
+    if (this.shellCasings) this.shellCasings.length = 0;
+    for (const frag of this.grenades ?? []) {
+      this.scene.remove(frag.mesh);
+      this.scene.remove(frag.marker);
+      this.visuals.disposeObject(frag.marker);
+    }
+    if (this.grenades) this.grenades.length = 0;
+    this.grenadeCooldown = 0;
+    this.bladeCooldown = 0;
+    this.techEnergy = Math.max(this.techEnergy ?? 0, TECH_ENERGY_START);
+    this.clearDeployablesAndPods();
+    this.orbitalPodTimer = ORBITAL_POD_FIRST_DELAY;
     this.comboCount = 0;
     this.comboTimer = 0;
     this.hitStopTimer = 0;
@@ -1134,12 +1393,12 @@ export class GameEngine {
     // modifier rides along, because walking into an unfamiliar layout expecting
     // the old cover is how a run ends without the player knowing why.
     const modifierNote = this.waveModifier
-      ? ` · ${this.waveModifier.icon} ${this.waveModifier.name.toUpperCase()}`
+      ? ` · ${this.waveModifier.name.toUpperCase()}`
       : "";
     this.announcement = arenaChanged
       ? `Wave ${wave}: ${arena.name.toUpperCase()} — ${arena.blurb}${modifierNote}`
       : this.waveModifier
-        ? `Wave ${wave}: ${this.waveModifier.icon} ${this.waveModifier.name.toUpperCase()} — ${this.waveModifier.blurb}`
+        ? `Wave ${wave}: ${this.waveModifier.name.toUpperCase()} — ${this.waveModifier.blurb}`
         : `Wave ${wave}: ${definition.label}`;
     this.announcementTimer = arenaChanged ? 3.8 : this.waveModifier ? 3.4 : 2.6;
     this.callbacks.onWaveChange(wave);
@@ -1216,12 +1475,12 @@ export class GameEngine {
     if (type === "juggernaut") {
       if (this.wave <= 5) {
         health = 680 * scaling.health; // Wave 5 Prototype Juggernaut (Mk-I)
-        this.announcement = "⚠️ PROTOTYPE JUGGERNAUT DETECTED!";
+        this.announcement = " PROTOTYPE JUGGERNAUT DETECTED!";
         this.announcementTimer = 3.5;
         this.audio.playBossPhaseShift();
       } else {
         health = 1850 * scaling.health; // Wave 10 Titan Dreadnought Prime
-        this.announcement = "🔥 TITAN DREADNOUGHT PRIME HAS ARRIVED!";
+        this.announcement = " TITAN DREADNOUGHT PRIME HAS ARRIVED!";
         this.announcementTimer = 4.0;
         this.audio.playBossPhaseShift();
       }
@@ -1332,23 +1591,36 @@ export class GameEngine {
   }
 
   private fire() {
+    if (this.activeSuperWeapon && this.activeSuperWeapon.ammo > 0) {
+      this.fireSuperWeapon();
+      return;
+    }
     const id = this.getActiveWeaponId();
     const state = this.weaponStates.get(id);
     if (!state) return;
     const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
     if (state.reloading > 0 || state.cooldown > 0) return;
-    if (state.magazine <= 0) {
+    const isOverdrive = (this.overdriveRemaining ?? 0) > 0;
+    if (!isOverdrive && state.magazine <= 0) {
       this.reloadWeapon(id);
       return;
     }
-    state.magazine -= 1;
+
+    const isOverchargedRound = (state.overchargedRounds ?? 0) > 0;
+    const isDodgeEmpowered = this.perfectDodgeShotBuff === true;
+    if (isDodgeEmpowered) this.perfectDodgeShotBuff = false;
+
+    if (!isOverdrive) {
+      state.magazine -= 1;
+      if (isOverchargedRound) state.overchargedRounds = Math.max(0, (state.overchargedRounds ?? 0) - 1);
+    }
 
     this.bulletCount += 1;
     this.stats.shotsFired += stats.pellets;
 
-    // Adrenaline Surge synergy: +40% fire rate when below 45% HP
+    // Adrenaline Surge synergy + Overdrive Surge fire-rate multipliers
     const adrenalineRank = this.adrenalineRank();
-    const fireRateMult = 1 + 0.3 * adrenalineRank;
+    const fireRateMult = (1 + 0.3 * adrenalineRank) * (isOverdrive ? OVERDRIVE_FIRE_RATE_MULT : 1);
     state.cooldown = 1 / (stats.fireRate * fireRateMult);
 
     // Multi-layered audio gunshot
@@ -1361,7 +1633,7 @@ export class GameEngine {
     }
 
     // Gentle camera recoil
-    this.cameraRecoil.addScaledVector(this.aim, -0.025 * recoilWeight);
+    if (!this.profile.settings.reducedMotion) this.cameraRecoil.addScaledVector(this.aim, -0.025 * recoilWeight);
 
     const origin = this.playerRig
       ? this.playerRig.muzzle.getWorldPosition(new THREE.Vector3())
@@ -1369,18 +1641,25 @@ export class GameEngine {
 
     const baseKnockback = id === "shotgun" ? 14 : id === "rifle" ? 9 : id === "pistol" ? 5.5 : 3.2;
 
-    // High Caliber & Synergy modifiers
+    // High Caliber, Overcharge, and Perfect Dodge modifiers
     const highCaliberRank = this.activeSynergies.get("high_caliber") ?? 0;
-    const damageMult = 1 + 0.25 * highCaliberRank;
-    const bulletScale = 1 + 0.25 * highCaliberRank;
-    const knockbackMult = 1 + 0.5 * highCaliberRank;
+    const damageMult =
+      (1 + 0.25 * highCaliberRank) *
+      (isOverchargedRound ? OVERCHARGE_DAMAGE_MULT : 1) *
+      (isDodgeEmpowered ? PERFECT_DODGE_SHOT_BONUS : 1);
+    const bulletScale = 1 + 0.25 * highCaliberRank + (isOverdrive || isOverchargedRound ? 0.18 : 0);
+    const knockbackMult = (1 + 0.5 * highCaliberRank) * (isOverdrive ? 1.25 : 1);
 
     const piercingRank = this.activeSynergies.get("piercing") ?? 0;
     const ricochetRank = this.activeSynergies.get("ricochet") ?? 0;
 
-    // Dynamic Element Bullet Tint
+    // Dynamic Element / Overdrive / Overcharge Bullet Tint
     let bulletColor = stats.color;
-    if (this.activeSynergies.has("cryo_frost")) {
+    if (isOverdrive) {
+      bulletColor = 0xffd740; // Blazing Overdrive gold
+    } else if (isOverchargedRound || isDodgeEmpowered) {
+      bulletColor = 0xfff3a1; // Superheated active-reload / phantom-slip tracer
+    } else if (this.activeSynergies.has("cryo_frost")) {
       bulletColor = 0x00f0ff; // Bright icy frost cyan
     } else if (this.activeSynergies.has("incendiary")) {
       bulletColor = 0xff3d00; // Blazing flame orange
@@ -1411,18 +1690,756 @@ export class GameEngine {
         pierceCount: 0,
         bouncesRemaining: ricochetRank,
         hitEnemies: new Set(),
+        forceCrit: isOverdrive || isDodgeEmpowered,
+        overcharged: isOverchargedRound,
       });
     }
 
-    const flash = this.visuals.createMuzzleFlashMesh(bulletColor);
+    const flash = this.visuals.createMuzzleFlashMesh(isOverdrive ? COMIC.gold : 0xffdaa0);
+    flash.userData.baseScale = id === "shotgun" ? 1.4 : id === "rifle" ? 1.1 : id === "smg" ? 0.55 : 0.8;
+    flash.userData.muzzle = true;
     flash.position.copy(origin).addScaledVector(this.aim, 0.14);
     flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.aim);
     this.scene.add(flash);
-    this.effects.push({ mesh: flash, life: 0.032, maxLife: 0.032 });
+    const flashLife = id === "shotgun" ? 0.065 : id === "smg" ? 0.025 : 0.045;
+    this.effects.push({ mesh: flash, life: flashLife, maxLife: flashLife });
+
+    // Dynamic muzzle flash light & ejected brass shell casing
+    if (this.muzzleLight) {
+      this.muzzleLight.position.copy(origin).setY(1.4);
+      this.muzzleLight.color.setHex(isOverdrive ? COMIC.gold : 0xffcb66);
+      this.muzzleLight.intensity = id === "shotgun" ? 9.5 : id === "rifle" ? 7.5 : 5.5;
+      this.muzzleLightTimer = id === "shotgun" ? 0.085 : 0.055;
+    }
+    this.spawnShellCasing(origin);
 
     // Smooth subtle camera feedback
     this.cameraShake = Math.max(this.cameraShake, id === "shotgun" ? 0.06 : id === "rifle" ? 0.03 : 0.012);
-    if (state.magazine === 0 && state.reserve > 0) this.reloadWeapon(id);
+    if (!isOverdrive && state.magazine === 0 && state.reserve > 0) this.reloadWeapon(id);
+  }
+
+  private spawnShellCasing(origin: THREE.Vector3) {
+    if (this.profile.settings.reducedMotion || !this.visuals.createShellCasing) return;
+    const casing = this.visuals.createShellCasing();
+    casing.position.copy(origin);
+    this.scene.add(casing);
+    // Eject to Kai's right + slightly up with random spread
+    const rightX = -this.aim.z;
+    const rightZ = this.aim.x;
+    const velocity = new THREE.Vector3(
+      rightX * (2.6 + Math.random() * 1.4) + (Math.random() - 0.5) * 0.9,
+      2.4 + Math.random() * 1.2,
+      rightZ * (2.6 + Math.random() * 1.4) + (Math.random() - 0.5) * 0.9,
+    );
+    const spin = new THREE.Vector3(
+      (Math.random() - 0.5) * 18,
+      (Math.random() - 0.5) * 18,
+      (Math.random() - 0.5) * 18,
+    );
+    this.shellCasings.push({ mesh: casing, velocity, spin, life: 0.95 });
+    while (this.shellCasings.length > 28) {
+      const oldest = this.shellCasings.shift();
+      if (oldest) this.scene.remove(oldest.mesh);
+    }
+  }
+
+  throwGrenade() {
+    if (this.paused || (this.grenadeCooldown ?? 0) > 0) return;
+    this.grenadeCooldown = this.grenadeCooldownTotal ?? 8.0;
+
+    const origin = this.playerMesh.position.clone().setY(1.25);
+    const target = this.mouseWorldPos.clone().setY(0);
+    if (this.usingTouchControls && this.touchAimTarget) {
+      target.copy(this.touchAimTarget.mesh.position).setY(0);
+    } else if (target.distanceTo(this.playerMesh.position) < 0.4) {
+      target.copy(this.playerMesh.position).addScaledVector(this.aim, 7.5);
+    }
+    const delta = target.sub(this.playerMesh.position).setY(0);
+    const dist = Math.min(12.5, Math.max(2.2, delta.length()));
+    const dir = delta.lengthSq() > 0.001 ? delta.normalize() : this.aim.clone();
+    const landX = THREE.MathUtils.clamp(this.playerMesh.position.x + dir.x * dist, -ARENA_LIMIT + 0.8, ARENA_LIMIT - 0.8);
+    const landZ = THREE.MathUtils.clamp(this.playerMesh.position.z + dir.z * dist, -ARENA_LIMIT + 0.8, ARENA_LIMIT - 0.8);
+
+    const fuse = 0.72;
+    const mesh = this.visuals.createFragGrenade?.() ?? new THREE.Group();
+    mesh.position.copy(origin);
+    this.scene.add(mesh);
+
+    const marker = this.visuals.createTelegraphCircle?.(4.8) ?? new THREE.Group();
+    marker.position.set(landX, 0.05, landZ);
+    this.scene.add(marker);
+
+    const velocity = new THREE.Vector3(
+      (landX - origin.x) / (fuse * 0.82),
+      5.2,
+      (landZ - origin.z) / (fuse * 0.82),
+    );
+    this.grenades.push({ mesh, marker, velocity, fuse, maxFuse: fuse, bounced: false });
+    this.audio.playGrenadeThrow?.();
+    this.emitHud(true);
+  }
+
+  private updateGrenades(dt: number) {
+    if ((this.grenadeCooldown ?? 0) > 0) {
+      this.grenadeCooldown = Math.max(0, this.grenadeCooldown - dt);
+    }
+    for (let i = (this.grenades?.length ?? 0) - 1; i >= 0; i -= 1) {
+      const frag = this.grenades[i];
+      frag.fuse -= dt;
+      frag.velocity.y -= 18 * dt;
+      frag.mesh.position.addScaledVector(frag.velocity, dt);
+      frag.mesh.rotation.x += dt * 11;
+      frag.mesh.rotation.z += dt * 8;
+      if (frag.mesh.position.y <= 0.2) {
+        frag.mesh.position.y = 0.2;
+        frag.velocity.y = Math.abs(frag.velocity.y) * 0.35;
+        frag.velocity.x *= 0.45;
+        frag.velocity.z *= 0.45;
+        if (!frag.bounced) {
+          frag.bounced = true;
+          this.audio.playSurfaceImpact?.("metal");
+        }
+      }
+      frag.marker.position.set(frag.mesh.position.x, 0.05, frag.mesh.position.z);
+      const progress = 1 - Math.max(0, frag.fuse) / frag.maxFuse;
+      frag.marker.getObjectByName("telegraph-fill")?.scale.setScalar(Math.max(0.08, progress));
+
+      if (frag.fuse <= 0) {
+        this.detonateGrenade(frag);
+        this.scene.remove(frag.mesh);
+        this.scene.remove(frag.marker);
+        this.visuals.disposeObject(frag.marker);
+        this.grenades.splice(i, 1);
+      }
+    }
+  }
+
+  private detonateGrenade(frag: FragGrenadeEntity) {
+    const position = frag.mesh.position.clone().setY(0);
+    const radius = 5.2;
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      const enemy = this.enemies[index];
+      if (!enemy) continue;
+      const dist = enemy.mesh.position.distanceTo(position);
+      if (dist <= radius + enemy.definition.radius) {
+        const push = enemy.mesh.position.clone().sub(position).setY(0).normalize();
+        this.damageEnemy(enemy, 165 * (1 - dist / (radius * 1.45)), 18, push, "splash");
+        enemy.windupTimer = 0;
+        this.clearTelegraph(enemy);
+      }
+    }
+    for (const barrel of this.barrels) {
+      if (!barrel.active || barrel.chainTimer !== undefined) continue;
+      if (barrel.mesh.position.distanceTo(position) <= radius + 0.8) {
+        barrel.chainTimer = 0.06;
+      }
+    }
+    const fireball = this.visuals.createFireballExplosion?.(radius * 0.72, COMIC.fire);
+    if (fireball) {
+      fireball.position.copy(position);
+      this.scene.add(fireball);
+      this.effects.push({ mesh: fireball, life: 0.48, maxLife: 0.48 });
+    }
+    this.visuals.addScorchDecal?.(this.scene, position, 1.15);
+    this.flashBlastLight(position, COMIC.fire, 14);
+    this.postChromatic = Math.max(this.postChromatic ?? 0, 0.85);
+    this.cameraShake = Math.max(this.cameraShake, 0.75);
+    this.audio.playExplosion();
+    this.spawnFloatingText(position.clone().setY(1.8), "FRAG OUT!", "combo");
+  }
+
+  private flashBlastLight(position: THREE.Vector3, color: number, intensity = 12) {
+    if (!this.blastLight) return;
+    this.blastLight.position.set(position.x, 2.2, position.z);
+    this.blastLight.color.setHex(color);
+    this.blastLight.intensity = intensity;
+    this.blastLightTimer = 0.24;
+  }
+
+  // ── SUPER-WEAPONS (Orbital Drop Pod Overrides) ────────────────────────────
+  private fireSuperWeapon() {
+    const active = this.activeSuperWeapon;
+    if (!active || (this.superWeaponCooldown ?? 0) > 0) return;
+    const def = SUPER_WEAPONS[active.id];
+    const isOverdrive = (this.overdriveRemaining ?? 0) > 0;
+    const fireRateMult = isOverdrive ? OVERDRIVE_FIRE_RATE_MULT : 1;
+    this.superWeaponCooldown = 1 / (def.fireRate * fireRateMult);
+    if (!isOverdrive) active.ammo -= 1;
+
+    const origin = this.playerRig
+      ? this.playerRig.muzzle.getWorldPosition(new THREE.Vector3())
+      : this.playerMesh.position.clone().add(new THREE.Vector3(this.aim.x * 0.85, 1.2, this.aim.z * 0.85));
+
+    if (active.id === "railcannon") {
+      // Hyper-velocity screen-splitting piercing beam!
+      const end = origin.clone().addScaledVector(this.aim, 28);
+      for (let i = this.enemies.length - 1; i >= 0; i -= 1) {
+        const enemy = this.enemies[i];
+        if (!enemy || enemy.health <= 0) continue;
+        const t = segmentCircleHit(origin, end, enemy.mesh.position, enemy.definition.radius + 0.65);
+        if (t !== null) {
+          this.damageEnemy(enemy, def.damage, 16, this.aim, "bullet", { forceCrit: true });
+        }
+      }
+      for (const barrel of this.barrels) {
+        if (!barrel.active) continue;
+        if (segmentCircleHit(origin, end, barrel.mesh.position, 0.9) !== null) {
+          this.explodeBarrel(barrel);
+        }
+      }
+      const beam = this.visuals.createRailgunBeam?.(origin, end, def.color);
+      if (beam) {
+        this.scene.add(beam);
+        this.effects.push({ mesh: beam, life: 0.28, maxLife: 0.28 });
+      }
+      this.flashBlastLight(origin, def.color, 13);
+      this.postChromatic = Math.max(this.postChromatic ?? 0, 0.85);
+      this.cameraShake = Math.max(this.cameraShake, 0.65);
+      this.audio.playRailcannon?.();
+      this.stats.shotsFired += 1;
+    } else if (active.id === "minigun") {
+      // Blistering explosive rotary firestorm!
+      const angle = Math.atan2(this.aim.z, this.aim.x) + THREE.MathUtils.randFloatSpread(0.16);
+      const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+      const bullet = new THREE.Mesh(this.tracerGeometry("rifle", 1.15), this.tracerMaterial(def.color));
+      bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      bullet.position.copy(origin);
+      this.scene.add(bullet);
+      this.projectiles.push({
+        mesh: bullet,
+        velocity: dir.clone().multiplyScalar(44),
+        direction: dir,
+        damage: def.damage,
+        knockback: 6,
+        life: 1.25,
+        enemy: false,
+        maxPierces: 1,
+        pierceCount: 0,
+        hitEnemies: new Set(),
+        ignites: true,
+        forceCrit: isOverdrive,
+      });
+      this.audio.playShoot("smg");
+      this.spawnShellCasing(origin);
+      if (this.muzzleLight) {
+        this.muzzleLight.position.copy(origin).setY(1.4);
+        this.muzzleLight.color.setHex(def.color);
+        this.muzzleLight.intensity = 7.5;
+        this.muzzleLightTimer = 0.05;
+      }
+      this.cameraShake = Math.max(this.cameraShake, 0.04);
+      this.stats.shotsFired += 1;
+    } else if (active.id === "sawblade") {
+      // Giant spinning golden buzzsaws that pierce AND ricochet 5 times!
+      const dir = this.aim.clone().normalize();
+      const saw = this.visuals.createSawbladeProjectile?.() ?? new THREE.Mesh(this.tracerGeometry("shotgun", 1.5), this.tracerMaterial(def.color));
+      saw.position.copy(origin).setY(1.0);
+      this.scene.add(saw);
+      this.projectiles.push({
+        mesh: saw,
+        velocity: dir.clone().multiplyScalar(25),
+        direction: dir,
+        damage: def.damage,
+        knockback: 12,
+        life: 3.2,
+        enemy: false,
+        maxPierces: 8,
+        pierceCount: 0,
+        bouncesRemaining: 5,
+        hitEnemies: new Set(),
+        isSawblade: true,
+        forceCrit: isOverdrive,
+      });
+      this.audio.playSawblade?.();
+      this.cameraShake = Math.max(this.cameraShake, 0.14);
+      this.stats.shotsFired += 1;
+    }
+
+    if (active.ammo <= 0) {
+      this.activeSuperWeapon = null;
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.7), "SUPER-WEAPON DEPLETED", "ammo");
+      this.emitHud(true);
+    }
+  }
+
+  // ── CYBER-BLADE SLASH, DEFLECT & TELEPORT-EXECUTION CHAINS ────────────────
+  performBladeSlash() {
+    if (this.paused || this.playerHealth <= 0 || (this.bladeCooldown ?? 0) > 0) return;
+
+    const playerPos = this.playerMesh.position;
+
+    // 1. Deflect nearby enemy projectiles right back at them for 4x damage!
+    let deflected = 0;
+    for (const proj of this.projectiles) {
+      if (!proj.enemy) continue;
+      if (proj.mesh.position.distanceTo(playerPos) <= BLADE_DEFLECT_RADIUS) {
+        proj.enemy = false;
+        proj.direction.copy(this.aim).normalize();
+        proj.velocity.copy(proj.direction).multiplyScalar(32);
+        proj.damage = Math.max(85, proj.damage * 4);
+        proj.life = 1.6;
+        proj.forceCrit = true;
+        deflected += 1;
+      }
+    }
+    if (deflected > 0) {
+      this.addOverdriveCharge(14 * deflected);
+      this.spawnFloatingText(playerPos.clone().setY(1.9), "DEFLECT!", "combo");
+    }
+
+    // 2. Find nearest executable target within Blink-Execute range!
+    let execTarget: EnemyEntity | null = null;
+    let bestDistSq = BLADE_EXECUTE_RANGE * BLADE_EXECUTE_RANGE;
+    for (const enemy of this.enemies) {
+      if (!isEnemyExecutable(enemy.health, enemy.maxHealth, enemy.type === "juggernaut")) continue;
+      const distSq = enemy.mesh.position.distanceToSquared(playerPos);
+      if (distSq <= bestDistSq) {
+        bestDistSq = distSq;
+        execTarget = enemy;
+      }
+    }
+
+    if (execTarget) {
+      // TELEPORT-BLINK EXECUTION CHAIN!
+      if (!this.profile.settings.reducedMotion) {
+        const ghost = this.visuals.createDashGhost?.(this.playerMesh);
+        if (ghost) {
+          this.scene.add(ghost);
+          this.effects.push({ mesh: ghost, life: 0.28, maxLife: 0.28, fade: true });
+        }
+      }
+      const targetPos = execTarget.mesh.position.clone();
+      const approach = targetPos.clone().sub(playerPos).setY(0);
+      const dir = approach.lengthSq() > 0.001 ? approach.normalize() : this.aim.clone();
+      this.aim.copy(dir);
+      const blinkPos = targetPos.clone().addScaledVector(dir, 1.15);
+      for (const obs of this.obstacles) resolveCircleObstacle(blinkPos, 0.48, obs);
+      blinkPos.x = THREE.MathUtils.clamp(blinkPos.x, -ARENA_LIMIT + 0.5, ARENA_LIMIT - 0.5);
+      blinkPos.z = THREE.MathUtils.clamp(blinkPos.z, -ARENA_LIMIT + 0.5, ARENA_LIMIT - 0.5);
+      this.playerMesh.position.set(blinkPos.x, 0, blinkPos.z);
+      this.playerMesh.rotation.y = Math.atan2(dir.x, dir.z);
+
+      const arc = this.visuals.createBladeSlashArc?.(true);
+      if (arc) {
+        arc.position.copy(targetPos);
+        arc.rotation.y = Math.atan2(dir.x, dir.z);
+        this.scene.add(arc);
+        this.effects.push({ mesh: arc, life: 0.26, maxLife: 0.26 });
+      }
+
+      // Instant execution + AoE cleave around the executed target!
+      this.damageEnemy(execTarget, execTarget.health + 500, 18, dir, "splash", { forceCrit: true });
+      for (let i = this.enemies.length - 1; i >= 0; i -= 1) {
+        const other = this.enemies[i];
+        if (!other || other === execTarget) continue;
+        if (other.mesh.position.distanceTo(targetPos) <= 3.3) {
+          const push = other.mesh.position.clone().sub(targetPos).setY(0).normalize();
+          this.damageEnemy(other, BLADE_SLASH_DAMAGE, 14, push, "splash");
+          other.windupTimer = 0;
+          this.clearTelegraph(other);
+        }
+      }
+
+      // Execution payoffs: Heal, instant mag refill, Tech Energy, Overdrive, AND instant cooldown reset!
+      const healed = Math.min(BLADE_EXECUTE_HEAL, this.maxHealth - this.playerHealth);
+      if (healed > 0) this.playerHealth += healed;
+      const activeId = this.getActiveWeaponId();
+      const activeState = this.weaponStates.get(activeId);
+      if (activeState) {
+        const stats = getWeaponStats(activeId, this.profile.weaponRanks[activeId]);
+        activeState.magazine = stats.magazine;
+        activeState.reloading = 0;
+      }
+      this.techEnergy = Math.min(TECH_ENERGY_MAX, (this.techEnergy ?? 0) + TECH_ENERGY_EXECUTE_GAIN);
+      this.addOverdriveCharge(18);
+      this.bladeCooldown = 0.08; // Ready to chain-execute immediately!
+      this.bulletTimeTimer = Math.max(this.bulletTimeTimer ?? 0, 0.16);
+      this.bulletTimeScale = 0.35;
+      this.flashBlastLight(targetPos, COMIC.gold, 11);
+      this.postChromatic = Math.max(this.postChromatic ?? 0, 0.72);
+      this.cameraShake = Math.max(this.cameraShake, 0.45);
+      this.audio.playBladeSlash?.(true);
+      this.spawnFloatingText(targetPos.clone().setY(2.1), "EXECUTE!", "combo");
+      this.emitHud(true);
+      return;
+    }
+
+    // 3. Standard 180° Plasma Blade Cleave
+    this.bladeCooldown = BLADE_COOLDOWN;
+    const arc = this.visuals.createBladeSlashArc?.(false);
+    if (arc) {
+      arc.position.copy(playerPos);
+      arc.rotation.y = Math.atan2(this.aim.x, this.aim.z);
+      this.scene.add(arc);
+      this.effects.push({ mesh: arc, life: 0.2, maxLife: 0.2 });
+    }
+    for (let i = this.enemies.length - 1; i >= 0; i -= 1) {
+      const enemy = this.enemies[i];
+      if (!enemy) continue;
+      const toEnemy = enemy.mesh.position.clone().sub(playerPos).setY(0);
+      const dist = toEnemy.length();
+      if (dist > BLADE_SLASH_RANGE + enemy.definition.radius) continue;
+      const dirToEnemy = dist > 0.01 ? toEnemy.divideScalar(dist) : this.aim.clone();
+      if (dirToEnemy.dot(this.aim) < -0.25 && dist > 1.35) continue;
+      this.damageEnemy(enemy, BLADE_SLASH_DAMAGE, 16, dirToEnemy, "splash");
+      enemy.windupTimer = 0;
+      this.clearTelegraph(enemy);
+    }
+    this.audio.playBladeSlash?.(false);
+    this.cameraShake = Math.max(this.cameraShake, 0.16);
+    this.emitHud(true);
+  }
+
+  // ── DEPLOYABLE AUTO-TURRETS & TESLA LASER-FENCE PYLONS ────────────────────
+  deployTurret() {
+    this.deployStructure("turret");
+  }
+
+  deployPylon() {
+    this.deployStructure("pylon");
+  }
+
+  private deployStructure(kind: "turret" | "pylon") {
+    if (this.paused || this.playerHealth <= 0) return;
+    const cost = kind === "turret" ? TURRET_COST : PYLON_COST;
+    if ((this.techEnergy ?? 0) < cost) {
+      this.audio.tone(180, 0.06, 0.05, "square");
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.6), `NEED ${cost} TECH`, "ammo");
+      return;
+    }
+
+    const pos = this.playerMesh.position.clone().addScaledVector(this.aim, 2.2);
+    pos.x = THREE.MathUtils.clamp(pos.x, -ARENA_LIMIT + 1.2, ARENA_LIMIT - 1.2);
+    pos.z = THREE.MathUtils.clamp(pos.z, -ARENA_LIMIT + 1.2, ARENA_LIMIT - 1.2);
+    for (const obs of this.obstacles) resolveCircleObstacle(pos, 0.85, obs);
+
+    this.techEnergy = Math.max(0, (this.techEnergy ?? 0) - cost);
+
+    // Enforce active cap by replacing the oldest of the same type
+    const cap = kind === "turret" ? TURRET_MAX_ACTIVE : PYLON_MAX_ACTIVE;
+    const existingOfKind = this.deployables.filter((d) => d.kind === kind);
+    if (existingOfKind.length >= cap) {
+      const oldest = existingOfKind[0];
+      this.removeDeployable(oldest);
+    }
+
+    const mesh = kind === "turret" ? (this.visuals.createAutoTurret?.() ?? new THREE.Group()) : (this.visuals.createTeslaPylon?.() ?? new THREE.Group());
+    mesh.position.set(pos.x, 0, pos.z);
+    this.scene.add(mesh);
+
+    const maxHealth = kind === "turret" ? TURRET_HEALTH : PYLON_HEALTH;
+    this.deployables.push({
+      kind,
+      mesh,
+      x: pos.x,
+      z: pos.z,
+      health: maxHealth,
+      maxHealth,
+      life: 40,
+      cooldown: 0.25,
+    });
+
+    const shock = this.visuals.createShockwaveMesh?.(2.6, COMIC.electric);
+    if (shock) {
+      shock.position.set(pos.x, 0.06, pos.z);
+      this.scene.add(shock);
+      this.effects.push({ mesh: shock, life: 0.35, maxLife: 0.35 });
+    }
+    this.flashBlastLight(pos, COMIC.electric, 9);
+    this.cameraShake = Math.max(this.cameraShake, 0.22);
+    this.audio.playDeployStructure?.();
+    this.spawnFloatingText(pos.clone().setY(1.8), kind === "turret" ? "TURRET ONLINE!" : "TESLA PYLON!", "combo");
+
+    if (kind === "pylon") this.rebuildLaserFences();
+    this.emitHud(true);
+  }
+
+  private removeDeployable(target: DeployableEntity) {
+    const idx = this.deployables.indexOf(target);
+    if (idx < 0) return;
+    this.scene.remove(target.mesh);
+    this.visuals.disposeObject(target.mesh);
+    this.deployables.splice(idx, 1);
+    if (target.kind === "pylon") this.rebuildLaserFences();
+  }
+
+  private rebuildLaserFences() {
+    for (const fence of this.laserFences) {
+      this.scene.remove(fence.mesh);
+      this.visuals.disposeObject(fence.mesh);
+    }
+    this.laserFences = [];
+    const pylons = this.deployables.filter((d) => d.kind === "pylon");
+    const maxDistSq = PYLON_FENCE_MAX_DIST * PYLON_FENCE_MAX_DIST;
+    for (let i = 0; i < pylons.length; i += 1) {
+      for (let j = i + 1; j < pylons.length; j += 1) {
+        const a = pylons[i];
+        const b = pylons[j];
+        const dx = a.x - b.x;
+        const dz = a.z - b.z;
+        if (dx * dx + dz * dz <= maxDistSq) {
+          const mesh = this.visuals.createLaserFenceBeam?.(new THREE.Vector3(a.x, 0, a.z), new THREE.Vector3(b.x, 0, b.z));
+          if (mesh) {
+            this.scene.add(mesh);
+            this.laserFences.push({ a, b, mesh, tickTimer: 0 });
+          }
+        }
+      }
+    }
+  }
+
+  private updateDeployables(dt: number) {
+    if (this.waveActive && this.playerHealth > 0) {
+      this.techEnergy = Math.min(TECH_ENERGY_MAX, (this.techEnergy ?? 0) + TECH_ENERGY_REGEN_PER_SEC * dt);
+    }
+    if ((this.bladeCooldown ?? 0) > 0) this.bladeCooldown = Math.max(0, this.bladeCooldown - dt);
+    if ((this.superWeaponCooldown ?? 0) > 0) this.superWeaponCooldown = Math.max(0, this.superWeaponCooldown - dt);
+
+    for (let i = (this.deployables?.length ?? 0) - 1; i >= 0; i -= 1) {
+      const dep = this.deployables[i];
+      dep.life -= dt;
+      dep.cooldown -= dt;
+
+      if (dep.kind === "turret") {
+        // Aim at nearest enemy and fire rapid cyan tracer rounds
+        let target: EnemyEntity | null = null;
+        let bestSq = TURRET_RANGE * TURRET_RANGE;
+        for (const enemy of this.enemies) {
+          if (enemy.health <= 0) continue;
+          const dx = enemy.mesh.position.x - dep.x;
+          const dz = enemy.mesh.position.z - dep.z;
+          const dSq = dx * dx + dz * dz;
+          if (dSq < bestSq) {
+            bestSq = dSq;
+            target = enemy;
+          }
+        }
+        if (target) {
+          const dx = target.mesh.position.x - dep.x;
+          const dz = target.mesh.position.z - dep.z;
+          const head = dep.mesh.getObjectByName("turret-head");
+          if (head) head.rotation.y = Math.atan2(dx, dz);
+          if (dep.cooldown <= 0) {
+            dep.cooldown = TURRET_FIRE_INTERVAL;
+            const dir = new THREE.Vector3(dx, 0, dz).normalize();
+            const origin = new THREE.Vector3(dep.x + dir.x * 0.65, 0.85, dep.z + dir.z * 0.65);
+            const bullet = new THREE.Mesh(this.tracerGeometry("smg", 1.05), this.tracerMaterial(COMIC.electric));
+            bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+            bullet.position.copy(origin);
+            this.scene.add(bullet);
+            this.projectiles.push({
+              mesh: bullet,
+              velocity: dir.clone().multiplyScalar(38),
+              direction: dir,
+              damage: TURRET_DAMAGE,
+              knockback: 3.2,
+              life: 1.0,
+              enemy: false,
+              hitEnemies: new Set(),
+            });
+            this.audio.tone(720, 0.03, 0.035, "triangle");
+          }
+        }
+      } else {
+        // Tesla Pylon spins orb & discharges pulsing electric shockwaves
+        const orb = dep.mesh.getObjectByName("pylon-orb");
+        if (orb) orb.rotation.y += dt * 3.2;
+        if (dep.cooldown <= 0) {
+          const nearby = this.enemies
+            .filter((e) => e.health > 0 && Math.hypot(e.mesh.position.x - dep.x, e.mesh.position.z - dep.z) <= PYLON_PULSE_RADIUS)
+            .slice(0, 4);
+          if (nearby.length > 0) {
+            dep.cooldown = PYLON_PULSE_INTERVAL;
+            const points = [new THREE.Vector3(dep.x, 2.2, dep.z)];
+            for (const target of nearby) {
+              points.push(target.mesh.position.clone().setY(1.0));
+              target.health -= PYLON_PULSE_DAMAGE;
+              target.hitFlash = 0.12;
+              target.chilledTimer = Math.max(target.chilledTimer ?? 0, 2.2);
+              target.chillMult = Math.min(target.chillMult ?? 1, 0.65);
+              this.stats.damageDealt += PYLON_PULSE_DAMAGE;
+              this.damageFeedback.add(target, PYLON_PULSE_DAMAGE);
+            }
+            const lightning = this.visuals.createChainLightningMesh?.(points, COMIC.electric);
+            if (lightning) {
+              this.scene.add(lightning);
+              this.effects.push({ mesh: lightning, life: 0.18, maxLife: 0.18 });
+            }
+            this.audio.playChainLightning?.();
+          }
+        }
+      }
+
+      if (dep.life <= 0 || dep.health <= 0) {
+        this.removeDeployable(dep);
+      }
+    }
+
+    // Electric Laser Fences slice any enemy crossing between two linked Tesla Pylons!
+    for (const fence of this.laserFences ?? []) {
+      fence.tickTimer -= dt;
+      if (fence.tickTimer > 0) continue;
+      fence.tickTimer = 0.18;
+      for (const enemy of this.enemies) {
+        if (enemy.health <= 0) continue;
+        const hitRadius = enemy.definition.radius + 0.32;
+        const distSq = pointToSegmentDistanceSq(
+          enemy.mesh.position.x,
+          enemy.mesh.position.z,
+          fence.a.x,
+          fence.a.z,
+          fence.b.x,
+          fence.b.z,
+        );
+        if (distSq <= hitRadius * hitRadius) {
+          const dmg = Math.round(PYLON_FENCE_DPS * 0.18);
+          enemy.health -= dmg;
+          enemy.hitFlash = 0.12;
+          enemy.chilledTimer = Math.max(enemy.chilledTimer ?? 0, 1.4);
+          enemy.chillMult = Math.min(enemy.chillMult ?? 1, 0.55);
+          this.stats.damageDealt += dmg;
+          this.damageFeedback.add(enemy, dmg);
+        }
+      }
+    }
+  }
+
+  private clearDeployablesAndPods() {
+    for (const dep of this.deployables ?? []) {
+      this.scene.remove(dep.mesh);
+      this.visuals.disposeObject(dep.mesh);
+    }
+    if (this.deployables) this.deployables.length = 0;
+    for (const fence of this.laserFences ?? []) {
+      this.scene.remove(fence.mesh);
+      this.visuals.disposeObject(fence.mesh);
+    }
+    if (this.laserFences) this.laserFences.length = 0;
+    for (const pod of this.orbitalPods ?? []) {
+      this.scene.remove(pod.podMesh);
+      this.visuals.disposeObject(pod.podMesh);
+      if (pod.beamMesh) {
+        this.scene.remove(pod.beamMesh);
+        this.visuals.disposeObject(pod.beamMesh);
+      }
+    }
+    if (this.orbitalPods) this.orbitalPods.length = 0;
+  }
+
+  // ── ORBITAL SUPPLY DROP PODS (Super-Weapon Events) ────────────────────────
+  private spawnOrbitalPod() {
+    if ((this.orbitalPods?.length ?? 0) >= 2) return;
+    const weapon = pickRandomSuperWeapon();
+    let x = 0;
+    let z = 0;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const cx = THREE.MathUtils.randFloatSpread(24);
+      const cz = THREE.MathUtils.randFloatSpread(24);
+      if (Math.hypot(cx, cz) < 4.0) continue;
+      if (this.pointInsideObstacle(cx, cz, 1.6)) continue;
+      x = cx;
+      z = cz;
+      break;
+    }
+
+    const beamMesh = this.visuals.createOrbitalSkyBeam?.(weapon.color);
+    if (beamMesh) {
+      beamMesh.position.set(x, 0, z);
+      this.scene.add(beamMesh);
+    }
+    const podMesh = this.visuals.createOrbitalDropPod?.(weapon.color) ?? new THREE.Group();
+    podMesh.position.set(x, 26, z);
+    this.scene.add(podMesh);
+
+    this.orbitalPods.push({
+      weaponId: weapon.id,
+      x,
+      z,
+      state: "falling",
+      timer: ORBITAL_POD_FALL_TIME,
+      podMesh,
+      beamMesh,
+    });
+    this.announcement = `ORBITAL DROP INBOUND: ${weapon.name}!`;
+    this.announcementTimer = 2.6;
+    this.audio.tone(440, 0.25, 0.08, "triangle");
+  }
+
+  private updateOrbitalPods(dt: number) {
+    if (this.waveActive && !this.waveCleared && (this.enemies.length > 0 || this.spawnQueue.length > 0)) {
+      this.orbitalPodTimer -= dt;
+      if (this.orbitalPodTimer <= 0) {
+        this.orbitalPodTimer = ORBITAL_POD_INTERVAL;
+        this.spawnOrbitalPod();
+      }
+    }
+
+    for (let i = (this.orbitalPods?.length ?? 0) - 1; i >= 0; i -= 1) {
+      const pod = this.orbitalPods[i];
+      if (pod.state === "falling") {
+        pod.timer -= dt;
+        const progress = 1 - Math.max(0, pod.timer) / ORBITAL_POD_FALL_TIME;
+        pod.podMesh.position.y = Math.max(0, (1 - progress * progress) * 26);
+        if (pod.timer <= 0) {
+          pod.state = "landed";
+          pod.timer = 22; // stays pickable for 22s
+          pod.podMesh.position.y = 0;
+          if (pod.beamMesh) {
+            this.scene.remove(pod.beamMesh);
+            this.visuals.disposeObject(pod.beamMesh);
+            pod.beamMesh = undefined;
+          }
+          // Meteor impact crushes zombies underneath!
+          const impactPos = new THREE.Vector3(pod.x, 0, pod.z);
+          for (let e = this.enemies.length - 1; e >= 0; e -= 1) {
+            const enemy = this.enemies[e];
+            if (!enemy) continue;
+            if (enemy.mesh.position.distanceTo(impactPos) <= ORBITAL_POD_IMPACT_RADIUS + enemy.definition.radius) {
+              const push = enemy.mesh.position.clone().sub(impactPos).setY(0).normalize();
+              this.damageEnemy(enemy, 240, 20, push, "splash");
+            }
+          }
+          const blast = this.visuals.createFireballExplosion?.(3.0, SUPER_WEAPONS[pod.weaponId].color);
+          if (blast) {
+            blast.position.copy(impactPos);
+            this.scene.add(blast);
+            this.effects.push({ mesh: blast, life: 0.45, maxLife: 0.45 });
+          }
+          this.visuals.addScorchDecal?.(this.scene, impactPos, 1.0);
+          this.flashBlastLight(impactPos, SUPER_WEAPONS[pod.weaponId].color, 13);
+          this.cameraShake = Math.max(this.cameraShake, 0.6);
+          this.audio.playPodImpact?.();
+        }
+      } else {
+        pod.timer -= dt;
+        const beacon = pod.podMesh.getObjectByName("pod-beacon");
+        if (beacon) {
+          beacon.rotation.y += dt * 3.0;
+          beacon.position.y = 1.95 + Math.sin(this.missionElapsed * 4.5) * 0.16;
+        }
+        // Check operator pickup!
+        const dist = Math.hypot(this.playerMesh.position.x - pod.x, this.playerMesh.position.z - pod.z);
+        if (dist <= 1.95 && this.playerHealth > 0) {
+          const def = SUPER_WEAPONS[pod.weaponId];
+          this.activeSuperWeapon = { id: def.id, ammo: def.ammo, maxAmmo: def.ammo };
+          this.superWeaponCooldown = 0;
+          this.audio.playFusionUnlock?.();
+          this.announcement = `${def.name} EQUIPPED — ${def.tagline.toUpperCase()}!`;
+          this.announcementTimer = 3.2;
+          this.spawnFloatingText(this.playerMesh.position.clone().setY(2.0), def.name, "combo");
+          this.scene.remove(pod.podMesh);
+          this.visuals.disposeObject(pod.podMesh);
+          this.orbitalPods.splice(i, 1);
+          this.emitHud(true);
+          continue;
+        }
+        if (pod.timer <= 0) {
+          this.scene.remove(pod.podMesh);
+          this.visuals.disposeObject(pod.podMesh);
+          this.orbitalPods.splice(i, 1);
+        }
+      }
+    }
   }
 
   /** Adrenaline Surge rank, or 0 while above the health threshold. */
@@ -1433,6 +2450,33 @@ export class GameEngine {
 
   private reload() {
     const id = this.getActiveWeaponId();
+    const state = this.weaponStates.get(id);
+    if (state && state.reloading > 0) {
+      if (state.activeReloadAttempted) return;
+      state.activeReloadAttempted = true;
+      const progress = normalizedReloadProgress(state);
+      if (evaluateActiveReload(progress) === "perfect") {
+        const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
+        const needed = stats.magazine - state.magazine;
+        const transfer = Math.min(needed, state.reserve);
+        state.magazine += transfer;
+        state.reserve -= transfer;
+        state.reloading = 0;
+        state.overchargedRounds = state.magazine;
+        this.addOverdriveCharge(15);
+        this.audio.playActiveReloadSuccess?.();
+        this.cameraShake = Math.max(this.cameraShake, 0.08);
+        this.spawnFloatingText(this.playerMesh.position.clone().setY(1.65), "OVERCHARGED!", "combo");
+        this.emitHud(true);
+      } else {
+        state.reloading += ACTIVE_RELOAD_JAM_PENALTY;
+        state.reloadDuration = (state.reloadDuration ?? state.reloading) + ACTIVE_RELOAD_JAM_PENALTY;
+        this.audio.playActiveReloadJam?.();
+        this.spawnFloatingText(this.playerMesh.position.clone().setY(1.55), "JAM!", "player-damage");
+        this.emitHud(true);
+      }
+      return;
+    }
     this.reloadWeapon(id);
   }
 
@@ -1443,7 +2487,100 @@ export class GameEngine {
     if (state.reloading > 0 || state.magazine >= stats.magazine || state.reserve <= 0) return;
     const reloadMult = Math.max(0.4, 1 - 0.2 * this.adrenalineRank());
     state.reloading = stats.reload * reloadMult;
+    state.reloadDuration = state.reloading;
+    state.activeReloadAttempted = false;
     this.audio.playReload();
+  }
+
+  private addOverdriveCharge(amount: number) {
+    if ((this.overdriveRemaining ?? 0) > 0 || amount <= 0) return;
+    const before = this.overdriveCharge ?? 0;
+    const next = Math.min(OVERDRIVE_MAX_CHARGE, before + amount);
+    this.overdriveCharge = next;
+    if (before < OVERDRIVE_MAX_CHARGE && next >= OVERDRIVE_MAX_CHARGE) {
+      this.audio.playPerkSelect?.();
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.85), "OVERDRIVE READY!", "combo");
+    }
+  }
+
+  triggerOverdrive() {
+    if (this.paused || (this.overdriveRemaining ?? 0) > 0) return;
+    if ((this.overdriveCharge ?? 0) < OVERDRIVE_MAX_CHARGE) return;
+
+    this.overdriveCharge = 0;
+    this.overdriveRemaining = OVERDRIVE_BASE_DURATION;
+    this.overdriveDuration = OVERDRIVE_BASE_DURATION;
+    this.overdriveExtensionUsed = 0;
+    this.bulletTimeTimer = 0.28;
+    this.bulletTimeScale = 0.28;
+
+    // Instant magazine top-off on Overdrive entry
+    const activeId = this.getActiveWeaponId();
+    const activeState = this.weaponStates.get(activeId);
+    if (activeState) {
+      const stats = getWeaponStats(activeId, this.profile.weaponRanks[activeId]);
+      activeState.magazine = stats.magazine;
+      activeState.reloading = 0;
+      activeState.activeReloadAttempted = false;
+    }
+
+    const origin = this.playerMesh.position.clone();
+    const shock = this.visuals.createShockwaveMesh?.(OVERDRIVE_SHOCKWAVE_RADIUS, COMIC.gold);
+    if (shock) {
+      shock.position.copy(origin).setY(0.1);
+      this.scene.add(shock);
+      this.effects.push({ mesh: shock, life: 0.45, maxLife: 0.45 });
+    }
+    if (!this.profile.settings.reducedMotion) {
+      const lines = this.visuals.createRadialSpeedLinesMesh?.(COMIC.gold);
+      if (lines) {
+        lines.position.copy(origin);
+        this.scene.add(lines);
+        this.effects.push({ mesh: lines, life: 0.24, maxLife: 0.24 });
+      }
+    }
+
+    // Repulse and stagger close hostiles on activation
+    for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
+      const enemy = this.enemies[index];
+      if (!enemy) continue;
+      const dx = enemy.mesh.position.x - origin.x;
+      const dz = enemy.mesh.position.z - origin.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > OVERDRIVE_SHOCKWAVE_RADIUS) continue;
+      const push = new THREE.Vector3(dx || 1, 0, dz).normalize();
+      this.damageEnemy(enemy, 45, 18, push, "splash");
+      enemy.windupTimer = 0;
+      this.clearTelegraph(enemy);
+    }
+
+    this.audio.playOverdriveActivate?.();
+    this.cameraShake = Math.max(this.cameraShake, 0.55);
+    this.announcement = "OVERDRIVE SURGE! INFINITE MAG · 100% CRIT · +45% FIRE RATE";
+    this.announcementTimer = 2.6;
+    this.spawnFloatingText(origin.clone().setY(1.9), "OVERDRIVE!", "combo");
+    this.emitHud(true);
+  }
+
+  private triggerPerfectDodge() {
+    this.dashPerfectUsed = true;
+    this.bulletTimeTimer = PERFECT_DODGE_SLOWMO_DURATION;
+    this.bulletTimeScale = PERFECT_DODGE_SLOWMO_SCALE;
+    this.dashCooldown = Math.max(0, this.dashCooldown * (1 - PERFECT_DODGE_DASH_REFUND));
+    this.perfectDodgeShotBuff = true;
+    this.addOverdriveCharge(PERFECT_DODGE_OVERDRIVE_GAIN);
+    this.audio.playPerfectDodge?.();
+    this.cameraShake = Math.max(this.cameraShake, 0.24);
+    this.spawnFloatingText(this.playerMesh.position.clone().setY(1.85), "PERFECT DODGE!", "combo");
+    if (!this.profile.settings.reducedMotion) {
+      const lines = this.visuals.createRadialSpeedLinesMesh?.(COMIC.electric);
+      if (lines) {
+        lines.position.copy(this.playerMesh.position);
+        this.scene.add(lines);
+        this.effects.push({ mesh: lines, life: 0.2, maxLife: 0.2 });
+      }
+    }
+    this.emitHud(true);
   }
 
   private switchWeapon(direction = 1) {
@@ -1485,9 +2622,10 @@ export class GameEngine {
     if (inputDir.lengthSq() > 1) inputDir.normalize();
 
     // Natural responsive acceleration & deceleration friction
-    // +12% move speed per Adrenaline stack while wounded, as advertised.
+    // +12% move speed per Adrenaline stack while wounded, +28% during Overdrive.
     const adrenalineSpeed = 1 + 0.12 * this.adrenalineRank();
-    const targetSpeed = this.dashRemaining > 0 ? 18.5 : this.moveSpeed * adrenalineSpeed;
+    const overdriveSpeed = (this.overdriveRemaining ?? 0) > 0 ? OVERDRIVE_SPEED_MULT : 1;
+    const targetSpeed = this.dashRemaining > 0 ? 18.5 : this.moveSpeed * adrenalineSpeed * overdriveSpeed;
     const targetVelocity = (this.dashRemaining > 0 ? this.dashDirection : inputDir).clone().multiplyScalar(targetSpeed);
 
     const accelRate = this.dashRemaining > 0 ? 90 : hasInput ? 54 : 18;
@@ -1507,6 +2645,10 @@ export class GameEngine {
     nextPos.x = THREE.MathUtils.clamp(nextPos.x, -ARENA_LIMIT, ARENA_LIMIT);
     nextPos.z = THREE.MathUtils.clamp(nextPos.z, -ARENA_LIMIT, ARENA_LIMIT);
 
+    this.footstepTravel = (this.footstepTravel ?? 0) + this.playerMesh.position.distanceTo(nextPos);
+    if (this.footstepTravel > 1.7 && this.dashRemaining <= 0) {
+      this.footstepTravel = 0; this.audio.playFootstep?.(this.currentArena?.id === "rooftop");
+    }
     this.playerMesh.position.set(nextPos.x, 0, nextPos.z);
 
     // Snappy smoothed aim rotation
@@ -1518,6 +2660,7 @@ export class GameEngine {
     this.playerMesh.rotation.y += facingDelta * (1 - Math.exp(-dt * 32));
 
     if (this.playerRig) {
+      this.playerRig.reloadProgress = normalizedReloadProgress(this.weaponStates.get(this.getActiveWeaponId()));
       this.visuals.animateCharacter(this.playerRig, dt, currentSpeed, false, 0);
       // Dynamic roll/lean during turns and dash
       const strafeTilt = (this.playerVelocity.x * Math.cos(this.playerMesh.rotation.y) - this.playerVelocity.z * Math.sin(this.playerMesh.rotation.y)) * 0.024;
@@ -1529,17 +2672,34 @@ export class GameEngine {
     }
 
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+    if ((this.overdriveRemaining ?? 0) > 0) {
+      this.overdriveRemaining = Math.max(0, this.overdriveRemaining - dt);
+      if (this.overdriveAura) {
+        this.overdriveAura.visible = true;
+        if (!this.profile.settings.reducedMotion) this.overdriveAura.rotation.y += dt * 4.2;
+      }
+    } else if (this.overdriveAura) {
+      this.overdriveAura.visible = false;
+    }
+
     if (this.dashRemaining > 0) {
       const wasDashing = this.dashRemaining;
       this.dashRemaining = Math.max(0, this.dashRemaining - dt);
 
-      // Caustic Jet: lay a damaging trail along the dash path.
+      // Caustic Jet (and Napalm Wake fusion): lay a damaging trail along the dash path.
       const acidRank = this.activeSynergies.get("acid_dash") ?? 0;
       if (acidRank > 0) {
         this.acidTrailTimer -= dt;
         if (this.acidTrailTimer <= 0) {
           this.acidTrailTimer = 0.05;
-          this.spawnHazard(this.playerMesh.position, 1.15, 40 * acidRank, 3.2);
+          const napalmFusion = this.unlockedFusions?.has("napalm_wake") ?? false;
+          this.spawnHazard(
+            this.playerMesh.position,
+            napalmFusion ? 1.45 : 1.15,
+            40 * acidRank * (napalmFusion ? 1.6 : 1),
+            napalmFusion ? 4.2 : 3.2,
+            { variant: napalmFusion ? "napalm" : "acid", ignites: napalmFusion },
+          );
         }
       }
 
@@ -1548,7 +2708,7 @@ export class GameEngine {
       if (kineticRank > 0 && wasDashing > 0 && this.dashRemaining === 0) {
         this.detonateSeismicSurge(kineticRank);
       }
-      if (Math.random() < 0.75) {
+      if (!this.profile.settings.reducedMotion && Math.random() < 0.25) {
         const ghost = this.visuals.createDashGhost(this.playerMesh);
         this.scene.add(ghost);
         this.effects.push({ mesh: ghost, life: 0.24, maxLife: 0.24, fade: true });
@@ -1649,7 +2809,7 @@ export class GameEngine {
           const z = THREE.MathUtils.randFloatSpread(30);
           if (Math.hypot(x - this.playerMesh.position.x, z - this.playerMesh.position.z) < 5) continue;
           if (this.pointInsideObstacle(x, z, 1.4)) continue;
-          this.spawnHazard(new THREE.Vector3(x, 0, z), 1.9, 26, 9);
+          this.spawnHazard(new THREE.Vector3(x, 0, z), 1.9, 26, 9, { hostile: true, variant: "toxic" });
           break;
         }
       }
@@ -1671,7 +2831,7 @@ export class GameEngine {
         this.waveCleared = true;
         this.extractionTimer = 0;
         if (this.extractionZoneMesh) this.extractionZoneMesh.visible = true;
-        this.announcement = "⚡ WAVE CLEARED! Step into the Central Beacon to advance";
+        this.announcement = " WAVE CLEARED! Step into the Central Beacon to advance";
         this.announcementTimer = 4.0;
         this.audio.playPickup("coin");
       }
@@ -1679,7 +2839,7 @@ export class GameEngine {
       if (this.waveCleared) {
         if (this.extractionZoneMesh) {
           this.extractionZoneMesh.visible = true;
-          this.extractionZoneMesh.rotation.y += dt * 1.5;
+          if (!this.profile.settings.reducedMotion) this.extractionZoneMesh.rotation.y += dt * 0.3;
         }
 
         const playerDist = Math.hypot(this.playerMesh.position.x, this.playerMesh.position.z);
@@ -1773,9 +2933,9 @@ export class GameEngine {
           if (hpRatio <= 0.5 && (enemy.bossPhase ?? 1) < 2) {
             enemy.bossPhase = 2;
             this.audio.playBossPhaseShift();
-            this.announcement = "⚠️ PROTOTYPE JUGGERNAUT PHASE 2: GROUND SLAM!";
+            this.announcement = " PROTOTYPE JUGGERNAUT PHASE 2: GROUND SLAM!";
             this.announcementTimer = 3.2;
-            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! 💥", "comic-slam");
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! ", "comic-slam");
             this.spawnReinforcements("runner", 2);
           }
         } else {
@@ -1783,16 +2943,16 @@ export class GameEngine {
           if (hpRatio <= 0.33 && (enemy.bossPhase ?? 1) < 3) {
             enemy.bossPhase = 3;
             this.audio.playBossPhaseShift();
-            this.announcement = "🔥 TITAN ENRAGED: BERSERK STRIKES!";
+            this.announcement = " TITAN ENRAGED: BERSERK STRIKES!";
             this.announcementTimer = 3.5;
-            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "BERSERK! 😡", "comic-rage");
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "BERSERK! ", "comic-rage");
             this.spawnReinforcements("runner", 4);
           } else if (hpRatio <= 0.66 && hpRatio > 0.33 && (enemy.bossPhase ?? 1) < 2) {
             enemy.bossPhase = 2;
             this.audio.playBossPhaseShift();
-            this.announcement = "⚠️ TITAN PHASE 2: GROUND SLAM & SHOCKWAVES!";
+            this.announcement = " TITAN PHASE 2: GROUND SLAM & SHOCKWAVES!";
             this.announcementTimer = 3.2;
-            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! 💥", "comic-slam");
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.4), "PHASE 2! ", "comic-slam");
             this.spawnReinforcements("runner", 3);
           }
         }
@@ -1856,6 +3016,7 @@ export class GameEngine {
         }
       } else {
         if (enemy.type === "juggernaut") {
+          this.updateBossWarning(enemy);
           const phase = enemy.bossPhase ?? 1;
           if (phase === 2 && enemy.specialCooldown <= 0 && distance < 8.2) {
             enemy.specialCooldown = 5.2;
@@ -1865,14 +3026,14 @@ export class GameEngine {
             this.effects.push({ mesh: shock, life: 0.5, maxLife: 0.5 });
             this.audio.playGroundSlam();
             this.cameraShake = Math.max(this.cameraShake, 0.75);
-            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.2), "GROUND SLAM! 💥", "comic-slam");
-            if (distance < 6.2 && this.dashRemaining <= 0) {
+            this.spawnFloatingText(enemy.mesh.position.clone().setY(2.2), "GROUND SLAM! ", "comic-slam");
+            if (distance < 6.2) {
               this.damagePlayer(36);
             }
           } else if (phase !== 2 && enemy.specialCooldown <= 0 && distance > 4.2) {
             enemy.chargeRemaining = phase === 3 ? 1.4 : 1.1;
             enemy.specialCooldown = phase === 3 ? 3.6 : 5.4;
-            this.announcement = phase === 3 ? "🔥 RELENTLESS BERSERK CHARGE!" : "⚠️ Juggernaut charge incoming!";
+            this.announcement = phase === 3 ? " RELENTLESS BERSERK CHARGE!" : " Juggernaut charge incoming!";
             this.announcementTimer = 1.3;
             if (phase === 3) {
               this.visuals.addAcidDecal(this.scene, enemy.mesh.position, 0.8);
@@ -2060,12 +3221,29 @@ export class GameEngine {
         }
       }
 
+      // Show pulsing golden execution marker when wounded enough for Cyber-Blade Teleport Execute!
+      const executable = isEnemyExecutable(enemy.health, enemy.maxHealth, enemy.type === "juggernaut");
+      if (executable && !enemy.executeMarker && this.visuals.createExecuteMarker) {
+        enemy.executeMarker = this.visuals.createExecuteMarker(enemy.definition.radius + 0.25);
+        enemy.mesh.add(enemy.executeMarker);
+      }
+      if (enemy.executeMarker) {
+        enemy.executeMarker.visible = executable;
+        if (executable) {
+          const pip = enemy.executeMarker.getObjectByName("exec-pip");
+          if (pip) {
+            pip.rotation.y += dt * 4.5;
+            pip.position.y = enemy.definition.radius * 2.1 + 1.45 + Math.sin(this.missionElapsed * 7) * 0.12;
+          }
+        }
+      }
+
       if (enemy.telegraph) {
         enemy.telegraph.position.copy(enemy.mesh.position).setY(0.05);
-        // Shrink toward the strike so the timing is readable at a glance.
+        // The boundary stays at the real damage radius; only the inner timer fills.
         const behaviour = BEHAVIOURS[enemy.type];
         const progress = 1 - enemy.windupTimer / Math.max(0.0001, behaviour.windup);
-        enemy.telegraph.scale.setScalar(1 - progress * 0.45);
+        enemy.telegraph.getObjectByName("telegraph-fill")?.scale.setScalar(Math.max(0.05, progress));
       }
 
       const isChilled = (enemy.chilledTimer ?? 0) > 0;
@@ -2136,17 +3314,19 @@ export class GameEngine {
       this.damagePlayer(28);
     }
 
-    const blastMaterial = new THREE.MeshBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.78, wireframe: true });
-    const blast = new THREE.Mesh(this.boomerBlastGeometry, blastMaterial);
-    markTransient(blast, { materials: [blastMaterial] });
-    blast.position.copy(position).setY(1.0);
-    this.scene.add(blast);
-    this.effects.push({ mesh: blast, life: 0.45, maxLife: 0.45 });
+    const fireball = this.visuals.createFireballExplosion?.(3.2, COMIC.acid);
+    if (fireball) {
+      fireball.position.copy(position);
+      this.scene.add(fireball);
+      this.effects.push({ mesh: fireball, life: 0.48, maxLife: 0.48 });
+    }
 
     this.visuals.addAcidDecal(this.scene, position, 1.6);
+    this.flashBlastLight(position, COMIC.acid, 11);
+    this.postChromatic = Math.max(this.postChromatic ?? 0, 0.65);
     this.cameraShake = Math.max(this.cameraShake, 0.75);
     this.audio.playBoomerDetonation();
-    this.spawnFloatingText(position.clone().setY(1.6), "BOOM! 💥", "comic-boom");
+    this.spawnFloatingText(position.clone().setY(1.6), "BOOM! ", "comic-boom");
   }
 
   private updateProjectiles(dt: number) {
@@ -2156,6 +3336,7 @@ export class GameEngine {
       const projectile = this.projectiles[index];
       from.copy(projectile.mesh.position);
       to.copy(from).addScaledVector(projectile.velocity, Math.min(dt, projectile.life));
+      if (projectile.isSawblade) projectile.mesh.rotation.y += dt * 26;
       projectile.life -= dt;
 
       // Sweep the whole travelled segment, and resolve the nearest contact
@@ -2193,8 +3374,18 @@ export class GameEngine {
         if (target) {
           projectile.hitEnemies ??= new Set();
           projectile.hitEnemies.add(target);
-          this.damageEnemy(target, projectile.damage, projectile.knockback, projectile.direction,
-            projectile.isShrapnel ? "shrapnel" : "bullet");
+          if (projectile.ignites) {
+            target.burningTimer = Math.max(target.burningTimer ?? 0, 3.5);
+            target.burnDps = Math.max(target.burnDps ?? 0, 26);
+          }
+          this.damageEnemy(
+            target,
+            projectile.damage,
+            projectile.knockback,
+            projectile.direction,
+            projectile.isShrapnel ? "shrapnel" : "bullet",
+            { forceCrit: projectile.forceCrit, overcharged: projectile.overcharged },
+          );
           projectile.pierceCount = (projectile.pierceCount ?? 0) + 1;
           if (projectile.pierceCount <= (projectile.maxPierces ?? 0)) continue;
         } else if (obstacle) {
@@ -2202,6 +3393,10 @@ export class GameEngine {
             this.damageObstacle(obstacle, projectile.damage, projectile.mesh.position);
           } else if ((projectile.bouncesRemaining ?? 0) > 0) {
             projectile.bouncesRemaining! -= 1;
+            if (this.unlockedFusions?.has("rail_bounce")) {
+              projectile.damage = Math.round(projectile.damage * 1.45);
+              projectile.pierceCount = 0;
+            }
             const normal = this.projectileNormal;
             if (obstacle.radius) {
               normal.set(projectile.mesh.position.x - obstacle.x, 0, projectile.mesh.position.z - obstacle.z).normalize();
@@ -2246,6 +3441,23 @@ export class GameEngine {
         continue;
       }
       projectile.mesh.position.copy(to);
+      // Spinning sawblades also bounce off the arena perimeter walls!
+      if (projectile.isSawblade && (projectile.bouncesRemaining ?? 0) > 0 && (Math.abs(to.x) > ARENA_LIMIT || Math.abs(to.z) > ARENA_LIMIT)) {
+        projectile.bouncesRemaining! -= 1;
+        if (Math.abs(to.x) > ARENA_LIMIT) {
+          projectile.velocity.x *= -1;
+          projectile.direction.x *= -1;
+          projectile.mesh.position.x = THREE.MathUtils.clamp(to.x, -ARENA_LIMIT, ARENA_LIMIT);
+        }
+        if (Math.abs(to.z) > ARENA_LIMIT) {
+          projectile.velocity.z *= -1;
+          projectile.direction.z *= -1;
+          projectile.mesh.position.z = THREE.MathUtils.clamp(to.z, -ARENA_LIMIT, ARENA_LIMIT);
+        }
+        projectile.hitEnemies?.clear();
+        this.audio.tone(540, 0.04, 0.05, "sawtooth");
+        continue;
+      }
       if (projectile.life <= 0 || Math.abs(to.x) > 21 || Math.abs(to.z) > 21) this.removeProjectile(index);
     }
   }
@@ -2256,6 +3468,7 @@ export class GameEngine {
     knockbackForce: number,
     bulletDir: THREE.Vector3,
     source: DamageSource = "splash",
+    options?: { forceCrit?: boolean; overcharged?: boolean },
   ) {
     if (source === "bullet") this.stats.shotsHit += 1;
 
@@ -2264,7 +3477,7 @@ export class GameEngine {
       const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), enemy.mesh.rotation.y);
       if (bulletDir.dot(forward) < -0.28) {
         damage = Math.max(1, Math.round(damage * 0.45));
-        this.spawnFloatingText(enemy.mesh.position.clone().setY(2.2), "ARMORED! 🛡️", "damage");
+        this.spawnFloatingText(enemy.mesh.position.clone().setY(2.2), "ARMORED! ", "damage");
         this.audio.tone(160, 0.04, 0.06, "square");
       }
     }
@@ -2284,16 +3497,20 @@ export class GameEngine {
         this.audio.playShieldBreak();
         this.spawnFloatingText(enemy.mesh.position.clone().setY(1.6), "SHIELD BROKEN!", "comic-shield");
       } else {
-        this.spawnFloatingText(enemy.mesh.position.clone().setY(1.4), `${damage} 🛡️`, "ammo");
+        this.damageFeedback.add(enemy, damage);
       }
       this.audio.playHit(false);
       return;
     }
 
     const isChilled = (enemy.chilledTimer ?? 0) > 0;
-    const critChance = 0.2 + (isChilled ? 0.15 : 0);
-    const isCrit = Math.random() < critChance;
+    const critChance =
+      0.2 +
+      (isChilled ? 0.15 : 0) +
+      (options?.overcharged ? OVERCHARGE_CRIT_BONUS : 0);
+    const isCrit = options?.forceCrit === true || Math.random() < critChance;
     const finalDamage = isCrit ? Math.round(damage * 1.55) : Math.round(damage);
+    if (isCrit && source === "bullet") this.addOverdriveCharge(1.5);
 
     enemy.health -= finalDamage;
     enemy.hitFlash = 0.12;
@@ -2304,12 +3521,8 @@ export class GameEngine {
     // Status synergies
     const incendiaryRank = this.activeSynergies.get("incendiary") ?? 0;
     if (incendiaryRank > 0) {
-      const wasBurning = (enemy.burningTimer ?? 0) > 0;
       enemy.burningTimer = 3.8;
       enemy.burnDps = 22 * incendiaryRank;
-      if (!wasBurning || isCrit) {
-        this.spawnFloatingText(hitPos.clone().add(new THREE.Vector3(0, 0.3, 0)), "IGNITE! 🔥", "comic-boom");
-      }
     }
     const cryoRank = this.activeSynergies.get("cryo_frost") ?? 0;
     if (cryoRank > 0) {
@@ -2318,7 +3531,6 @@ export class GameEngine {
       // -30% speed per stack, floored so a chilled enemy never fully freezes.
       enemy.chillMult = Math.max(0.25, 1 - 0.3 * cryoRank);
       if (!wasChilled || isCrit) {
-        this.spawnFloatingText(hitPos.clone().add(new THREE.Vector3(0, 0.3, 0)), "FREEZE! ❄️", "comic-zap");
         this.audio.playFreeze();
       }
     }
@@ -2327,7 +3539,7 @@ export class GameEngine {
     if (this.activeSynergies.has("vampiric_leech") && isCrit) {
       const heal = 4 * (this.activeSynergies.get("vampiric_leech") ?? 1);
       this.playerHealth = Math.min(this.maxHealth, this.playerHealth + heal);
-      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `+${heal} HP 🩸`, "comic-leech");
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `+${heal} HP`, "comic-leech");
     }
 
     // Phantom Reflex reset on elite/boss hit
@@ -2341,24 +3553,31 @@ export class GameEngine {
     // is not what the card promised.
     if (this.activeSynergies.has("tesla_arcs") && (isCrit || (source === "bullet" && this.bulletCount % 4 === 0))) {
       const teslaRank = this.activeSynergies.get("tesla_arcs") ?? 1;
-      const zapDamage = 35 * teslaRank;
+      const superconductor = this.unlockedFusions?.has("superconductor") ?? false;
+      const baseZap = 35 * teslaRank;
+      const maxTargets = superconductor ? 5 : 3;
       const nearby = this.enemies
-        .filter((e) => e !== enemy && e.mesh.position.distanceTo(enemy.mesh.position) < 7.2)
-        .slice(0, 3);
+        .filter((e) => e !== enemy && e.mesh.position.distanceTo(enemy.mesh.position) < (superconductor ? 8.5 : 7.2))
+        .slice(0, maxTargets);
       if (nearby.length > 0) {
         const points = [hitPos];
         for (const target of nearby) {
+          const targetChilled = (target.chilledTimer ?? 0) > 0;
+          const zapDamage = Math.round(baseZap * (superconductor && targetChilled ? 1.8 : 1));
           points.push(target.mesh.position.clone().setY(1.0));
           target.health -= zapDamage;
           target.hitFlash = 0.12;
+          if (superconductor) {
+            target.chilledTimer = Math.max(target.chilledTimer ?? 0, 3.5);
+            target.chillMult = Math.min(target.chillMult ?? 1, 0.6);
+          }
           this.stats.damageDealt += zapDamage;
-          this.spawnFloatingText(target.mesh.position.clone().setY(1.3), `${zapDamage} ⚡`, "comic-zap");
+          this.damageFeedback.add(target, zapDamage, superconductor && targetChilled);
         }
-        const lightning = this.visuals.createChainLightningMesh(points);
+        const lightning = this.visuals.createChainLightningMesh(points, superconductor ? COMIC.frost : COMIC.electric);
         this.scene.add(lightning);
         this.effects.push({ mesh: lightning, life: 0.14, maxLife: 0.14 });
         this.audio.playChainLightning();
-        this.spawnFloatingText(hitPos, "ZAP! ⚡", "comic-zap");
       }
     }
 
@@ -2420,7 +3639,7 @@ export class GameEngine {
       this.hitStopCooldown = HIT_STOP_COOLDOWN;
     }
 
-    this.spawnFloatingText(hitPos, isCrit ? `CRIT ${finalDamage}!` : `${finalDamage}`, isCrit ? "crit" : "damage");
+    this.damageFeedback.add(enemy, finalDamage, isCrit);
     this.audio.playHit(isCrit);
 
     if (enemy.health <= 0) this.killEnemy(enemy);
@@ -2457,7 +3676,26 @@ export class GameEngine {
     this.audio.tone(190, 0.07, 0.03, "square");
   }
 
+  private updateBossWarning(enemy: EnemyEntity) {
+    const slamSoon = enemy.bossPhase === 2 && enemy.specialCooldown <= 0.8;
+    const chargeSoon = enemy.bossPhase !== 2 && (enemy.specialCooldown <= 0.65 || enemy.chargeRemaining > 0);
+    if (slamSoon || chargeSoon) {
+      const radius = slamSoon ? 6.2 : enemy.definition.attackRange + 0.35;
+      if (enemy.specialTelegraph?.userData.radius !== radius) {
+        if (enemy.specialTelegraph) { this.scene.remove(enemy.specialTelegraph); this.visuals.disposeObject(enemy.specialTelegraph); }
+        enemy.specialTelegraph = this.visuals.createTelegraphCircle(radius);
+        enemy.specialTelegraph.userData.radius = radius; this.scene.add(enemy.specialTelegraph);
+      }
+      enemy.specialTelegraph.position.copy(enemy.mesh.position).setY(0.06);
+    } else if (enemy.specialTelegraph) {
+      this.scene.remove(enemy.specialTelegraph); this.visuals.disposeObject(enemy.specialTelegraph); enemy.specialTelegraph = undefined;
+    }
+  }
+
   private clearTelegraph(enemy: EnemyEntity) {
+    if (enemy.specialTelegraph) {
+      this.scene.remove(enemy.specialTelegraph); this.visuals.disposeObject(enemy.specialTelegraph); enemy.specialTelegraph = undefined;
+    }
     if (!enemy.telegraph) return;
     this.scene.remove(enemy.telegraph);
     this.visuals.disposeObject(enemy.telegraph);
@@ -2480,9 +3718,14 @@ export class GameEngine {
     }
     this.clearTelegraph(enemy);
     const position = enemy.mesh.position.clone();
-    this.visuals.disposeCharacter(enemy.rig);
-    this.scene.remove(enemy.mesh);
+    // Remove the simulation entity immediately. The corpse owns only its rig.
     this.enemies.splice(index, 1);
+    enemy.healthBar?.removeFromParent(); enemy.shieldMesh?.removeFromParent(); enemy.executeMarker?.removeFromParent();
+    this.visuals.beginDeath(enemy.rig);
+    this.corpses.push({ rig: enemy.rig, life: 0.85 });
+    while (this.corpses.length > 10) {
+      const oldest = this.corpses.shift(); if (oldest) this.visuals.disposeCharacter(oldest.rig);
+    }
 
     if (enemy.type === "boomer") {
       this.explodeBoomer(enemy);
@@ -2513,13 +3756,8 @@ export class GameEngine {
     this.comboTimer = 2.8;
     this.stats.peakCombo = Math.max(this.stats.peakCombo, this.comboCount);
 
-    // Spider-Verse Pop-Art Comic Sound Word Bubbles on Kill
-    const comicKillWords = ["BAM! 💥", "POW! 💥", "KRAAKOOM! ⚡", "SMASH! 💫", "K.O.! 🥊", "WHAM! 💫"];
-    if (enemy.isElite || enemy.type === "juggernaut" || Math.random() < 0.32) {
-      const word = enemy.type === "juggernaut"
-        ? "KRAAKOOM! 💥"
-        : comicKillWords[Math.floor(Math.random() * comicKillWords.length)];
-      this.spawnFloatingText(position.clone().add(new THREE.Vector3(0, 1.4, 0)), word, "comic-boom");
+    if (enemy.type === "juggernaut") {
+      this.spawnFloatingText(position.clone().setY(2), "KRAKOOM!", "comic-boom");
     }
 
     let milestone = false;
@@ -2543,10 +3781,30 @@ export class GameEngine {
     if (milestone && leechRank > 0 && this.playerHealth > 0) {
       const heal = 4 * leechRank;
       this.playerHealth = Math.min(this.maxHealth, this.playerHealth + heal);
-      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `+${heal} HP 🩸`, "comic-leech");
+      this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `+${heal} HP`, "comic-leech");
     }
 
-    this.createPickup("coin", position, enemy.reward);
+    // Charge Overdrive & Tech Energy on kill + refund frag cooldown
+    if ((this.grenadeCooldown ?? 0) > 0) {
+      this.grenadeCooldown = Math.max(0, this.grenadeCooldown - 0.5);
+    }
+    this.techEnergy = Math.min(TECH_ENERGY_MAX, (this.techEnergy ?? 0) + TECH_ENERGY_KILL_GAIN);
+    if ((this.overdriveRemaining ?? 0) > 0) {
+      const remainingExtensionBudget = Math.max(0, OVERDRIVE_MAX_EXTENSION - (this.overdriveExtensionUsed ?? 0));
+      const ext = Math.min(OVERDRIVE_KILL_EXTENSION, remainingExtensionBudget);
+      if (ext > 0) {
+        this.overdriveRemaining += ext;
+        this.overdriveDuration = Math.max(this.overdriveDuration, this.overdriveRemaining);
+        this.overdriveExtensionUsed = (this.overdriveExtensionUsed ?? 0) + ext;
+      }
+    } else {
+      const chargeGain = enemy.type === "juggernaut" ? 40 : enemy.isElite ? 20 : 12;
+      this.addOverdriveCharge(chargeGain + (milestone ? 10 : 0));
+    }
+
+    // Combo salvage multiplier rewards aggressive streaks!
+    const comboMult = getComboSalvageMultiplier(this.comboCount);
+    this.createPickup("coin", position, Math.round(enemy.reward * comboMult));
     if (Math.random() < 0.18 || (this.activeAmmoTotal() < 5 && Math.random() < 0.75)) {
       this.createPickup("ammo", position.clone().add(new THREE.Vector3(0.55, 0, 0)), 1);
     }
@@ -2566,7 +3824,9 @@ export class GameEngine {
   }
 
   private explodeBarrel(barrel: BarrelEntity) {
+    if (!barrel.active) return;
     barrel.active = false;
+    barrel.chainTimer = undefined;
     barrel.mesh.visible = false;
     const position = barrel.mesh.position.clone();
     for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
@@ -2579,16 +3839,36 @@ export class GameEngine {
       }
     }
 
-    const blastMaterial = new THREE.MeshBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.75, wireframe: true });
-    const blast = new THREE.Mesh(this.barrelBlastGeometry, blastMaterial);
-    markTransient(blast, { materials: [blastMaterial] });
-    blast.position.copy(position).setY(0.9);
-    this.scene.add(blast);
-    this.effects.push({ mesh: blast, life: 0.45, maxLife: 0.45 });
+    // Chain-detonate nearby explosive barrels with a crisp staggered fuse!
+    for (const other of this.barrels) {
+      if (!other.active || other === barrel || other.chainTimer !== undefined) continue;
+      if (other.mesh.position.distanceTo(position) <= BARREL_CHAIN_RADIUS) {
+        other.chainTimer = BARREL_CHAIN_DELAY;
+      }
+    }
 
-    this.visuals.addBloodDecal(this.scene, position, 1.4);
+    const fireball = this.visuals.createFireballExplosion?.(3.8, COMIC.fire);
+    if (fireball) {
+      fireball.position.copy(position);
+      this.scene.add(fireball);
+      this.effects.push({ mesh: fireball, life: 0.5, maxLife: 0.5 });
+    }
+
+    this.visuals.addScorchDecal?.(this.scene, position, 1.3);
+    this.flashBlastLight(position, COMIC.fire, 15);
+    this.postChromatic = Math.max(this.postChromatic ?? 0, 0.9);
     this.cameraShake = 0.8;
     this.audio.playExplosion();
+  }
+
+  private updateBarrels(dt: number) {
+    for (const barrel of this.barrels) {
+      if (!barrel.active || barrel.chainTimer === undefined) continue;
+      barrel.chainTimer -= dt;
+      if (barrel.chainTimer <= 0) {
+        this.explodeBarrel(barrel);
+      }
+    }
   }
 
   private createDirectionalHitBurst(position: THREE.Vector3, bulletDir: THREE.Vector3, isAcid = false) {
@@ -2628,28 +3908,40 @@ export class GameEngine {
 
       if (distance < 1.1) {
         if (pickup.type === "health" && this.playerHealth >= this.maxHealth) continue;
+        let ammoTargetId: WeaponId | null = null;
         if (pickup.type === "ammo") {
-          const id = this.getActiveWeaponId();
-          const state = this.weaponStates.get(id);
-          if (!state || state.reserve >= getWeaponStats(id, this.profile.weaponRanks[id]).reserve) continue;
+          const activeId = this.getActiveWeaponId();
+          const candidates = [activeId, ...this.getAvailableWeapons().filter((w) => w !== activeId)];
+          for (const candidateId of candidates) {
+            const candidateState = this.weaponStates.get(candidateId);
+            if (candidateState && candidateState.reserve < getWeaponStats(candidateId, this.profile.weaponRanks[candidateId]).reserve) {
+              ammoTargetId = candidateId;
+              break;
+            }
+          }
+          if (!ammoTargetId) continue;
         }
         const pickupPos = pickup.mesh.position.clone().setY(1.2);
         this.audio.playPickup(pickup.type);
         if (pickup.type === "coin") {
           coinsCollected += pickup.value;
-          this.spawnFloatingText(pickupPos, `+${pickup.value} 🪙`, "coin");
-        } else if (pickup.type === "ammo") {
-          const id = this.getActiveWeaponId();
-          const state = this.weaponStates.get(id);
+          this.spawnFloatingText(pickupPos, `+${pickup.value} `, "coin");
+        } else if (pickup.type === "ammo" && ammoTargetId) {
+          const state = this.weaponStates.get(ammoTargetId);
           if (state) {
-            const stats = getWeaponStats(id, this.profile.weaponRanks[id]);
+            const stats = getWeaponStats(ammoTargetId, this.profile.weaponRanks[ammoTargetId]);
             state.reserve = Math.min(stats.reserve, state.reserve + Math.ceil(stats.reserve * 0.35));
           }
-          this.spawnFloatingText(pickupPos, "+AMMO ⚡", "ammo");
+          const isHolstered = ammoTargetId !== this.getActiveWeaponId();
+          this.spawnFloatingText(
+            pickupPos,
+            isHolstered ? `+AMMO (${WEAPONS[ammoTargetId].name.split(" ").pop()?.toUpperCase()})` : "+AMMO",
+            "ammo",
+          );
         } else {
           const healed = Math.min(pickup.value, this.maxHealth - this.playerHealth);
           this.playerHealth += healed;
-          this.spawnFloatingText(pickupPos, `+${healed} HP 💚`, "health");
+          this.spawnFloatingText(pickupPos, `+${healed} HP`, "health");
         }
         this.scene.remove(pickup.mesh);
         this.visuals.disposeObject(pickup.mesh);
@@ -2661,8 +3953,15 @@ export class GameEngine {
   }
 
   /** Drop a lingering damage zone on the ground. */
-  private spawnHazard(position: THREE.Vector3, radius: number, dps: number, life: number) {
-    const pool = this.visuals.createSlimePool(radius);
+  private spawnHazard(
+    position: THREE.Vector3,
+    radius: number,
+    dps: number,
+    life: number,
+    options?: { hostile?: boolean; variant?: "acid" | "toxic" | "napalm"; ignites?: boolean },
+  ) {
+    const variant = options?.variant ?? (options?.hostile ? "toxic" : "acid");
+    const pool = this.visuals.createSlimePool(radius, variant);
     pool.position.set(position.x, 0.03, position.z);
     this.scene.add(pool);
     this.hazards.push({
@@ -2674,6 +3973,8 @@ export class GameEngine {
       life,
       maxLife: life,
       tickTimer: 0,
+      hostile: options?.hostile,
+      ignites: options?.ignites,
     });
     // Cap the trail so a long dash-heavy run cannot accumulate unbounded zones.
     while (this.hazards.length > 40) {
@@ -2685,19 +3986,21 @@ export class GameEngine {
     }
   }
 
-  /** Seismic Surge: a 360 degree shove-and-damage burst around the player. */
+  /** Seismic Surge (and Blood Nova fusion): a 360 degree shove-and-damage burst around the player. */
   private detonateSeismicSurge(rank: number) {
-    const radius = 5.4;
+    const bloodNova = this.unlockedFusions?.has("blood_nova") ?? false;
+    const radius = bloodNova ? 7.3 : 5.4;
     const origin = this.playerMesh.position.clone();
 
-    const shock = this.visuals.createShockwaveMesh(radius, COMIC.electric);
+    const shock = this.visuals.createShockwaveMesh(radius, bloodNova ? COMIC.blood : COMIC.electric);
     shock.position.copy(origin).setY(0.08);
     this.scene.add(shock);
     this.effects.push({ mesh: shock, life: 0.42, maxLife: 0.42 });
     this.audio.playGroundSlam();
     this.cameraShake = Math.max(this.cameraShake, 0.4);
-    this.spawnFloatingText(origin.clone().setY(1.5), "SEISMIC SURGE! 💫", "comic-slam");
+    this.spawnFloatingText(origin.clone().setY(1.5), bloodNova ? "BLOOD NOVA!" : "SEISMIC SURGE! ", "comic-slam");
 
+    let hits = 0;
     for (let index = this.enemies.length - 1; index >= 0; index -= 1) {
       const enemy = this.enemies[index];
       if (!enemy) continue;
@@ -2705,11 +4008,21 @@ export class GameEngine {
       const dz = enemy.mesh.position.z - origin.z;
       const distance = Math.hypot(dx, dz);
       if (distance > radius) continue;
-      const push = new THREE.Vector3(dx, 0, dz).normalize();
+      hits += 1;
+      const push = new THREE.Vector3(dx || 1, 0, dz).normalize();
       this.damageEnemy(enemy, 85 * rank, 15, push, "splash");
       // Stagger: interrupt any wind-up so the burst buys real breathing room.
       enemy.windupTimer = 0;
       this.clearTelegraph(enemy);
+    }
+
+    if (bloodNova && hits > 0 && this.playerHealth > 0) {
+      const heal = Math.min(24, hits * 3);
+      const restored = Math.min(heal, this.maxHealth - this.playerHealth);
+      if (restored > 0) {
+        this.playerHealth += restored;
+        this.spawnFloatingText(origin.clone().setY(1.8), `+${restored} HP`, "health");
+      }
     }
   }
 
@@ -2740,8 +4053,8 @@ export class GameEngine {
       if (event.kind === "surge" && event.payload) {
         // Expands through the telegraph so the ring you see is the ring that
         // will hit you, just smaller.
-        const progress = 1 - Math.max(0, event.timer) / Math.max(0.001, event.radius / 9);
-        event.payload.scale.setScalar(0.4 + progress * event.radius);
+        const progress = 1 - Math.max(0, event.timer) / (ARENA_LIMIT / 9);
+        event.payload.scale.setScalar(Math.max(0.4, progress * ARENA_LIMIT));
       }
       if (event.kind === "debris" && event.payload) {
         // Freefall onto the marker.
@@ -2769,7 +4082,8 @@ export class GameEngine {
       ring.position.set(0, 0.05, 0);
       ring.scale.setScalar(0.4);
       this.scene.add(ring);
-      const marker = this.visuals.createTelegraphCircle(2.0);
+      const marker = this.visuals.createTelegraphAnnulus(ARENA_LIMIT - hazard.radius, ARENA_LIMIT * Math.SQRT2);
+      marker.rotation.x = -Math.PI / 2;
       marker.position.set(0, 0.03, 0);
       this.scene.add(marker);
       this.arenaEvents.push({
@@ -2861,13 +4175,20 @@ export class GameEngine {
       hazard.life -= dt;
       hazard.tickTimer -= dt;
 
-      const fade = Math.max(0, hazard.life / hazard.maxLife);
-      hazard.mesh.scale.setScalar(0.6 + fade * 0.4);
+      // The pool outline retains the damage footprint until expiry.
+      hazard.mesh.scale.setScalar(1);
 
       // Tick at 5Hz rather than per frame: cheaper, and damage numbers stay
       // readable instead of spraying sixty popups a second.
       if (hazard.tickTimer <= 0) {
         hazard.tickTimer = 0.2;
+        if (hazard.hostile && this.playerHealth > 0) {
+          const pdx = this.playerMesh.position.x - hazard.x;
+          const pdz = this.playerMesh.position.z - hazard.z;
+          if (pdx * pdx + pdz * pdz <= (hazard.radius + 0.35) ** 2) {
+            this.damagePlayer(Math.max(1, Math.round(15 * 0.2)));
+          }
+        }
         for (let e = this.enemies.length - 1; e >= 0; e -= 1) {
           const enemy = this.enemies[e];
           if (!enemy) continue;
@@ -2877,6 +4198,10 @@ export class GameEngine {
           enemy.health -= hazard.dps * 0.2;
           this.stats.damageDealt += hazard.dps * 0.2;
           enemy.hitFlash = Math.max(enemy.hitFlash, 0.05);
+          if (hazard.ignites) {
+            enemy.burningTimer = Math.max(enemy.burningTimer ?? 0, 3.6);
+            enemy.burnDps = Math.max(enemy.burnDps ?? 0, 28);
+          }
         }
       }
 
@@ -2888,13 +4213,35 @@ export class GameEngine {
     }
   }
 
+  private updatePresentation(dt: number) {
+    this.damageFeedback.update(dt, (enemy, damage, critical) => {
+      this.spawnFloatingText(enemy.mesh.position.clone().setY(1.8), `${damage}${critical ? "!" : ""}`, critical ? "crit" : "damage");
+    });
+    for (let i = this.corpses.length - 1; i >= 0; i--) {
+      const corpse = this.corpses[i]; corpse.life -= dt;
+      if (corpse.life <= 0) { this.visuals.disposeCharacter(corpse.rig); this.corpses.splice(i, 1); }
+      else this.visuals.animateCharacter(corpse.rig, dt, 0, false, 0);
+    }
+  }
+
+  private clearPresentation() {
+    for (const corpse of this.corpses ?? []) this.visuals.disposeCharacter(corpse.rig);
+    if (this.corpses) this.corpses.length = 0;
+    this.damageFeedback?.clear();
+    this.floatingLayer?.replaceChildren();
+  }
+
   private updateEffects(dt: number) {
+    while (this.effects.length > 96) {
+      const oldest = this.effects.shift(); if (oldest) { this.scene.remove(oldest.mesh); this.visuals.disposeObject(oldest.mesh); }
+    }
     for (let index = this.effects.length - 1; index >= 0; index -= 1) {
       const effect = this.effects[index];
       effect.life -= dt;
       const progress = 1 - effect.life / effect.maxLife;
       if (!effect.fade) {
-        effect.mesh.scale.setScalar(1 + progress * 3.5);
+        const base = effect.mesh.userData.baseScale ?? 1;
+        effect.mesh.scale.setScalar(base * (1 + progress * (effect.mesh.userData.muzzle || this.profile.settings.reducedMotion ? 0 : 1.25)));
       }
       effect.mesh.traverse((child) => {
         if (child instanceof THREE.Mesh && child.material) {
@@ -2913,11 +4260,17 @@ export class GameEngine {
   }
 
   private damagePlayer(amount: number) {
-    if (this.dashRemaining > 0 || this.playerHealth <= 0) return;
+    if (this.playerHealth <= 0) return;
+    if (this.dashRemaining > 0) {
+      if (!this.dashPerfectUsed) this.triggerPerfectDodge();
+      return;
+    }
     const dealt = Math.min(this.playerHealth, amount);
     this.playerHealth = Math.max(0, this.playerHealth - amount);
     this.stats.damageTaken += dealt;
     this.cameraShake = Math.max(this.cameraShake, 0.48);
+    this.postHitFlash = Math.max(this.postHitFlash ?? 0, 0.85);
+    this.postChromatic = Math.max(this.postChromatic ?? 0, 0.65);
     this.audio.playPlayerDamage();
 
     this.spawnFloatingText(this.playerMesh.position.clone().setY(1.3), `-${amount}`, "player-damage");
@@ -2954,13 +4307,15 @@ export class GameEngine {
       | "comic-speed",
   ) {
     if (typeof window === "undefined") return;
+    // Only boss kills and combo milestones use a comic word treatment.
+    if (type.startsWith("comic-") && text !== "KRAKOOM!") type = "damage";
     const projected = worldPos.clone().project(this.camera);
     if (projected.z < -1 || projected.z > 1) return;
 
     const width = this.viewportWidth;
     const height = this.viewportHeight;
-    const screenX = ((projected.x + 1) / 2) * width + THREE.MathUtils.randFloatSpread(18);
-    const screenY = ((-projected.y + 1) / 2) * height + THREE.MathUtils.randFloatSpread(12);
+    const screenX = ((projected.x + 1) / 2) * width + THREE.MathUtils.randFloatSpread(6);
+    const screenY = ((-projected.y + 1) / 2) * height + THREE.MathUtils.randFloatSpread(4);
 
     const span = document.createElement("div");
     span.className = `floating-popup floating-popup--${type}`;
@@ -3024,6 +4379,7 @@ export class GameEngine {
    * down on every hit rather than only at the moment it breaks.
    */
   private damageObstacle(obstacle: Obstacle, damage: number, at: THREE.Vector3): boolean {
+    this.audio.playSurfaceImpact?.(obstacle.health === undefined ? "metal" : "concrete");
     if (obstacle.health === undefined || obstacle.maxHealth === undefined) return false;
     obstacle.health -= damage;
 
@@ -3088,7 +4444,36 @@ export class GameEngine {
       magazine: state?.magazine ?? 0,
       reserve: state?.reserve ?? 0,
       reloading: state?.reloading ?? 0,
+      reloadProgress: normalizedReloadProgress(state),
+      activeReloadAvailable: Boolean(state && state.reloading > 0 && !state.activeReloadAttempted),
+      overchargedRounds: state?.overchargedRounds ?? 0,
       dash: 1 - Math.min(1, this.dashCooldown / this.dashCooldownTotal),
+      grenade: 1 - Math.min(1, (this.grenadeCooldown ?? 0) / (this.grenadeCooldownTotal ?? 8)),
+      blade: 1 - Math.min(1, (this.bladeCooldown ?? 0) / BLADE_COOLDOWN),
+      executeTargetReady: this.enemies.some(
+        (enemy) =>
+          isEnemyExecutable(enemy.health, enemy.maxHealth, enemy.type === "juggernaut") &&
+          enemy.mesh.position.distanceToSquared(this.playerMesh.position) <= BLADE_EXECUTE_RANGE * BLADE_EXECUTE_RANGE,
+      ),
+      techEnergy: Math.round(this.techEnergy ?? 0),
+      turretCount: (this.deployables ?? []).filter((d) => d.kind === "turret").length,
+      pylonCount: (this.deployables ?? []).filter((d) => d.kind === "pylon").length,
+      superWeapon: this.activeSuperWeapon
+        ? {
+            id: this.activeSuperWeapon.id,
+            name: SUPER_WEAPONS[this.activeSuperWeapon.id].name,
+            ammo: this.activeSuperWeapon.ammo,
+            maxAmmo: this.activeSuperWeapon.maxAmmo,
+          }
+        : null,
+      overdriveCharge: Math.round(this.overdriveCharge ?? 0),
+      overdriveActive: (this.overdriveRemaining ?? 0) > 0,
+      overdriveProgress:
+        (this.overdriveRemaining ?? 0) > 0
+          ? Math.max(0, Math.min(1, this.overdriveRemaining / Math.max(0.01, this.overdriveDuration)))
+          : 0,
+      comboMultiplier: getComboSalvageMultiplier(this.comboCount),
+      activeFusions: this.unlockedFusions ? [...this.unlockedFusions] : [],
       bossHealth: boss?.health,
       bossMaxHealth: boss?.maxHealth,
       bossPhase: boss?.bossPhase ?? (boss ? 1 : undefined),
@@ -3127,6 +4512,7 @@ export class GameEngine {
     }
 
     this.updateAim();
+    this.updatePresentation(dt);
 
     // Ticked before the early return, so a freeze cannot extend its own gate.
     this.hitStopCooldown = Math.max(0, this.hitStopCooldown - dt);
@@ -3139,26 +4525,170 @@ export class GameEngine {
       return;
     }
 
-    this.updatePlayer(dt);
-    this.updateWave(dt);
+    // Bullet-time slow-mo on Perfect Dodge and Overdrive activation:
+    // Enemies/projectiles slow dramatically while Kai stays responsive!
+    let simDt = dt;
+    let playerDt = dt;
+    if ((this.bulletTimeTimer ?? 0) > 0) {
+      this.bulletTimeTimer = Math.max(0, this.bulletTimeTimer - dt);
+      simDt = dt * (this.bulletTimeScale ?? 1);
+      playerDt = dt * 0.78;
+    }
+
+    this.updatePlayer(playerDt);
+    this.updateWave(simDt);
     if (this.paused) return;
-    this.updateEnemies(dt);
+    this.updateEnemies(simDt);
     if (this.paused) return;
-    this.updateProjectiles(dt);
+    this.updateProjectiles(simDt);
     if (this.paused) return;
-    this.updateHazards(dt);
+    this.updateGrenades(simDt);
     if (this.paused) return;
-    this.updateArenaHazards(dt);
+    this.updateDeployables(simDt);
+    if (this.paused) return;
+    this.updateOrbitalPods(simDt);
+    if (this.paused) return;
+    this.updateBarrels(simDt);
+    if (this.paused) return;
+    this.updateHazards(simDt);
+    if (this.paused) return;
+    this.updateArenaHazards(simDt);
     if (this.paused) return;
     // After projectiles, so indirect damage (chain lightning, burn splash,
     // explosions) resolves into deaths on the same frame it was dealt.
     this.reapDead();
     if (this.paused) return;
-    this.updatePickups(dt);
-    this.updateEffects(dt);
+    this.updatePickups(playerDt);
+    this.updateEffects(simDt);
+    this.updateDynamicVisuals(dt);
     this.updateAtmosphere();
     this.updateCamera(dt);
     this.emitHud();
+  }
+
+  private updateDynamicVisuals(dt: number) {
+    // 1. Tactical operator headlamp follows Kai & leads slightly along aim
+    if (this.operatorLight) {
+      this.operatorLight.position.set(
+        this.playerMesh.position.x + this.aim.x * 1.4,
+        2.35,
+        this.playerMesh.position.z + this.aim.z * 1.4,
+      );
+      const inOverdrive = (this.overdriveRemaining ?? 0) > 0;
+      this.operatorLight.color.setHex(inOverdrive ? COMIC.gold : 0x66e8ff);
+      this.operatorLight.intensity = inOverdrive ? 4.4 : 2.8;
+    }
+
+    // 2. Decay muzzle & explosion dynamic lights
+    if (this.muzzleLight && this.muzzleLightTimer > 0) {
+      this.muzzleLightTimer = Math.max(0, this.muzzleLightTimer - dt);
+      if (this.muzzleLightTimer <= 0) this.muzzleLight.intensity = 0;
+    }
+    if (this.blastLight && this.blastLightTimer > 0) {
+      this.blastLightTimer = Math.max(0, this.blastLightTimer - dt);
+      this.blastLight.intensity = (this.blastLightTimer / 0.24) * 14;
+    }
+
+    // 3. Flicker arena ambient accent lights gently
+    for (let i = 0; i < (this.activeAccentLights?.length ?? 0); i += 1) {
+      const light = this.activeAccentLights[i];
+      const base = i === 0 ? 4.2 : 3.8;
+      light.intensity = base + Math.sin(this.missionElapsed * (6.2 + i * 2.1)) * 0.55;
+    }
+
+    // 4. Raycasted tactical laser sight from Kai's muzzle
+    if (this.laserSight) {
+      const activeState = this.weaponStates.get(this.getActiveWeaponId());
+      const origin = this.playerRig
+        ? this.playerRig.muzzle.getWorldPosition(this.projectileStart)
+        : this.projectileStart.set(this.playerMesh.position.x + this.aim.x * 0.75, 1.15, this.playerMesh.position.z + this.aim.z * 0.75);
+      const maxRange = 17.5;
+      this.projectileEnd.copy(origin).addScaledVector(this.aim, maxRange);
+      let hitT = 1;
+      for (const obs of this.obstacles) {
+        const t = segmentObstacleHit(origin, this.projectileEnd, obs);
+        if (t !== null && t < hitT) hitT = t;
+      }
+      for (const enemy of this.enemies) {
+        if (enemy.health <= 0) continue;
+        const t = segmentCircleHit(origin, this.projectileEnd, enemy.mesh.position, enemy.definition.radius + 0.15);
+        if (t !== null && t < hitT) hitT = t;
+      }
+      const beamLength = Math.max(0.25, maxRange * hitT);
+      const isHot = (this.overdriveRemaining ?? 0) > 0 || (activeState?.overchargedRounds ?? 0) > 0;
+      this.laserSight.beamMaterial.color.setHex(isHot ? COMIC.gold : COMIC.electric);
+      this.laserSight.dotMaterial.color.setHex(isHot ? 0xfff3a1 : 0xd9ffff);
+      this.laserSight.beam.position.copy(origin);
+      this.laserSight.beam.lookAt(origin.x + this.aim.x, origin.y, origin.z + this.aim.z);
+      this.laserSight.beam.scale.set(1, 1, beamLength);
+      this.laserSight.dot.position.set(
+        origin.x + this.aim.x * beamLength,
+        origin.y,
+        origin.z + this.aim.z * beamLength,
+      );
+      this.laserSight.group.visible = this.playerHealth > 0 && (activeState?.reloading ?? 0) <= 0;
+    }
+
+    // 5. Ejected brass shell casings physics
+    for (let i = (this.shellCasings?.length ?? 0) - 1; i >= 0; i -= 1) {
+      const shell = this.shellCasings[i];
+      shell.life -= dt;
+      shell.velocity.y -= 14 * dt;
+      shell.mesh.position.addScaledVector(shell.velocity, dt);
+      shell.mesh.rotation.x += shell.spin.x * dt;
+      shell.mesh.rotation.y += shell.spin.y * dt;
+      shell.mesh.rotation.z += shell.spin.z * dt;
+      if (shell.mesh.position.y < 0.04) {
+        shell.mesh.position.y = 0.04;
+        shell.velocity.y = Math.abs(shell.velocity.y) * 0.35;
+        shell.velocity.x *= 0.6;
+        shell.velocity.z *= 0.6;
+        shell.spin.multiplyScalar(0.5);
+      }
+      if (shell.life <= 0) {
+        this.scene.remove(shell.mesh);
+        this.shellCasings.splice(i, 1);
+      }
+    }
+
+    // 6. Atmospheric 3D weather particles (embers / storm rain / sparks / ash)
+    if (this.activeWeather && !this.profile.settings.reducedMotion) {
+      const identity = this.activeWeather.userData.weatherIdentity as string | undefined;
+      const pos = this.activeWeather.geometry.attributes.position as THREE.BufferAttribute;
+      for (let i = 0; i < pos.count; i += 1) {
+        let x = pos.getX(i);
+        let y = pos.getY(i);
+        let z = pos.getZ(i);
+        if (identity === "floodbay") {
+          y -= dt * 11.5;
+          x -= dt * 1.4;
+          if (y < 0.1) { y = 9.0; x = (Math.random() - 0.5) * 38; z = (Math.random() - 0.5) * 38; }
+        } else if (identity === "rooftop") {
+          x += dt * (2.6 + (i % 4) * 0.4);
+          y += Math.sin(this.missionElapsed * 2 + i) * dt * 0.4;
+          if (x > 19) x = -19;
+        } else {
+          // Rising embers / welding sparks
+          y += dt * (0.75 + (i % 5) * 0.22);
+          x += Math.sin(this.missionElapsed * 1.6 + i) * dt * 0.35;
+          if (y > 9.0) { y = 0.2; x = (Math.random() - 0.5) * 36; z = (Math.random() - 0.5) * 36; }
+        }
+        pos.setXYZ(i, x, y, z);
+      }
+      pos.needsUpdate = true;
+    }
+
+    // 7. Drive bloom/chromatic/overdrive/hit-flash post-process uniforms
+    this.postChromatic = Math.max(0, (this.postChromatic ?? 0) - dt * 2.8);
+    this.postHitFlash = Math.max(0, (this.postHitFlash ?? 0) - dt * 3.2);
+    const targetOverdrive = (this.overdriveRemaining ?? 0) > 0 ? 1 : 0;
+    this.postOverdrive = THREE.MathUtils.lerp(this.postOverdrive ?? 0, targetOverdrive, 1 - Math.exp(-dt * 8));
+    if (this.post && typeof this.post.setUniform === "function") {
+      const reduced = this.profile.settings.reducedMotion;
+      this.post.setUniform("uChromatic", reduced ? 0 : this.postChromatic);
+      this.post.setUniform("uHitFlash", reduced ? 0 : this.postHitFlash);
+      this.post.setUniform("uOverdrive", this.postOverdrive);
+    }
   }
 
   private updateCamera(dt: number) {
@@ -3178,7 +4708,7 @@ export class GameEngine {
     // Decay camera recoil
     this.cameraRecoil.lerp(new THREE.Vector3(), 1 - Math.exp(-dt * 16));
 
-    const shake = this.profile.settings.reducedMotion ? 0 : this.cameraShake;
+    const shake = this.profile.settings.reducedMotion ? 0 : Math.min(0.2, this.cameraShake);
     const offsetX = shake > 0 ? THREE.MathUtils.randFloatSpread(shake) : 0;
     const offsetZ = shake > 0 ? THREE.MathUtils.randFloatSpread(shake) : 0;
 
@@ -3192,6 +4722,13 @@ export class GameEngine {
 
     this.cameraShake = Math.max(0, this.cameraShake - dt * 3.2);
 
+    const desiredFov =
+      (this.baseCameraFov ?? 42) +
+      (!this.profile.settings.reducedMotion && (this.overdriveRemaining ?? 0) > 0 ? 3.5 : 0);
+    if (Math.abs(this.camera.fov - desiredFov) > 0.05) {
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, desiredFov, dt > 0 ? 1 - Math.exp(-dt * 8) : 1);
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   /**
@@ -3201,10 +4738,13 @@ export class GameEngine {
    */
   private updateAtmosphere() {
     const pressure = Math.min(1, (this.wave - 1) / 9);
-    // Endless keeps climbing past the campaign, so the score keeps tightening.
-    this.audio.setIntensity(this.endless ? 1 : pressure);
+    // Endless and active Overdrive push the score to peak intensity.
+    this.audio.setIntensity(this.endless || (this.overdriveRemaining ?? 0) > 0 ? 1 : pressure);
     if (this.scene.background instanceof THREE.Color) {
-      this.scene.background.copy(this.skyCool).lerp(this.skyHot, pressure);
+      this.scene.background.copy(this.skyCool).lerp(this.skyHot, pressure * 0.65);
+      if (this.scene.fog instanceof THREE.FogExp2) {
+        this.scene.fog.color.copy(this.scene.background);
+      }
     }
   }
 
@@ -3257,7 +4797,8 @@ export class GameEngine {
     this.viewportWidth = width;
     this.viewportHeight = height;
     this.camera.aspect = width / height;
-    this.camera.fov = width / height < 0.8 ? 56 : 42;
+    this.baseCameraFov = width / height < 0.8 ? 56 : 42;
+    this.camera.fov = this.baseCameraFov;
     this.camera.near = 0.1;
     this.camera.far = 110;
     this.camera.updateProjectionMatrix();
@@ -3284,6 +4825,14 @@ export class GameEngine {
     // already pointing.
     if (this.inputMode === "touch") return;
     if (!this.paused && event.button === 0) this.firing = true;
+    if (!this.paused && event.button === 1) {
+      event.preventDefault();
+      this.throwGrenade();
+    }
+    if (!this.paused && event.button === 2) {
+      event.preventDefault();
+      this.performBladeSlash();
+    }
   };
 
   private onPointerUp = (event: PointerEvent) => {
@@ -3319,6 +4868,26 @@ export class GameEngine {
 
     if (code === "KeyR" || key === "r") {
       this.reload();
+    }
+    if (code === "KeyF" || key === "f") {
+      this.triggerOverdrive();
+      return;
+    }
+    if (code === "KeyG" || key === "g") {
+      this.throwGrenade();
+      return;
+    }
+    if (code === "KeyV" || key === "v") {
+      this.performBladeSlash();
+      return;
+    }
+    if (code === "KeyT" || key === "t") {
+      this.deployTurret();
+      return;
+    }
+    if (code === "KeyC" || key === "c") {
+      this.deployPylon();
+      return;
     }
     if (code === "KeyQ" || key === "q" || code === "KeyE" || key === "e") {
       event.preventDefault();
@@ -3406,20 +4975,21 @@ export class GameEngine {
     );
     this.dashDirection = inputDir.lengthSq() > 0 ? inputDir.normalize() : this.aim.clone();
     this.dashRemaining = this.dashTotal;
-    // Phantom Reflex shortens the cooldown itself — the card advertised this
-    // and only the elite-hit refund was ever implemented.
+    this.dashPerfectUsed = false;
+    // Phantom Reflex and active Overdrive both shorten the dash cooldown.
     const phantomRank = this.activeSynergies.get("phantom_reflex") ?? 0;
-    this.dashCooldownTotal = 2.8 * Math.max(0.4, 1 - 0.18 * phantomRank);
+    const overdriveMult = (this.overdriveRemaining ?? 0) > 0 ? OVERDRIVE_DASH_COOLDOWN_MULT : 1;
+    this.dashCooldownTotal = 2.8 * Math.max(0.4, 1 - 0.18 * phantomRank) * overdriveMult;
     this.dashCooldown = this.dashCooldownTotal;
     this.cameraShake = Math.max(this.cameraShake, 0.18);
     this.audio.playDash();
 
-    // Spider-Verse Dynamic Comic Radial Speed-Lines on Dash
-    const speedLines = this.visuals.createRadialSpeedLinesMesh(0x00f0ff);
-    speedLines.position.copy(this.playerMesh.position);
-    this.scene.add(speedLines);
-    this.effects.push({ mesh: speedLines, life: 0.28, maxLife: 0.28 });
-    this.spawnFloatingText(this.playerMesh.position.clone().setY(1.4), "SWOOSH! 💨", "comic-speed");
+    if (!this.profile.settings.reducedMotion) {
+      const speedLines = this.visuals.createRadialSpeedLinesMesh(COMIC.operator);
+      speedLines.position.copy(this.playerMesh.position);
+      this.scene.add(speedLines);
+      this.effects.push({ mesh: speedLines, life: 0.14, maxLife: 0.14 });
+    }
   }
 
   private onFocusLost = () => {

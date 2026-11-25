@@ -35,7 +35,7 @@ const seedProfile = async (page: Page, profile: ReturnType<typeof profileWith>) 
 
 test("enters the depot and starts a playable run", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Deadwave" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Hold the line. Make it out." })).toBeVisible();
   await page.getByTestId("start-mission").click();
   await expect(page.getByRole("heading", { name: "Choose your loadout" })).toBeVisible();
   await page.getByTestId("deploy").click();
@@ -103,7 +103,7 @@ test("restores banked progress from the local profile", async ({ page }) => {
   }));
   await page.goto("/");
   await expect(page.getByText("◆ 777")).toBeVisible();
-  await expect(page.getByText("Best wave").locator("..")).toContainText("4");
+  await expect(page.getByText("Personal best").locator("..")).toContainText("4");
 });
 
 test("pauses on focus loss and resumes the same run", async ({ page }) => {

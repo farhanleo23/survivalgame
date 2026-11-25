@@ -39,7 +39,8 @@ export type ArenaProp =
  * repainting props alone is invisible at this camera height.
  */
 export interface ArenaTheme {
-  /** The two checker tones of the floor slab texture. */
+  identity: ArenaId;
+  /** Fallback slab tones. */
   floorLight: string;
   floorDark: string;
   /** Inked seam between slabs. */
@@ -53,7 +54,7 @@ export interface ArenaTheme {
   trim: number;
   /** Distant silhouette buildings. */
   skyline: number;
-  /** Paint used for the centre pad and lane guides. */
+  /** Worn safety paint used for lane guides. */
   paint: number;
 }
 
@@ -98,17 +99,18 @@ export const ARENAS: Record<ArenaId, ArenaDefinition> = {
    */
   depot: {
     id: "depot",
-    name: "Quarantine Depot",
+    name: "Abandoned Loading Depot",
     blurb: "Open ground. Nothing between you and them but barrels.",
     theme: {
+      identity: "depot",
       floorLight: "#8f9db8",
       floorDark: "#7d8aa6",
       seam: "#3f4a63",
       speckle: "rgba(40,50,74,0.5)",
       sky: COMIC.sky,
       wall: COMIC.concrete,
-      trim: COMIC.hazardYellow,
-      skyline: 0x2a3358,
+      trim: COMIC.steel,
+      skyline: 0x283e4c,
       paint: COMIC.hazardYellow,
     },
     props: [
@@ -155,13 +157,14 @@ export const ARENAS: Record<ArenaId, ArenaDefinition> = {
    */
   garage: {
     id: "garage",
-    name: "Sublevel Parking",
+    name: "Maintenance Garage",
     blurb: "Short sightlines. They will be around the pillar before you hear them.",
     // Deliberately the most desaturated floor in the game. The first pass used
     // a purple-grey concrete, which put the deck in the same hue band as the
     // brute — and an arena that competes with an enemy tint undoes the whole
     // point of tinting the enemies. Charcoal cedes every hue to the infected.
     theme: {
+      identity: "garage",
       floorLight: "#5c626b",
       floorDark: "#4d525a",
       seam: "#23262c",
@@ -208,16 +211,17 @@ export const ARENAS: Record<ArenaId, ArenaDefinition> = {
    */
   floodbay: {
     id: "floodbay",
-    name: "Flooded Loading Bay",
+    name: "Contaminated Pumping Station",
     blurb: "Ankle-deep water and live cable. The floor goes hot on a timer.",
     theme: {
+      identity: "floodbay",
       floorLight: "#3f6f86",
       floorDark: "#345c70",
       seam: "#1b3341",
       speckle: "rgba(20,52,66,0.5)",
       sky: 0x143246,
       wall: 0x4d7286,
-      trim: COMIC.electric,
+      trim: 0x758a80,
       skyline: 0x0e2432,
       paint: COMIC.electric,
     },
@@ -259,17 +263,18 @@ export const ARENAS: Record<ArenaId, ArenaDefinition> = {
    */
   rooftop: {
     id: "rooftop",
-    name: "Evac Rooftop",
+    name: "Rooftop Utility Yard",
     blurb: "No cover anywhere. Every angle is open and nothing stops a charge.",
     theme: {
+      identity: "rooftop",
       floorLight: "#9c8f7e",
       floorDark: "#8a7d6d",
       seam: "#4a4237",
       speckle: "rgba(74,66,55,0.5)",
-      sky: 0x7a3b6b,
-      wall: 0x8c8072,
-      trim: COMIC.hazardYellow,
-      skyline: 0x3a2140,
+      sky: 0x425d70,
+      wall: 0x82969f,
+      trim: COMIC.steel,
+      skyline: 0x283e4c,
       paint: COMIC.paper,
     },
     props: [

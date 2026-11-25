@@ -18,7 +18,7 @@ import type { EnemyId, WeaponId } from "./types";
  */
 
 export type CharacterKind = "player" | EnemyId;
-export type CharacterMotion = "idle" | "walk" | "run" | "attack";
+export type CharacterMotion = "idle" | "walk" | "run" | "attack" | "hit" | "death" | "reload";
 
 export interface CharacterRig {
   root: THREE.Group;
@@ -37,6 +37,7 @@ export interface CharacterRig {
   mixer?: THREE.AnimationMixer;
   actions: Partial<Record<CharacterMotion, THREE.AnimationAction>>;
   activeMotion?: CharacterMotion;
+  presentationMotion?: CharacterMotion;
 
   /** Upper-body bones re-posed onto the weapon grip after each mixer update. */
   aimBones?: {
@@ -76,6 +77,10 @@ export interface CharacterRig {
   activeStatus?: number | null;
   scale: number;
   disposed: boolean;
+  dying?: boolean;
+  deathElapsed?: number;
+  reloadProgress?: number;
+  fallback?: THREE.Group;
 }
 
 interface ArchetypeSpec {
@@ -114,18 +119,18 @@ const ARCHETYPES: Record<CharacterKind, ArchetypeSpec> = {
   player: {
     height: 1.95,
     girth: 1,
-    asset: "/models/soldier.glb",
-    yawOffset: Math.PI,
+    asset: "/models/survivor.glb",
+    yawOffset: 0,
     tint: COMIC.operator,
-    tintStrength: 0.8,
+    tintStrength: 0.12,
     glow: COMIC.operatorDeep,
-    glowIntensity: 0.32,
+    glowIntensity: 0.08,
     gaitRate: 1,
   },
   shambler: { height: 1.85, girth: 1, asset: "/models/zombie-shambler.glb", gaitRate: 0.85 },
   // Authored with arms raised, so its bind-pose box is taller than the figure
   // and normalisation undershoots. The height here is compensated, not literal.
-  runner: { height: 2.55, girth: 0.9, asset: "/models/zombie-runner.glb", gaitRate: 1.5 },
+  runner: { height: 1.95, girth: 0.82, asset: "/models/zombie-runner.glb", gaitRate: 1.5 },
   spitter: { height: 1.8, girth: 1, asset: "/models/zombie-spitter.glb", tint: COMIC.spitter, gaitRate: 0.8 },
   boomer: { height: 1.75, girth: 1.55, asset: "/models/zombie-boomer.glb", tint: COMIC.boomer, gaitRate: 0.8 },
   brute: { height: 2.55, girth: 1.6, asset: "/models/zombie-shambler.glb", tint: COMIC.brute, gaitRate: 0.7 },
@@ -145,9 +150,12 @@ const ARCHETYPES: Record<CharacterKind, ArchetypeSpec> = {
  * on the trailing segment instead of the full name.
  */
 const MOTION_PATTERNS: Record<CharacterMotion, RegExp[]> = {
-  idle: [/^idle$/i, /idle$/i],
-  walk: [/^walk2?$/i, /walk$/i],
-  run: [/^run(_arms)?$/i, /run$/i, /running/i],
+  idle: [/^idle_gun$/i, /^idle$/i, /idle$/i],
+  walk: [/^walk_gun$/i, /^walk2?$/i, /walk$/i],
+  run: [/^run_gun$/i, /^run(_arms)?$/i, /run$/i, /running/i],
+  hit: [/^hitreact$/i, /hit/i],
+  death: [/^death$/i, /die/i],
+  reload: [/reload/i],
   attack: [/^attack$/i, /attack$/i, /bite$/i, /punch$/i, /headbutt$/i, /scream$/i],
 };
 
@@ -171,7 +179,8 @@ interface LoadedAsset {
  *  `mixamorigRightArm`, or bare `RightArm`. Try each, then fall back to a
  *  suffix scan so a renamed rig still resolves. */
 function findBone(root: THREE.Object3D, name: string): THREE.Object3D | undefined {
-  const direct =
+  const aliases: Record<string, string> = { RightArm: "UpperArm.R", RightForeArm: "LowerArm.R", RightHand: "Middle1.R", LeftArm: "UpperArm.L", LeftForeArm: "LowerArm.L", LeftHand: "Middle1.L" };
+  const direct = root.getObjectByName((aliases[name] ?? name).replaceAll(".", "")) ?? root.getObjectByName(aliases[name] ?? name) ??
     root.getObjectByName(`mixamorig:${name}`) ??
     root.getObjectByName(`mixamorig${name}`) ??
     root.getObjectByName(name);
@@ -200,9 +209,9 @@ function findBone(root: THREE.Object3D, name: string): THREE.Object3D | undefine
  */
 const AIM_GRIP = {
   /** Rear of the weapon body; the hands wrap this point. */
-  weapon: new THREE.Vector3(-0.015, 0.63, 0.145),
-  rightHand: new THREE.Vector3(-0.041, 0.62, 0.159),
-  leftHand: new THREE.Vector3(0.01, 0.61, 0.19),
+  weapon: new THREE.Vector3(-0.015, 0.49, 0.27),
+  rightHand: new THREE.Vector3(-0.041, 0.48, 0.284),
+  leftHand: new THREE.Vector3(0.01, 0.47, 0.335),
   /** Which way each elbow bends, so the solve never locks an arm backwards. */
   rightPole: new THREE.Vector3(-1, -0.6, -0.2),
   leftPole: new THREE.Vector3(1, -0.6, -0.2),
@@ -415,8 +424,20 @@ export class CharacterFactory {
       disposed: false,
     };
 
-    void this.attachModel(rig, kind, spec, colorOverride).catch((error) => {
-      console.warn(`character model failed to load for ${kind}`, error);
+    // Visible immediately, including offline/missing-asset failures. Shared geometry
+    // keeps this inexpensive while downloads are in flight.
+    const fallback = new THREE.Group();
+    const material = this.claim(rig, this.palette.toon(kind === "player" ? COMIC.operator : COMIC.shambler));
+    const torso = new THREE.Mesh(this.cachedGeometry("fallback:body", () => new THREE.CapsuleGeometry(0.23, 0.5, 2, 6)), material);
+    torso.position.y = 0.7;
+    const head = new THREE.Mesh(this.cachedGeometry("fallback:head", () => new THREE.IcosahedronGeometry(0.2, 0)), material);
+    head.position.y = 1.3;
+    fallback.add(torso, head); fallback.scale.set(spec.height / 1.5 * spec.girth, spec.height / 1.5, spec.height / 1.5 * spec.girth);
+    rig.body.add(fallback); rig.fallback = fallback;
+    void this.attachModel(rig, kind, spec, colorOverride).catch(() => {
+      if (this.disposed || rig.disposed) return;
+      if (kind === "player") this.attachWeapons(rig, fallback, spec);
+      this.addSignatureParts(kind, rig, spec);
     });
 
     return rig;
@@ -432,6 +453,7 @@ export class CharacterFactory {
     if (this.disposed || rig.disposed) return;
 
     const model = cloneSkinned(asset.scene);
+    for (const name of ["Knife", "WoodenBat_Saw"]) model.getObjectByName(name)?.removeFromParent();
 
     // Source models arrive at wildly different scales and origins; normalise to
     // a known height, then drop the feet onto y=0 and centre on the origin.
@@ -449,15 +471,23 @@ export class CharacterFactory {
 
     this.applyComicMaterials(rig, model, colorOverride ?? spec.tint, spec.tintStrength);
 
+    rig.fallback?.removeFromParent();
+    rig.fallback = undefined;
     rig.body.add(model);
     rig.model = model;
 
     if (asset.animations.length) {
       const mixer = new THREE.AnimationMixer(model);
       rig.mixer = mixer;
-      for (const motion of ["idle", "walk", "run", "attack"] as CharacterMotion[]) {
+      for (const motion of ["idle", "walk", "run", "attack", "hit", "death", "reload"] as CharacterMotion[]) {
         const clip = resolveClip(asset.animations, motion);
-        if (clip) rig.actions[motion] = mixer.clipAction(clip);
+        if (clip) {
+          const action = mixer.clipAction(clip);
+          if (motion === "hit" || motion === "death" || motion === "reload") {
+            action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true;
+          }
+          rig.actions[motion] = action;
+        }
       }
       // Walk stands in for run when a model lacks one, and vice versa.
       rig.actions.run ??= rig.actions.walk;
@@ -467,6 +497,7 @@ export class CharacterFactory {
 
     this.addSignatureParts(kind, rig, spec);
     if (kind === "player") this.attachWeapons(rig, model, spec);
+    if (rig.dying) { rig.dying = false; this.beginDeath(rig); }
   }
 
   /**
@@ -505,6 +536,18 @@ export class CharacterFactory {
         material.color.copy(source.color);
       }
 
+      if (rig.kind === "player" && material.map) {
+        // The kit uses a palette atlas: only Matt's jacket swatch is remapped.
+        // Skin, trousers and facial detail retain their authored colours.
+        material.onBeforeCompile = shader => {
+          shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>", `#include <map_fragment>
+            #ifdef USE_MAP
+              float jacket = step(0.16, vMapUv.x) * step(vMapUv.x, 0.19) * step(vMapUv.y, 0.03);
+              diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.035, 0.47, 0.66), jacket);
+            #endif`);
+        };
+        material.customProgramCacheKey = () => "deadwave-survivor-jacket";
+      }
       material.emissive.setHex(rig.baseGlow.color);
       material.emissiveIntensity = rig.baseGlow.intensity;
 
@@ -626,7 +669,7 @@ export class CharacterFactory {
     // and aim agree on every frame. The arms are then solved onto its grip.
     const weaponGroup = new THREE.Group();
     weaponGroup.position.copy(AIM_GRIP.weapon).multiplyScalar(spec.height);
-    weaponGroup.scale.setScalar(spec.height * 0.42);
+    weaponGroup.scale.setScalar(spec.height * 0.56);
     rig.body.add(weaponGroup);
     rig.weaponGroup = weaponGroup;
 
@@ -691,6 +734,14 @@ export class CharacterFactory {
       inkInPlace(grip, ink, 0.06);
       group.add(grip);
 
+      if (id === "shotgun" || id === "rifle") {
+        const stock = new THREE.Mesh(this.own(new THREE.BoxGeometry(0.1, 0.15, 0.23)), gunmetal);
+        stock.position.set(0, -0.02, -0.1); group.add(stock);
+      }
+      if (id === "shotgun") {
+        const pump = new THREE.Mesh(this.own(new THREE.BoxGeometry(0.13, 0.1, 0.23)), steel);
+        pump.position.set(0, -0.03, bodyLength + 0.1); group.add(pump);
+      }
       if (magDepth > 0) {
         const mag = new THREE.Mesh(
           this.own(new RoundedBoxGeometry(0.06, magDepth, 0.11, 2, 0.015)),
@@ -753,14 +804,25 @@ export class CharacterFactory {
     isChilled = false,
     isBurning = false,
   ) {
+    if (rig.disposed) return;
+    if (rig.dying) {
+      rig.deathElapsed = (rig.deathElapsed ?? 0) + dt;
+      rig.mixer?.update(dt);
+      if (!rig.actions.death) rig.body.rotation.x = -Math.min(1.4, (rig.deathElapsed ?? 0) * 2.8);
+      rig.body.position.y = -Math.max(0, (rig.deathElapsed ?? 0) - 0.55) * 0.35;
+      return;
+    }
+    rig.presentationMotion = attacking ? "attack" : (rig.reloadProgress ?? 0) > 0 ? "reload" : hit > 0 ? "hit" : speed > 3.2 ? "run" : speed > 0.08 ? "walk" : "idle";
     rig.phase += dt * 2.4;
     rig.attackBlend += ((attacking ? 1 : 0) - rig.attackBlend) * (1 - Math.exp(-dt * 14));
     rig.hitBlend += ((hit > 0 ? 1 : 0) - rig.hitBlend) * (1 - Math.exp(-dt * 22));
 
     if (rig.mixer) {
       const desired: CharacterMotion =
-        attacking && rig.actions.attack
-          ? "attack"
+        hit > 0 && rig.actions.hit
+          ? "hit"
+          : attacking && rig.actions.attack ? "attack"
+          : (rig.reloadProgress ?? 0) > 0 && rig.actions.reload ? "reload"
           : speed > 3.2
             ? "run"
             : speed > 0.08
@@ -843,7 +905,11 @@ export class CharacterFactory {
     if (rig.weaponGroup) {
       rig.recoilZ = THREE.MathUtils.lerp(rig.recoilZ, 0, 1 - Math.exp(-dt * 24));
       rig.recoilPitch = THREE.MathUtils.lerp(rig.recoilPitch, 0, 1 - Math.exp(-dt * 26));
-      rig.weaponGroup.rotation.x = -rig.recoilPitch;
+      const reload = rig.reloadProgress ?? 0;
+      const action = reload > 0 ? Math.sin(reload * Math.PI) : 0;
+      rig.weaponGroup.rotation.x = -rig.recoilPitch + action * 0.65;
+      rig.weaponGroup.rotation.z = action * -0.32;
+      if (action > 0.02 && rig.aimBones) rig.aimBones.leftForeArm.rotation.x += action * 0.6;
     }
   }
 
@@ -897,8 +963,22 @@ export class CharacterFactory {
     return material;
   }
 
+  beginDeath(rig: CharacterRig) {
+    if (rig.disposed || rig.dying) return;
+    rig.dying = true; rig.deathElapsed = 0; rig.presentationMotion = "death";
+    if (rig.statusPip) rig.statusPip.visible = false;
+    const death = rig.actions.death;
+    if (death) {
+      rig.mixer?.stopAllAction(); death.reset().setEffectiveWeight(1).play();
+      rig.activeMotion = "death";
+    }
+  }
+
   disposeCharacter(rig: CharacterRig) {
+    if (rig.disposed) return;
+    rig.disposed = true;
     rig.mixer?.stopAllAction();
+    if (rig.model) rig.mixer?.uncacheRoot(rig.model);
     rig.mixer = undefined;
     rig.root.removeFromParent();
     for (const material of rig.ownedMaterials) this.palette.release(material);
@@ -912,6 +992,18 @@ export class CharacterFactory {
     this.ownedGeometries = [];
     this.geometryCache.clear();
     this.shadowGeometry.dispose();
+    for (const asset of this.assets.values()) void asset.then(({ scene }) => {
+      const geometries = new Set<THREE.BufferGeometry>();
+      const materials = new Set<THREE.Material>();
+      const textures = new Set<THREE.Texture>();
+      scene.traverse(child => { if (child instanceof THREE.Mesh) {
+        geometries.add(child.geometry);
+        for (const mat of Array.isArray(child.material) ? child.material : [child.material]) {
+          materials.add(mat); const map = (mat as THREE.MeshStandardMaterial).map; if (map) textures.add(map);
+        }
+      } });
+      geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose()); textures.forEach(t => t.dispose());
+    }).catch(() => {});
     this.assets.clear();
   }
 }

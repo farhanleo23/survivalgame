@@ -13,54 +13,51 @@ import * as THREE from "three";
  * top-down camera distance, where value contrast matters more than hue.
  */
 export const COMIC = {
-  ink: 0x120d1a,
-  paper: 0xf4ead6,
-  sky: 0x2b3f7a,
+  ink: 0x09111a,
+  paper: 0xeef4f6,
+  sky: 0x0b1622,
 
-  // Floor and architecture
-  asphalt: 0x6b7a99,
-  asphaltDark: 0x4c5a78,
-  concrete: 0x9aa7bd,
-  hazardYellow: 0xffc61e,
-  hazardStripe: 0xe8531f,
-  rust: 0xc2571f,
-  steel: 0x7f8fa8,
+  // Floor and architecture — dark moody industrial surfaces so neon FX & lights pop
+  asphalt: 0x2a3642,
+  asphaltDark: 0x1e2833,
+  concrete: 0x4b5a68,
+  hazardYellow: 0xffc43d,
+  hazardStripe: 0xff5a2c,
+  rust: 0x8f4d36,
+  steel: 0x3b5163,
 
-  // Operator
-  operator: 0x35d3ff,
-  operatorDeep: 0x1a72c4,
+  // Operator — crisp electric cyan silhouette
+  operator: 0x3ae2ff,
+  operatorDeep: 0x0e6eb8,
   operatorTrim: 0xfff4d6,
 
-  // Infected — each archetype owns a hue band so type reads at a glance
-  shambler: 0x6fbf3f,
-  runner: 0xff8a1f,
-  spitter: 0x27d17a,
-  brute: 0x8f6bd6,
-  boomer: 0xd8e04a,
-  juggernaut: 0xff2e4d,
+  // Infected — vivid silhouettes against dark concrete
+  shambler: 0x8db870,
+  runner: 0xe08d58,
+  spitter: 0x5be86b,
+  brute: 0x7b63a8,
+  boomer: 0x86e84f,
+  juggernaut: 0xe83b4a,
 
-  // FX
+  // FX — high-luminance emissives that feed the bloom pass
   blood: 0xd11a4a,
-  acid: 0x6dff2f,
+  acid: 0x5eff3b,
   fire: 0xff6a1a,
   frost: 0x59e5ff,
   electric: 0x35f0ff,
-  gold: 0xffc61e,
+  gold: 0xffcf4a,
 };
 
 /**
- * Three hard bands and a highlight. Nearest filtering keeps the steps crisp —
- * any interpolation here reintroduces the smooth gradients we are removing.
+ * High-contrast stylized shading ramp: deeper cool shadows with crisp lit highlights
+ * so dramatic directional lighting, rim light, and dynamic fire/muzzle lights pop.
  */
 export function createToonRamp(): THREE.DataTexture {
-  // The shadow band is deliberately high. Comic art keeps hue in the shadows
-  // and reserves true black for the ink line — drop this band much lower and
-  // every saturated colour turns muddy on its unlit side.
   const bands = new Uint8Array([
-    134, 126, 152, 255, // shadow, still carrying colour
-    190, 184, 202, 255, // mid
-    238, 236, 232, 255, // light
-    255, 255, 255, 255, // highlight
+    68, 84, 102, 255,   // deep cool shadow
+    144, 160, 178, 255, // crisp midtone
+    228, 232, 238, 255, // lit band
+    255, 255, 255, 255, // hot rim highlight
   ]);
   const texture = new THREE.DataTexture(bands, 4, 1, THREE.RGBAFormat);
   texture.minFilter = THREE.NearestFilter;

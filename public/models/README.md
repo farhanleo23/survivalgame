@@ -1,43 +1,39 @@
-# Runtime character models
+# Deadwave bundled assets
 
-All character assets are bundled with the game and loaded from this directory.
-Nothing is fetched from a remote server at play time.
+All runtime models are local. The game never fetches a model during a run, and
+the selected set keeps first-wave loading predictable.
 
-## Operator
+## Characters
 
-`soldier.glb` — the animated Soldier model distributed with the official
-Three.js skeletal-animation blending example.
+`survivor.glb`, `zombie-shambler.glb`, `zombie-runner.glb`, and
+`zombie-boomer.glb` are selected glTF exports from the [Quaternius Zombie
+Apocalypse Kit](https://quaternius.com/packs/zombieapocalypsekit.html). The kit
+is CC0 and includes the playable survivor and HitReact, Death, Idle, Walk, and
+Run clips used here. `zombie-spitter.glb` and `zombie-heavy.glb` are retained
+from the existing Quaternius kit exports for the spitter and boss roles.
+The pack's license record is included in `LICENSE-QUATERNIUS.txt`.
 
-- Source: https://github.com/mrdoob/three.js/blob/dev/examples/models/gltf/Soldier.glb
-- Example: https://threejs.org/examples/webgl_animation_skinning_blending.html
-- Original model credit shown by the example: Mixamo
-- Clips: `Idle`, `Walk`, `Run`, `TPose`
+The Brute shares the shambler mesh with a larger silhouette; Juggernaut shares
+the heavy mesh with its armour and reactor attachments. This preserves all six
+gameplay roles without multiplying download size.
 
-## Infected
+## Industrial scenery
 
-Downloaded from [Poly Pizza](https://poly.pizza). Each entry lists the licence
-that model was published under.
+The selected GLBs in `industrial/` come from [Kenney's City Kit
+Industrial](https://kenney.nl/assets/city-kit-industrial), licensed CC0. The
+kit's `License.txt` is bundled beside the models. They are used as perimeter
+buildings, shipping containers, tanks, a pickup, solar panels, and a water
+tower. The runtime scales each clone to the existing collision footprint.
 
-| File | Model | Creator | Licence | Clips |
-| --- | --- | --- | --- | --- |
-| `zombie-shambler.glb` | Zombie | Quaternius | **CC-BY** | Attack, Bite_ground, Crawl, Die, Die2, Headbutt, Hit_reaction, Idle, Running_Crawl, Scream, Walk, Walk2 |
-| `zombie-runner.glb` | Animated Zombie | Quaternius | **CC-BY** | ZombieBite, ZombieCrawl, ZombieIdle, ZombieRun, ZombieWalk |
-| `zombie-spitter.glb` | Zombie half | Quaternius | **CC-BY** | Crawl, Death, HitReact, Idle, Jump, Run, Walk |
-| `zombie-boomer.glb` | Zombie | Quaternius | CC0 | Attack, Death, HitRecieve, Idle, Jump, Run, Walk |
-| `zombie-heavy.glb` | Zombie | Quaternius | CC0 | Crawl, Death, HitReact, Idle, Idle_Attack, Punch, Run, Run_Attack, Walk, + 7 more |
+## Menu images
 
-`zombie-heavy.glb` backs both the Brute and the Juggernaut, separated by scale
-and by the armour, horns and reactor-core attachments built in code.
+`../images/operator.webp` and the four weapon WebPs are local thumbnails
+rendered from the same operator rig and procedural weapon models used in the
+game. They are generated build assets, not a second art pipeline.
 
-## Attribution
+## Sounds
 
-Three of the models above are published under CC-BY, which requires
-attribution. The following notice satisfies it and must be kept anywhere the
-game is distributed:
-
-> Zombie character models by **Quaternius** (https://quaternius.com), sourced
-> via Poly Pizza (https://poly.pizza), licensed under
-> [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-
-The two CC0 models carry no attribution requirement, but Quaternius is credited
-for those as well by the same notice.
+The concrete footsteps and metal/soft impact clips in `../audio/` come from
+[Kenney's Impact Sounds](https://kenney.nl/assets/impact-sounds), licensed CC0.
+`../audio/LICENSE.txt` is copied from the archive; the synthesized weapon tones
+remain layered underneath these short material cues.

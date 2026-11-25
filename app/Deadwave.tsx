@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @next/next/no-img-element -- Pre-rendered local WebP game assets; no image service needed. */
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { GameEngine as GameEngineType } from "@/game/GameEngine";
@@ -13,11 +14,20 @@ import {
   WEAPONS,
   WEAPON_IDS,
 } from "@/game/config";
+import {
+  ACTIVE_RELOAD_WINDOW_END,
+  ACTIVE_RELOAD_WINDOW_START,
+  getFusionCompletedByCard,
+  OVERDRIVE_MAX_CHARGE,
+  SYNERGY_FUSIONS,
+} from "@/game/combat-systems";
+import { PYLON_COST, TECH_ENERGY_MAX, TURRET_COST } from "@/game/tactical-overhaul";
 import { purchaseWeapon, upgradePerk, upgradeWeapon } from "@/game/economy";
 import { normalizeJoystick, resolveInputMode, triggerHaptic } from "@/game/mobile";
 import { createDefaultProfile, getLocalStorage, loadProfile, saveProfile } from "@/game/profile";
 import { formatMissionTime, getAccuracy, type RunStats } from "@/game/stats";
 import type { ControlMode, GameScreen, GraphicsMode, HudState, InputMode, PerkId, ProfileV1, SynergyCardDefinition, SynergyCardId, WeaponId } from "@/game/types";
+import { GameIcon } from "./GameIcon";
 import { LobbyHero } from "./LobbyHero";
 
 const initialHud: HudState = {
@@ -435,7 +445,7 @@ export function Deadwave() {
 
       {gameVisible && (
         <section
-          className="game-view"
+          className={`game-view ${hud.overdriveActive ? "is-overdrive" : ""}`}
           data-testid="game-stage"
           data-wave={hud.wave}
           onPointerMove={(event) => {
@@ -445,7 +455,25 @@ export function Deadwave() {
         >
           <div className="canvas-mount" ref={stageRef} />
           <div className="vignette" aria-hidden="true" />
-          {engineStatus === "ready" && inputMode === "keyboard" && <div className="combat-reticle" aria-hidden="true"><i /><b /></div>}
+          {engineStatus === "ready" && inputMode === "keyboard" && (
+            <div className={`combat-reticle ${hud.overdriveActive ? "is-overdrive" : ""} ${(hud.overchargedRounds ?? 0) > 0 ? "is-overcharged" : ""}`} aria-hidden="true">
+              <i /><b />
+              {hud.reloading > 0 && (
+                <div className="reticle-reload-track">
+                  {hud.activeReloadAvailable && (
+                    <span
+                      className="reticle-sweet-spot"
+                      style={{
+                        left: `${ACTIVE_RELOAD_WINDOW_START * 100}%`,
+                        width: `${(ACTIVE_RELOAD_WINDOW_END - ACTIVE_RELOAD_WINDOW_START) * 100}%`,
+                      }}
+                    />
+                  )}
+                  <span className="reticle-reload-cursor" style={{ left: `${(hud.reloadProgress ?? 0) * 100}%` }} />
+                </div>
+              )}
+            </div>
+          )}
           {engineStatus === "ready" && (
             <Hud
               hud={hud}
@@ -459,12 +487,14 @@ export function Deadwave() {
           {screen === "playing" && engineStatus === "ready" && inputMode === "keyboard" && (
             <div className="game-controls">
               <span><b>WASD</b> Move</span>
-              <span><b>MOUSE</b> Aim</span>
               <span><b>L-CLICK</b> Fire</span>
+              <span><b>R-CLICK / V</b> Blade Execute</span>
+              <span><b>T</b> Turret</span>
+              <span><b>C</b> Laser Pylon</span>
+              <span><b>G</b> Frag</span>
+              <span><b>F</b> Overdrive</span>
+              <span><b>SPACE</b> Dash</span>
               <span><b>R</b> Reload</span>
-              <span><b>SPACE / SHIFT</b> Dash</span>
-              <span><b>Q</b> Swap</span>
-              <span><b>ESC</b> Pause</span>
             </div>
           )}
           {screen === "playing" && engineStatus === "ready" && inputMode === "touch" && !orientationBlocked && (
@@ -473,6 +503,14 @@ export function Deadwave() {
               onFire={(active) => engineRef.current?.setVirtualFire(active)}
               onAction={(action) => engineRef.current?.triggerVirtualAction(action)}
               reloading={hud.reloading > 0}
+              activeReloadAvailable={Boolean(hud.activeReloadAvailable)}
+              grenadeReady={(hud.grenade ?? 1) >= 1}
+              bladeReady={(hud.blade ?? 1) >= 1}
+              executeReady={Boolean(hud.executeTargetReady)}
+              turretReady={(hud.techEnergy ?? 0) >= TURRET_COST}
+              pylonReady={(hud.techEnergy ?? 0) >= PYLON_COST}
+              overdriveReady={(hud.overdriveCharge ?? 0) >= OVERDRIVE_MAX_CHARGE}
+              overdriveActive={Boolean(hud.overdriveActive)}
               onPause={() => {
                 engineRef.current?.pause();
                 setScreen("paused");
@@ -658,125 +696,49 @@ function Lobby({
   onGraphicsModeChange: (mode: GraphicsMode) => void;
   handheld: boolean;
 }) {
-  // A banked checkpoint outlives the browser session, so offer it up front.
   const canResume = profile.checkpointWave > 1;
-
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return (
-    <div className="menu-shell comic-lobby">
-      <header className="masthead">
-        <div className="masthead-brand">
-          <span className="brand-mark">DW</span>
-          <h1 className="comic-title">
-            <span className="comic-title-ink">DEADWAVE</span>
-          </h1>
-        </div>
-        <div className="masthead-meta">
-          <span className="issue-tag">ISSUE #01</span>
-          <div className="salvage-chip">
-            <small>Banked salvage</small>
-            <strong>◆ {profile.coins.toLocaleString()}</strong>
-          </div>
-        </div>
+    <div className="menu-shell comic-lobby depot-lobby">
+      <header className="depot-masthead">
+        <div><span className="depot-wordmark">DEADWAVE<span> / </span></span><p>QUARANTINE RESPONSE UNIT</p></div>
+        <button className="settings-control" data-testid="open-settings" aria-label="Settings" onClick={() => setSettingsOpen(true)}><GameIcon name="settings" /><span>Settings</span></button>
       </header>
-
-      <div className="hazard-rule" aria-hidden="true" />
-
-      <div className="comic-grid">
-        {!handheld && (
-          <section className="comic-panel cover-panel" aria-label="Operator">
-            <LobbyHero reducedMotion={profile.settings.reducedMotion} />
-            <p className="panel-caption caption-top">SECTOR 01 — THE DEPOT HAS GONE QUIET.</p>
-            <p className="panel-sfx" aria-hidden="true">KRAAKOOM!</p>
-          </section>
-        )}
-
-        <section className="comic-panel briefing-panel">
-          <p className="panel-caption">MISSION BRIEFING</p>
-          <h2 className="briefing-title">QUARANTINE DEPOT</h2>
-          <p className="briefing-copy">
-            Ten waves of infected between you and extraction. Shamblers, Runners, Spitters, Brutes —
-            and something the size of a truck waiting at the end.
-          </p>
-
-          <div className="stat-strip">
-            <div className="stat-chip">
-              <small>Best wave</small>
-              <strong>{profile.highestWave}<i>/10</i></strong>
-            </div>
-            <div className="stat-chip">
-              <small>Arsenal</small>
-              <strong>{profile.ownedWeapons.length}<i> guns</i></strong>
-            </div>
-            <div className="stat-chip">
-              <small>Salvage</small>
-              <strong>{profile.coins.toLocaleString()}</strong>
-            </div>
-          </div>
-
+      <div className="depot-lobby-grid">
+        <section className={`operator-stage ${handheld ? "operator-stage-static" : "cover-panel"}`} aria-label="Operator in loading depot">
+          {handheld ? <img className="operator-thumbnail" src="/images/operator.webp" alt="Kai, the cyan-armored survivor, in the loading depot" /> : <LobbyHero reducedMotion={profile.settings.reducedMotion} />}
+          <div className="stage-caption"><span className="status-dot" /> OPERATOR READY <strong>KAI / RESPONSE 01</strong></div>
+          <span className="stage-coordinate">N 43.65 / W 79.38</span>
+        </section>
+        <section className="depot-briefing">
+          <p className="eyebrow">SECTOR 01 / LOADING DEPOT</p>
+          <h1>HOLD THE LINE.<br /><span>MAKE IT OUT.</span></h1>
+          <p className="depot-description">Ten waves. Four hostile sectors. Recover salvage, build your arsenal, and reach the extraction beacon.</p>
+          <div className="depot-run-info"><span>WAVE SURVIVAL</span><span>SOLO OPERATION</span></div>
           <div className="cta-block">
-            <button className="comic-cta" data-testid="start-mission" onClick={onStart}>
-              {canResume ? "NEW RUN" : "START GAME"}
-              <span aria-hidden="true">▶</span>
-            </button>
-            {canResume && (
-              <button className="comic-resume" data-testid="resume-run" onClick={onResume}>
-                Redeploy to wave {profile.checkpointWave}
-                <span aria-hidden="true">▶</span>
-              </button>
-            )}
-            <button className="comic-secondary" data-testid="open-armory" onClick={onOpenArmory}>
-              Field armory · spend {profile.coins.toLocaleString()} salvage
-            </button>
+            <button className="comic-cta" data-testid="start-mission" onClick={onStart}>{canResume ? "Start new run" : "Start operation"}<span aria-hidden="true">→</span></button>
+            {canResume && <button className="comic-resume" data-testid="resume-run" onClick={onResume}>Resume · wave {profile.checkpointWave}<span aria-hidden="true">→</span></button>}
+            <button className="comic-secondary" data-testid="open-armory" onClick={onOpenArmory}>Armory <span>◆ {profile.coins.toLocaleString()}</span></button>
           </div>
-
+          <div className="depot-record"><span>PERSONAL BEST</span><strong>{String(profile.highestWave).padStart(2, "0")}<small> WAVE</small></strong><span>{profile.ownedWeapons.length} / 4 WEAPONS</span></div>
           <div className="controls-block">
-            <span className="block-label">Controls</span>
-            {inputMode === "touch" ? (
-              <div className="touch-control-summary" data-testid="touch-control-summary">
-                <span>◉ Analog movement</span><span>◎ Automatic aim</span><span>● Hold to fire</span>
-              </div>
-            ) : (
-              <div className="keycap-row">
-                <span className="keycap">WASD</span><em>move</em>
-                <span className="keycap">MOUSE</span><em>aim</em>
-                <span className="keycap">CLICK</span><em>fire</em>
-                <span className="keycap">SPACE</span><em>dash</em>
-                <span className="keycap">R</span><em>reload</em>
-                <span className="keycap">Q</span><em>swap</em>
-              </div>
-            )}
-          </div>
-
-          <div className="settings-block">
-            <span className="block-label">Settings</span>
-            <div className="toggle-row">
-              <button
-                className={`toggle-chip ${profile.settings.music ? "on" : ""}`}
-                onClick={() => onToggleSetting("music")}
-                aria-pressed={profile.settings.music}
-              >
-                ♫ Music
-              </button>
-              <button
-                className={`toggle-chip ${profile.settings.sfx ? "on" : ""}`}
-                onClick={() => onToggleSetting("sfx")}
-                aria-pressed={profile.settings.sfx}
-              >
-                ◈ SFX
-              </button>
-              <button
-                className={`toggle-chip ${profile.settings.reducedMotion ? "on" : ""}`}
-                onClick={() => onToggleSetting("reducedMotion")}
-                aria-pressed={profile.settings.reducedMotion}
-              >
-                ◐ Reduced motion
-              </button>
-            </div>
-            <ControlModeSelector value={profile.settings.controlMode} onChange={onControlModeChange} compact />
-            <GraphicsModeSelector value={profile.settings.graphicsMode} onChange={onGraphicsModeChange} compact />
+            {inputMode === "touch" ? <p className="touch-control-summary" data-testid="touch-control-summary">Move with stick. Slash wounded foes to Teleport-Execute. Drop Turrets & Pylons.</p> : <p className="depot-key-guide"><b>WASD</b> Move <b>L-CLICK</b> Fire <b>R-CLICK</b> Blade Execute<br /><b>T</b> Auto-Turret <b>C</b> Tesla Fence <b>G</b> Frag <b>F</b> Overdrive <b>SPACE</b> Dash</p>}
           </div>
         </section>
       </div>
+      <footer className="depot-footer"><span>ABANDONED LOADING DEPOT</span><span>STAY MOBILE. WATCH YOUR AMMO.</span></footer>
+      {settingsOpen && <Modal eyebrow="OPERATOR PREFERENCES" title="SETTINGS" onDismiss={() => setSettingsOpen(false)}>
+        <div className="settings-block">
+          <div className="toggle-row">
+            <button className={`toggle-chip ${profile.settings.music ? "on" : ""}`} onClick={() => onToggleSetting("music")} aria-pressed={profile.settings.music}>Music</button>
+            <button className={`toggle-chip ${profile.settings.sfx ? "on" : ""}`} onClick={() => onToggleSetting("sfx")} aria-pressed={profile.settings.sfx}>SFX</button>
+            <button className={`toggle-chip ${profile.settings.reducedMotion ? "on" : ""}`} onClick={() => onToggleSetting("reducedMotion")} aria-pressed={profile.settings.reducedMotion}>Reduced motion</button>
+          </div>
+          <ControlModeSelector value={profile.settings.controlMode} onChange={onControlModeChange} compact />
+          <GraphicsModeSelector value={profile.settings.graphicsMode} onChange={onGraphicsModeChange} compact />
+        </div>
+        <button className="primary-action settings-done" onClick={() => setSettingsOpen(false)}>Done</button>
+      </Modal>}
     </div>
   );
 }
@@ -815,12 +777,13 @@ function Loadout({
             <button
               key={id}
               className={`weapon-card ${equipped ? "equipped" : ""} ${!owned ? "unowned" : ""}`}
+              aria-pressed={equipped}
               aria-label={`${equipped ? "Equipped" : owned ? "Owned" : "Locked"} ${weapon.name}`}
               onClick={() => onToggleWeapon(id)}
               disabled={!owned}
             >
               <div className="weapon-card-header">
-                <span className="weapon-rank">★ {rank}/5</span>
+                <span className="weapon-rank"> {rank}/5</span>
                 <span className="equipped-badge">{equipped ? "EQUIPPED" : owned ? "OWNED" : "LOCKED"}</span>
               </div>
               <WeaponGlyph id={id} />
@@ -877,22 +840,48 @@ function Hud({
       <div className="comic-hud-top-left">
         <div className="operator-vitals-card">
           <div className="operator-title-row">
-            <span className="heart-icon" aria-hidden="true">+</span>
-            <strong className="operator-name">KAI // HP {Math.round(healthPercent)}%</strong>
+            <GameIcon name="vitality" className="heart-icon" />
+            <strong className="operator-name">KAI <span>{Math.round(hud.health)} / {hud.maxHealth}</span></strong>
           </div>
           <div className="vital-bar health-bar">
             <div className="vital-fill health-fill-bar" style={{ width: `${healthPercent}%` }} />
           </div>
-          <div className="vital-bar energy-bar">
-            <span className="energy-icon">⚡</span>
-            <div className="vital-fill energy-fill-bar" style={{ width: `${hud.dash * 100}%` }} />
+          <div className="tech-energy-row" title="Tech Energy: Press T for Auto-Turret (40) or C for Tesla Laser Pylon (45)">
+            <span>TECH</span>
+            <div className="vital-bar tech-bar">
+              <div className="vital-fill tech-fill-bar" style={{ width: `${Math.min(100, ((hud.techEnergy ?? 0) / TECH_ENERGY_MAX) * 100)}%` }} />
+            </div>
+            <strong>{hud.techEnergy ?? 0}</strong>
           </div>
+          <div className="deploy-mini-row">
+            <span className={`deploy-chip ${(hud.techEnergy ?? 0) >= TURRET_COST ? "can-build" : ""}`}>
+              <GameIcon name="turret" /> <b>T</b> TURRET {hud.turretCount ?? 0}/3
+            </span>
+            <span className={`deploy-chip ${(hud.techEnergy ?? 0) >= PYLON_COST ? "can-build" : ""}`}>
+              <GameIcon name="pylon" /> <b>C</b> FENCE {hud.pylonCount ?? 0}/4
+            </span>
+          </div>
+
         </div>
 
-        {/* Active Roguelite Synergies Tray */}
-        {hud.activeSynergies && Object.keys(hud.activeSynergies).length > 0 && (
+        {/* Active Roguelite Synergies & Evolved Fusions Tray */}
+        {((hud.activeSynergies && Object.keys(hud.activeSynergies).length > 0) || (hud.activeFusions && hud.activeFusions.length > 0)) && (
           <div className="hud-synergy-tray" aria-label="Active Battlefield Synergies">
-            {Object.entries(hud.activeSynergies).map(([id, stack]) => {
+            {hud.activeFusions?.map((fusionId) => {
+              const fusion = SYNERGY_FUSIONS[fusionId];
+              if (!fusion) return null;
+              return (
+                <div
+                  key={`fusion-${fusionId}`}
+                  className="hud-synergy-badge is-fusion"
+                  title={`EVOLVED FUSION · ${fusion.name}: ${fusion.description}`}
+                >
+                  <GameIcon name={fusionId} className="hud-synergy-icon" />
+                  <span className="hud-synergy-rank">★</span>
+                </div>
+              );
+            })}
+            {Object.entries(hud.activeSynergies ?? {}).map(([id, stack]) => {
               const card = SYNERGY_CARDS[id as SynergyCardId];
               if (!card || stack <= 0) return null;
               return (
@@ -901,7 +890,7 @@ function Hud({
                   className={`hud-synergy-badge rarity-${card.rarity}`}
                   title={`${card.name} (Rank ${stack}/${card.maxStacks}): ${card.description}`}
                 >
-                  <span className="hud-synergy-icon">{card.icon}</span>
+                  <GameIcon name={id} className="hud-synergy-icon" />
                   <span className="hud-synergy-rank">x{stack}</span>
                 </div>
               );
@@ -910,7 +899,7 @@ function Hud({
         )}
 
         {/* Isometric Angled Radar Mini-Map */}
-        <div className="isometric-minimap" aria-hidden="true">
+        <div className="isometric-minimap radar" aria-hidden="true">
           <div className="minimap-grid-lines" />
           {/* Player Arrow */}
           <div
@@ -964,7 +953,7 @@ function Hud({
         </div>
         {hud.modifier && (
           <div className="hud-modifier" title={`Wave modifier: ${hud.modifier.name}`}>
-            <span aria-hidden="true">{hud.modifier.icon}</span>
+            <GameIcon name="shield" />
             {hud.modifier.name}
           </div>
         )}
@@ -975,13 +964,70 @@ function Hud({
         </div>
       </div>
 
-      {/* 3. BOTTOM-LEFT: Stylized Deadwave Logo Mark */}
-      <div className="comic-hud-bottom-left">
-        <span className="deadwave-watermark">DEADWAVE</span>
-      </div>
-
-      {/* 4. BOTTOM-RIGHT: Active Weapon Card, Ammo & Dash Ability Cooldown Box */}
+      {/* 4. BOTTOM-RIGHT: Overdrive Surge, Dash Ability & Active Weapon Card */}
       <div className="comic-hud-bottom-right">
+        {/* Overdrive Surge Meter */}
+        <div
+          className={`ability-cooldown-box overdrive-box ${
+            hud.overdriveActive
+              ? "is-active"
+              : (hud.overdriveCharge ?? 0) >= OVERDRIVE_MAX_CHARGE
+                ? "is-ready"
+                : "cooling"
+          }`}
+          title="Overdrive Surge (F or Right-Click when at 100%): Infinite mag, 100% crit, +45% fire rate"
+        >
+          <div className="ability-icon">
+            <GameIcon name="overdrive" />
+          </div>
+          <span className="ability-label">
+            {hud.overdriveActive
+              ? "SURGE!"
+              : (hud.overdriveCharge ?? 0) >= OVERDRIVE_MAX_CHARGE
+                ? "F · SURGE"
+                : `${hud.overdriveCharge ?? 0}%`}
+          </span>
+          <span className="dash-progress overdrive-progress">
+            <i
+              style={{
+                width: `${
+                  hud.overdriveActive
+                    ? (hud.overdriveProgress ?? 0) * 100
+                    : Math.min(100, ((hud.overdriveCharge ?? 0) / OVERDRIVE_MAX_CHARGE) * 100)
+                }%`,
+              }}
+            />
+          </span>
+        </div>
+
+        {/* Cyber-Blade Slash / Teleport Execute Box */}
+        <div
+          className={`ability-cooldown-box blade-box ${
+            hud.executeTargetReady ? "is-execute" : (hud.blade ?? 1) >= 1 ? "ready" : "cooling"
+          }`}
+          title="Cyber-Blade (Right-Click or V): Cleaves packs, deflects projectiles, and Teleport-Executes wounded targets for instant reload + HP + reset!"
+        >
+          <div className="ability-icon">
+            <GameIcon name="blade" />
+          </div>
+          <span className="ability-label">
+            {hud.executeTargetReady ? "EXEC!" : (hud.blade ?? 1) >= 1 ? "RMB · CUT" : "BLADE"}
+          </span>
+          <span className="dash-progress blade-progress"><i style={{ width: `${(hud.blade ?? 1) * 100}%` }} /></span>
+        </div>
+
+        {/* Frag Grenade Cooldown Box */}
+        <div
+          className={`ability-cooldown-box frag-box ${(hud.grenade ?? 1) >= 1 ? "ready" : "cooling"}`}
+          title="Tactical Frag Grenade (G or Middle-Click): 165 AoE blast, chain-detonates barrels. Kills reduce cooldown."
+        >
+          <div className="ability-icon">
+            <GameIcon name="grenade" />
+          </div>
+          <span className="ability-label">{(hud.grenade ?? 1) >= 1 ? "G · FRAG" : "FRAG"}</span>
+          <span className="dash-progress frag-progress"><i style={{ width: `${(hud.grenade ?? 1) * 100}%` }} /></span>
+        </div>
+
         {/* Dash / Ability Cooldown Box */}
         <div className={`ability-cooldown-box ${hud.dash >= 1 ? "ready" : "cooling"}`}>
           <div className="ability-icon">
@@ -989,31 +1035,70 @@ function Hud({
               <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
             </svg>
           </div>
-          <span className="ability-label">{hud.dash >= 1 ? "READY" : "COOLDOWN"}</span>
+          <span className="ability-label">{hud.dash >= 1 ? "DASH READY" : "DASH"}</span>
+          <span className="dash-progress"><i style={{ width: `${hud.dash * 100}%` }} /></span>
         </div>
 
-        {/* Weapon Silhouette & Ammo Count */}
-        <div className={`comic-weapon-card weapon-hud ${isReloading ? "reloading" : ""}`}>
+        {/* Weapon Silhouette & Ammo Count (or Active Orbital Super-Weapon Override!) */}
+        <div
+          className={`comic-weapon-card weapon-hud ${isReloading ? "reloading" : ""} ${
+            (hud.overchargedRounds ?? 0) > 0 ? "is-overcharged" : ""
+          } ${hud.overdriveActive ? "is-overdrive" : ""} ${hud.superWeapon ? "is-superweapon" : ""}`}
+        >
           <div className="weapon-silhouette-container">
             <WeaponGlyph id={hud.weapon} />
           </div>
           <div className="ammo-numbers">
-            <strong>{isReloading ? "RELOAD" : hud.magazine}</strong>
-            <small>/{hud.reserve}</small>
+            <strong>{hud.overdriveActive ? "∞" : hud.superWeapon ? hud.superWeapon.ammo : hud.magazine}</strong>
+            <small>/{hud.superWeapon ? hud.superWeapon.maxAmmo : hud.reserve}</small>
           </div>
-          {loadoutCount > 1 && (
+          {hud.superWeapon && <span className="overcharge-badge superweapon-badge">ORBITAL</span>}
+          {!hud.superWeapon && (hud.overchargedRounds ?? 0) > 0 && !hud.overdriveActive && (
+            <span className="overcharge-badge">OVR</span>
+          )}
+          {loadoutCount > 1 && !hud.superWeapon && (
             <span className="weapon-swap-key-tag">Q</span>
           )}
-          <span className="weapon-rank-tag-mini">★{weaponRank}</span>
-          <span className="active-weapon-name">{hud.weaponName}</span>
+          {!hud.superWeapon && <span className="weapon-rank-tag-mini">{weaponRank}</span>}
+          <span className="active-weapon-name">
+            {hud.superWeapon
+              ? hud.superWeapon.name
+              : isReloading
+                ? hud.activeReloadAvailable
+                  ? `Tap R · ${hud.reloading.toFixed(1)}s`
+                  : `Reloading · ${hud.reloading.toFixed(1)}s`
+                : hud.weaponName}
+          </span>
+          {isReloading && (
+            <div className="reload-progress" role="progressbar" aria-label="Reload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((hud.reloadProgress ?? 0) * 100)}>
+              {hud.activeReloadAvailable && (
+                <span
+                  className="reload-sweet-spot"
+                  style={{
+                    left: `${ACTIVE_RELOAD_WINDOW_START * 100}%`,
+                    width: `${(ACTIVE_RELOAD_WINDOW_END - ACTIVE_RELOAD_WINDOW_START) * 100}%`,
+                  }}
+                />
+              )}
+              <i style={{ width: `${(hud.reloadProgress ?? 0) * 100}%` }} />
+            </div>
+          )}
         </div>
       </div>
 
       {/* Combo Streak Tracker */}
       {hud.comboCount !== undefined && hud.comboCount >= 2 && (
         <div className="combo-hud-badge">
-          <span className="combo-number">{hud.comboCount}x</span>
+          <div className="combo-top-row">
+            <span className="combo-number">{hud.comboCount}x</span>
+            {(hud.comboMultiplier ?? 1) > 1 && (
+              <span className="combo-mult-tag">{hud.comboMultiplier?.toFixed(2).replace(/\.00$/, "")}x SALVAGE</span>
+            )}
+          </div>
           <span className="combo-label">COMBO STREAK</span>
+          <span className="combo-decay-bar">
+            <i style={{ width: `${Math.min(100, ((hud.comboTimer ?? 0) / 2.8) * 100)}%` }} />
+          </span>
         </div>
       )}
 
@@ -1032,7 +1117,7 @@ function Hud({
       {hud.extractionZoneActive && (
         <div className={`extraction-hud-card ${hud.extractionProgress && hud.extractionProgress > 0 ? "is-charging" : ""}`}>
           <div className="extraction-hud-header">
-            <span className="beacon-icon">{hud.extractionProgress && hud.extractionProgress > 0 ? "⚡" : "📍"}</span>
+            <GameIcon name="beacon" className="beacon-icon" />
             <div>
               <strong className="extraction-desktop-title">EXTRACTION BEACON ACTIVE</strong>
               <strong className="extraction-mobile-status">
@@ -1054,17 +1139,17 @@ function Hud({
         <div className={`boss-hud phase-${hud.bossPhase ?? 1} ${hud.bossPhase === 3 ? "is-enraged" : ""}`}>
           <div className="boss-title">
             <div className="boss-nameplate">
-              <span>⚠️ {hud.bossName ?? "TITAN-01 // JUGGERNAUT"}</span>
+              <span> {hud.bossName ?? "TITAN-01 // JUGGERNAUT"}</span>
               <span className={`boss-phase-badge ${hud.bossPhase === 3 ? "berserk" : ""}`}>
                 {hud.bossMaxPhases === 2
                   ? hud.bossPhase === 2
-                    ? "💥 PHASE 2: ENRAGED SLAM"
-                    : "🛡️ PHASE 1: ARMORED"
+                    ? " PHASE 2: ENRAGED SLAM"
+                    : " PHASE 1: ARMORED"
                   : hud.bossPhase === 3
-                    ? "🔥 PHASE 3: BERSERK"
+                    ? " PHASE 3: BERSERK"
                     : hud.bossPhase === 2
-                      ? "⚡ PHASE 2: SHOCKWAVE"
-                      : "🛡️ PHASE 1: ARMORED"}
+                      ? " PHASE 2: SHOCKWAVE"
+                      : " PHASE 1: ARMORED"}
               </span>
             </div>
             <strong>{Math.ceil(hud.bossHealth)} / {hud.bossMaxHealth}</strong>
@@ -1110,11 +1195,12 @@ function DraftModal({
           {cards.map((card) => {
             const currentStack = activeSynergies[card.id] ?? 0;
             const nextStack = currentStack + 1;
+            const fusion = getFusionCompletedByCard(activeSynergies, card.id);
             return (
               <button
                 key={card.id}
                 type="button"
-                className={`draft-perk-card rarity-${card.rarity}`}
+                className={`draft-perk-card rarity-${card.rarity} ${fusion ? "has-fusion" : ""}`}
                 onClick={() => onSelect(card.id)}
               >
                 <div className="card-top-bar">
@@ -1124,13 +1210,19 @@ function DraftModal({
                   </span>
                 </div>
                 <div className="card-icon-frame">
-                  <span className="card-emoji">{card.icon}</span>
+                  <GameIcon name={card.id} />
                 </div>
                 <h3 className="card-title">{card.name}</h3>
                 <p className="card-description">{card.description}</p>
-                <blockquote className="card-flavor">&ldquo;{card.flavorText}&rdquo;</blockquote>
+                {fusion && (
+                  <p className="card-fusion-callout">
+                    <span>★ FUSION READY</span>
+                    <strong>{fusion.name}</strong>
+                  </p>
+                )}
+                <p className="card-rank-comparison">MODULE RANK <strong>{currentStack} → {nextStack}</strong></p>
                 <div className="card-select-cta">
-                  <span>EQUIP MODULE →</span>
+                  <span>{fusion ? `FUSE ${fusion.name.toUpperCase()} →` : "EQUIP MODULE →"}</span>
                 </div>
               </button>
             );
@@ -1146,12 +1238,28 @@ function MobileControls({
   onFire,
   onAction,
   reloading,
+  activeReloadAvailable,
+  grenadeReady,
+  bladeReady,
+  executeReady,
+  turretReady,
+  pylonReady,
+  overdriveReady,
+  overdriveActive,
   onPause,
 }: {
   onMove: (x: number, z: number) => void;
   onFire: (active: boolean) => void;
-  onAction: (action: "dash" | "reload" | "swap") => void;
+  onAction: (action: "dash" | "reload" | "swap" | "overdrive" | "grenade" | "blade" | "turret" | "pylon") => void;
   reloading: boolean;
+  activeReloadAvailable: boolean;
+  grenadeReady: boolean;
+  bladeReady: boolean;
+  executeReady: boolean;
+  turretReady: boolean;
+  pylonReady: boolean;
+  overdriveReady: boolean;
+  overdriveActive: boolean;
   onPause: () => void;
 }) {
   const controlsRef = useRef<HTMLDivElement>(null);
@@ -1301,11 +1409,11 @@ function MobileControls({
 
   const triggerAction = (
     event: React.SyntheticEvent,
-    action: "dash" | "reload" | "swap",
+    action: "dash" | "reload" | "swap" | "overdrive" | "grenade" | "blade" | "turret" | "pylon",
   ) => {
     if (event.type !== "touchstart") event.preventDefault();
     event.stopPropagation();
-    triggerHaptic(action === "dash" ? 18 : action === "reload" ? [10, 30, 10] : 12);
+    triggerHaptic(action === "overdrive" ? [20, 20, 35] : action === "blade" ? 24 : action === "grenade" ? 22 : action === "dash" ? 18 : action === "reload" ? [10, 30, 10] : 12);
     onAction(action);
   };
 
@@ -1384,15 +1492,77 @@ function MobileControls({
         </button>
         <button
           type="button"
-          className="touch-action touch-reload"
+          className={`touch-action touch-reload ${activeReloadAvailable ? "is-active-reload" : ""}`}
           onTouchStart={(event) => triggerAction(event, "reload")}
           onPointerDown={(event) => {
             if (event.pointerType === "touch") return;
             triggerAction(event, "reload");
           }}
         >
-          RLD
+          {activeReloadAvailable ? "OVR!" : "RLD"}
         </button>
+        <button
+          type="button"
+          className={`touch-action touch-blade ${executeReady ? "is-execute" : bladeReady ? "is-ready" : ""}`}
+          aria-label="Cyber-Blade slash or execute"
+          onTouchStart={(event) => triggerAction(event, "blade")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "blade");
+          }}
+        >
+          {executeReady ? "EXEC" : "CUT"}
+        </button>
+        <button
+          type="button"
+          className={`touch-action touch-turret ${turretReady ? "is-ready" : ""}`}
+          aria-label="Deploy auto turret"
+          onTouchStart={(event) => triggerAction(event, "turret")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "turret");
+          }}
+        >
+          TUR
+        </button>
+        <button
+          type="button"
+          className={`touch-action touch-pylon ${pylonReady ? "is-ready" : ""}`}
+          aria-label="Deploy tesla laser pylon"
+          onTouchStart={(event) => triggerAction(event, "pylon")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "pylon");
+          }}
+        >
+          FNC
+        </button>
+        <button
+          type="button"
+          className={`touch-action touch-frag ${grenadeReady ? "is-ready" : ""}`}
+          aria-label="Throw frag grenade"
+          onTouchStart={(event) => triggerAction(event, "grenade")}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") return;
+            triggerAction(event, "grenade");
+          }}
+        >
+          FRAG
+        </button>
+        {(overdriveReady || overdriveActive) && (
+          <button
+            type="button"
+            className={`touch-action touch-overdrive ${overdriveActive ? "is-active" : "is-ready"}`}
+            aria-label="Activate Overdrive Surge"
+            onTouchStart={(event) => triggerAction(event, "overdrive")}
+            onPointerDown={(event) => {
+              if (event.pointerType === "touch") return;
+              triggerAction(event, "overdrive");
+            }}
+          >
+            SURGE
+          </button>
+        )}
         <button
           type="button"
           className="touch-action touch-swap"
@@ -1494,7 +1664,7 @@ function Armory({
         </div>
         {inRun && onRefill && (
           <button className="refill-action" aria-label="Refill all ammo 20" onClick={onRefill}>
-            ⚡ Refill All Ammo (20 Salvage)
+             Refill All Ammo (20 Salvage)
           </button>
         )}
       </div>
@@ -1518,8 +1688,10 @@ function Armory({
                 <article className={`armory-item ${owned ? "owned" : ""}`} key={id}>
                   <div className="armory-item-icon">
                     <WeaponGlyph id={id} compact />
-                    <div className="stars-indicator">
-                      {"★".repeat(rank)}{"☆".repeat(5 - rank)}
+                    <div className="stars-indicator" aria-label={`Rank ${rank} of 5`}>
+                      {Array.from({ length: 5 }, (_, idx) => (
+                        <span key={idx} className={`rank-pip ${idx < rank ? "filled" : ""}`} />
+                      ))}
                     </div>
                   </div>
                   <div className="armory-item-details">
@@ -1528,10 +1700,10 @@ function Armory({
                     <p>{weapon.description}</p>
                     <div className="armory-stat-bars">
                       <div className="stat-bar-row">
-                        <span>DMG: {Math.round(stats.damage)} {owned && rank < 5 && <small>→ {Math.round(nextStats.damage)}</small>}</span>
+                        <span>Damage {Math.round(stats.damage)} {owned && rank < 5 && <small>→ {Math.round(nextStats.damage)}</small>}</span>
                       </div>
                       <div className="stat-bar-row">
-                        <span>MAG: {stats.magazine} {owned && rank < 5 && <small>→ {nextStats.magazine}</small>}</span>
+                        <span>Magazine {stats.magazine} {owned && rank < 5 && <small>→ {nextStats.magazine}</small>}</span>
                       </div>
                     </div>
                   </div>
@@ -1572,7 +1744,7 @@ function Armory({
 
               return (
                 <article className="armory-item perk-item" key={id}>
-                  <div className="perk-glyph">{id === "vitality" ? "✚" : id === "mobility" ? "⚡" : "🧲"}</div>
+                  <div className="perk-glyph"><GameIcon name={id} /></div>
                   <div className="armory-item-details">
                     <span className="item-rank-tag">{rank} / 3 Ranks</span>
                     <h4>{perk.name}</h4>
@@ -1633,17 +1805,36 @@ function Modal({
   eyebrow,
   title,
   wide = false,
+  onDismiss,
   children,
 }: {
   eyebrow: string;
   title: string;
   wide?: boolean;
+  onDismiss?: () => void;
   children: React.ReactNode;
 }) {
   const titleId = useId();
+  const panel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const root = panel.current;
+    const focusable = () => Array.from(root?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input, [tabindex="0"]') ?? []).filter(el => el.getClientRects().length > 0);
+    (focusable()[0] ?? root)?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && onDismiss) { event.preventDefault(); onDismiss(); }
+      if (event.key !== "Tab") return;
+      const elements = focusable(); const first = elements[0]; const last = elements.at(-1);
+      if (!first) { event.preventDefault(); root?.focus(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === root)) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    root?.addEventListener("keydown", onKey);
+    return () => { root?.removeEventListener("keydown", onKey); if (previous?.isConnected) previous.focus(); };
+  }, [onDismiss]);
   return (
     <div className="modal-backdrop">
-      <section className={`modal-panel ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <section ref={panel} tabIndex={-1} className={`modal-panel ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header>
           <p className="eyebrow">{eyebrow}</p>
           <h2 id={titleId}>{title}</h2>
@@ -1732,30 +1923,5 @@ function GraphicsModeSelector({
 }
 
 function WeaponGlyph({ id, compact = false }: { id: WeaponId; compact?: boolean }) {
-  if (id === "rifle") {
-    return (
-      <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
-        <path d="M4 14h18v-3h12v3h20v-2h22v2h18v4h-6v4h-4v-4h-8v-2H54v8l-6 10h-6l4-10H34v8l-4 6h-6l2-6H16l-4 6H6l4-10H4v-8z" />
-      </svg>
-    );
-  }
-  if (id === "shotgun") {
-    return (
-      <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
-        <path d="M4 16h24v-4h42v4h24v4H70v3h-16v-3H38v6h-8l-4-6H16l-6 8H4v-12z" />
-      </svg>
-    );
-  }
-  if (id === "smg") {
-    return (
-      <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
-        <path d="M12 12h28v-3h18v3h26v6H62v-2H48v12h-8l-2-10H28v8h-6l-2-8h-8v-6z" />
-      </svg>
-    );
-  }
-  return (
-    <svg className={`weapon-svg-silhouette ${compact ? "compact" : ""}`} viewBox="0 0 100 32" fill="currentColor">
-      <path d="M24 10h44v8H54v10h-10l-4-10H24v-8z" />
-    </svg>
-  );
+  return <img className={`weapon-model-image ${compact ? "compact" : ""}`} src={`/images/${id}.webp`} alt="" loading="eager" />;
 }

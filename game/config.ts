@@ -15,8 +15,8 @@ import type {
 export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   pistol: {
     id: "pistol", name: "Service Pistol", description: "Reliable and accurate. Your last line of defense.",
-    cost: 0, damage: 24, fireRate: 3.2, magazine: 12, reserve: 72, reload: 1.1,
-    spread: 0.018, pellets: 1, color: 0xb8ff5a,
+    cost: 0, damage: 28, fireRate: 3.8, magazine: 12, reserve: 72, reload: 1.05,
+    spread: 0.016, pellets: 1, color: 0x6bffea,
   },
   smg: {
     id: "smg", name: "Viper SMG", description: "Close-range crowd control with a vicious fire rate.",

@@ -1,19 +1,14 @@
 import * as THREE from "three";
 
 /**
- * Comic post-process: the pass that turns a flat-shaded 3D scene into a
- * printed page.
- *
- * Four things happen in one fullscreen shader:
- *   1. Ink outlines from depth + luminance discontinuities. Screen-space edge
- *      detection gives a constant-width line regardless of how far away or how
- *      large the object is — the thing inflated back-face hulls can never do.
- *   2. Posterisation, snapping colour to a small number of steps so gradients
- *      that survive the toon ramp still read as flat fill.
- *   3. Halftone dots in the shadows, scaled by local luminance the way a real
- *      screen-printed comic varies dot size.
- *   4. Paper grain, fixed to screen space so it reads as paper rather than
- *      shimmering film noise.
+ * Neon-Noir Stylized Post-Process Pipeline:
+ *   1. Crisp depth + luminance edge ink (refined thin contour, never muddy).
+ *   2. Real 9-tap mip-style emissive bloom so lasers, muzzle flashes, fireballs,
+ *      toxic pools, and Overdrive auras radiate across the dark arena.
+ *   3. Subtle chromatic aberration + impact flash driven by explosions, crits,
+ *      and active Overdrive Surge.
+ *   4. Filmic contrast curve, subtle cool-shadow / warm-highlight split toning,
+ *      and cinematic edge vignette.
  */
 
 const COMIC_SHADER = {
@@ -39,6 +34,10 @@ const COMIC_SHADER = {
     uniform float uGrainStrength;
     uniform float uPosterSteps;
     uniform vec3 uInkColor;
+    uniform float uBloomStrength;
+    uniform float uChromatic;
+    uniform float uOverdrive;
+    uniform float uHitFlash;
 
     varying vec2 vUv;
 
@@ -46,8 +45,6 @@ const COMIC_SHADER = {
       return dot(color, vec3(0.299, 0.587, 0.114));
     }
 
-    // Depth buffer is non-linear; comparing raw values makes distant edges
-    // vanish and near edges scream. Convert to view-space distance first.
     float linearDepth(vec2 uv) {
       float depth = texture2D(tDepth, uv).x;
       float z = depth * 2.0 - 1.0;
@@ -60,78 +57,97 @@ const COMIC_SHADER = {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
     }
 
-    // The scene arrives linear. Posterising, halftoning and thresholding are
-    // all print operations that belong in display space, so encode first and
-    // work in sRGB from there — and because this pass writes straight to the
-    // canvas, the encode has to happen here or the frame renders dark.
+    vec3 acesFilm(vec3 x) {
+      float a = 2.51;
+      float b = 0.03;
+      float c = 2.43;
+      float d = 0.59;
+      float e = 0.14;
+      return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+    }
+
     vec3 linearToSRGB(vec3 c) {
       return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055,
                  step(vec3(0.0031308), c));
     }
 
-    vec3 sampleSRGB(vec2 uv) {
-      return linearToSRGB(texture2D(tDiffuse, uv).rgb);
+    vec3 brightPass(vec3 linearColor) {
+      float b = max(linearColor.r, max(linearColor.g, linearColor.b));
+      float knee = smoothstep(0.64, 0.98, b);
+      return linearColor * knee;
     }
 
     void main() {
       vec2 texel = 1.0 / uResolution;
-      // Sample offset in *device* pixels. At DPR 2 a one-texel offset is only
-      // half a CSS pixel, which is why a naive edge pass looks hairline-thin on
-      // retina displays; uOutlineWidth is set from the live pixel ratio so the
-      // ink reads the same weight everywhere.
-      vec2 off = texel * uOutlineWidth;
-      vec3 color = sampleSRGB(vUv);
+      vec2 centered = vUv - 0.5;
+      float distFromCenter = length(centered);
 
-      // --- 1. Ink outlines -------------------------------------------------
-      // Roberts cross on both depth and luminance. Depth catches silhouettes
-      // and overlaps; luminance catches creases between two touching surfaces
-      // at the same depth, which depth alone misses on flat cel shading.
+      // --- 1. Subtle Chromatic Aberration (spikes on impacts & Overdrive) ---
+      float caAmount = (0.0008 + uChromatic * 0.0048 + uOverdrive * 0.0018) * distFromCenter;
+      vec2 caOffset = centered * caAmount;
+      vec3 linColor = vec3(
+        texture2D(tDiffuse, clamp(vUv + caOffset, 0.0, 1.0)).r,
+        texture2D(tDiffuse, vUv).g,
+        texture2D(tDiffuse, clamp(vUv - caOffset, 0.0, 1.0)).b
+      );
+
+      // --- 2. Dual-Ring Screen-Space Emissive Bloom -------------------------
+      vec3 bloom = vec3(0.0);
+      if (uBloomStrength > 0.001) {
+        vec2 r1 = texel * 3.5;
+        vec2 r2 = texel * 8.5;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv + vec2(r1.x, 0.0), 0.0, 1.0)).rgb) * 0.16;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv - vec2(r1.x, 0.0), 0.0, 1.0)).rgb) * 0.16;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv + vec2(0.0, r1.y), 0.0, 1.0)).rgb) * 0.16;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv - vec2(0.0, r1.y), 0.0, 1.0)).rgb) * 0.16;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv + vec2(r2.x, r2.y), 0.0, 1.0)).rgb) * 0.09;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv + vec2(-r2.x, r2.y), 0.0, 1.0)).rgb) * 0.09;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv + vec2(r2.x, -r2.y), 0.0, 1.0)).rgb) * 0.09;
+        bloom += brightPass(texture2D(tDiffuse, clamp(vUv + vec2(-r2.x, -r2.y), 0.0, 1.0)).rgb) * 0.09;
+      }
+
+      linColor += bloom * (uBloomStrength + uOverdrive * 0.35);
+
+      // --- 3. Filmic Tone Mapping + Split-Tone Atmospheric Grading ----------
+      vec3 graded = acesFilm(linColor * 1.18);
+      vec3 color = linearToSRGB(graded);
+
+      // Cool midnight-teal shadows, punchy warm-gold highlights
+      float lum = luma(color);
+      vec3 shadowTint = vec3(0.02, 0.06, 0.11);
+      vec3 highlightTint = vec3(1.04, 1.01, 0.96);
+      color = mix(color + shadowTint * (1.0 - lum) * 0.45, color * highlightTint, smoothstep(0.35, 0.85, lum));
+
+      // Subtle saturation boost so neon cyan, fire orange & bio-green pop
+      float satBoost = 1.14 + uOverdrive * 0.12;
+      color = mix(vec3(luma(color)), color, satBoost);
+
+      // --- 4. Refined Stylized Silhouette Outlines --------------------------
+      vec2 off = texel * (uOutlineWidth * 0.72);
       float d0 = linearDepth(vUv);
       float d1 = linearDepth(vUv + vec2(off.x, 0.0));
       float d2 = linearDepth(vUv + vec2(0.0, off.y));
       float d3 = linearDepth(vUv + off);
-
       float depthEdge = length(vec2(d0 - d3, d1 - d2));
-      // Scale the threshold with distance so far-away geometry does not
-      // dissolve into a solid mass of outline.
-      depthEdge = smoothstep(0.0006, 0.0022 + d0 * 0.02, depthEdge);
+      depthEdge = smoothstep(0.001, 0.0032 + d0 * 0.024, depthEdge);
+      float edge = clamp(depthEdge, 0.0, 1.0) * (uOutlineStrength * 0.62);
+      color = mix(color, uInkColor, edge);
 
-      float l0 = luma(color);
-      float l1 = luma(sampleSRGB(vUv + vec2(off.x, 0.0)));
-      float l2 = luma(sampleSRGB(vUv + vec2(0.0, off.y)));
-      float l3 = luma(sampleSRGB(vUv + off));
-      float lumaEdge = smoothstep(0.16, 0.42, length(vec2(l0 - l3, l1 - l2)));
+      // --- 5. Subtle Vignette, Overdrive Energy Rim & Damage Flash ----------
+      float vignette = smoothstep(0.34, 0.92, distFromCenter);
+      color *= mix(1.0, 0.66, vignette);
 
-      float edge = clamp(max(depthEdge, lumaEdge * 0.75), 0.0, 1.0) * uOutlineStrength;
+      if (uOverdrive > 0.01) {
+        vec3 surgeGlow = mix(vec3(0.18, 0.85, 1.0), vec3(1.0, 0.78, 0.25), smoothstep(0.35, 0.85, distFromCenter));
+        color += surgeGlow * vignette * uOverdrive * 0.28;
+      }
+      if (uHitFlash > 0.01) {
+        color += vec3(0.95, 0.12, 0.18) * vignette * uHitFlash * 0.55;
+      }
 
-      // --- 2. Posterise ----------------------------------------------------
-      vec3 posterised = floor(color * uPosterSteps + 0.5) / uPosterSteps;
-      color = mix(color, posterised, 0.75);
-
-      // --- 3. Halftone -----------------------------------------------------
-      // Classic screen-print angle keeps the dot grid from aligning with the
-      // pixel grid and moiring against the floor tiles.
-      float angle = 0.4363; // 25 degrees
-      mat2 rotation = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
-      vec2 gridUv = rotation * (vUv * uResolution / uHalftoneScale);
-      vec2 cell = fract(gridUv) - 0.5;
-
-      float brightness = luma(color);
-      // Dot radius grows as the area darkens — ink coverage, not opacity.
-      float radius = (1.0 - smoothstep(0.0, 0.62, brightness)) * 0.58;
-      float dot = 1.0 - smoothstep(radius - 0.14, radius + 0.05, length(cell));
-      // Confined to genuine shadow. Letting dots creep into the midtones just
-      // reads as a dimmer image, which is the murk we came here to remove.
-      float shadowMask = 1.0 - smoothstep(0.05, 0.34, brightness);
-      color = mix(color, uInkColor, dot * shadowMask * uHalftoneStrength);
-
-      // --- 4. Paper grain --------------------------------------------------
-      // No time term: paper does not crawl between frames.
+      // Ultra-fine film grain for tactile texture
       float grain = hash(floor(vUv * uResolution * 0.5)) - 0.5;
       color += grain * uGrainStrength;
-
-      // Ink goes on last so outlines stay solid black over dots and grain.
-      color = mix(color, uInkColor, edge);
 
       gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
     }
@@ -145,6 +161,7 @@ export interface ComicPostOptions {
   grainStrength?: number;
   posterSteps?: number;
   inkColor?: number;
+  bloomStrength?: number;
 }
 
 export class ComicPostProcess {
@@ -177,9 +194,6 @@ export class ComicPostProcess {
         depthBuffer: true,
         stencilBuffer: false,
       });
-      // Three always writes linear into a non-XR render target — `outputColorSpace`
-      // only applies to the default framebuffer — so the pass reads linear values
-      // and has to encode to sRGB itself before writing to the canvas.
       this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
 
       this.material = new THREE.ShaderMaterial({
@@ -193,17 +207,20 @@ export class ComicPostProcess {
           uResolution: { value: new THREE.Vector2(size.x, size.y) },
           uCameraNear: { value: 0.1 },
           uCameraFar: { value: 110 },
-          uOutlineStrength: { value: options.outlineStrength ?? 1.0 },
-          uOutlineWidth: { value: 2.0 },
+          uOutlineStrength: { value: options.outlineStrength ?? 0.58 },
+          uOutlineWidth: { value: 1.6 },
           uHalftoneScale: { value: this.halftoneCssScale * renderer.getPixelRatio() },
-          uHalftoneStrength: { value: options.halftoneStrength ?? 0.5 },
-          uGrainStrength: { value: options.grainStrength ?? 0.045 },
-          uPosterSteps: { value: options.posterSteps ?? 10 },
-          uInkColor: { value: new THREE.Color(options.inkColor ?? 0x140f1e) },
+          uHalftoneStrength: { value: options.halftoneStrength ?? 0.04 },
+          uGrainStrength: { value: options.grainStrength ?? 0.014 },
+          uPosterSteps: { value: options.posterSteps ?? 12 },
+          uInkColor: { value: new THREE.Color(options.inkColor ?? 0x09111c) },
+          uBloomStrength: { value: options.bloomStrength ?? 0.72 },
+          uChromatic: { value: 0.0 },
+          uOverdrive: { value: 0.0 },
+          uHitFlash: { value: 0.0 },
         },
       });
 
-      // Fullscreen triangle-ish quad; the vertex shader ignores the projection.
       this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
       this.quad.frustumCulled = false;
       this.quadScene.add(this.quad);
@@ -220,14 +237,13 @@ export class ComicPostProcess {
       const h = Math.max(1, Math.floor(height * pixelRatio));
       this.target.setSize(w, h);
       this.material.uniforms.uResolution.value.set(w, h);
-      this.material.uniforms.uOutlineWidth.value = 1.6 * pixelRatio;
+      this.material.uniforms.uOutlineWidth.value = 1.45 * pixelRatio;
       this.material.uniforms.uHalftoneScale.value = this.halftoneCssScale * pixelRatio;
     } catch {
       this.fallbackDirect = true;
     }
   }
 
-  /** Set once per frame so the depth linearisation matches the live camera. */
   render(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     if (this.disposed) return;
     if (this.fallbackDirect || !this.target || !this.material) {

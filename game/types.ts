@@ -11,6 +11,17 @@ export type GameScreen =
   | "victory";
 
 export type WeaponId = "pistol" | "smg" | "shotgun" | "rifle";
+export type SuperWeaponId = "railcannon" | "minigun" | "sawblade";
+
+export interface SuperWeaponDefinition {
+  id: SuperWeaponId;
+  name: string;
+  tagline: string;
+  ammo: number;
+  damage: number;
+  fireRate: number;
+  color: number;
+}
 export type EnemyId = "shambler" | "runner" | "spitter" | "brute" | "juggernaut" | "boomer";
 export type PickupId = "coin" | "ammo" | "health";
 export type PerkId = "vitality" | "mobility" | "magnet";
@@ -31,6 +42,19 @@ export type SynergyCardId =
   | "phantom_reflex"
   | "vampiric_leech"
   | "adrenaline_surge";
+
+export type SynergyFusionId =
+  | "superconductor"
+  | "napalm_wake"
+  | "rail_bounce"
+  | "blood_nova";
+
+export interface SynergyFusionDefinition {
+  id: SynergyFusionId;
+  name: string;
+  pair: [SynergyCardId, SynergyCardId];
+  description: string;
+}
 
 export type CardRarity = "common" | "rare" | "epic";
 
@@ -68,6 +92,11 @@ export interface WeaponInstance {
   reserve: number;
   cooldown: number;
   reloading: number;
+  reloadDuration?: number;
+  /** Whether the active-reload sweet-spot tap has already been attempted during this reload. */
+  activeReloadAttempted?: boolean;
+  /** Number of overcharged rounds left in the current magazine from a perfect active reload. */
+  overchargedRounds?: number;
 }
 
 export interface EnemyDefinition {
@@ -151,7 +180,35 @@ export interface HudState {
   magazine: number;
   reserve: number;
   reloading: number;
+  reloadProgress?: number;
+  /** True while the active-reload sweet spot is open and unattempted. */
+  activeReloadAvailable?: boolean;
+  /** Number of overcharged rounds remaining in the active weapon's magazine. */
+  overchargedRounds?: number;
   dash: number;
+  /** Frag grenade readiness from 0 (cooling) to 1 (ready). */
+  grenade?: number;
+  /** Cyber-Blade slash readiness from 0 to 1. */
+  blade?: number;
+  /** True when an enemy in teleport-execute range can be chain-executed right now. */
+  executeTargetReady?: boolean;
+  /** Live mid-wave Tech Energy (0..100) used to drop Auto-Turrets & Tesla Pylons. */
+  techEnergy?: number;
+  /** Active deployable counts. */
+  turretCount?: number;
+  pylonCount?: number;
+  /** Active Orbital Super-Weapon override, when picked up from a Drop Pod. */
+  superWeapon?: { id: SuperWeaponId; name: string; ammo: number; maxAmmo: number } | null;
+  /** Overdrive meter charge from 0 to 100. */
+  overdriveCharge?: number;
+  /** True while Deadwave Overdrive Surge is currently active. */
+  overdriveActive?: boolean;
+  /** Remaining fraction (0..1) of active Overdrive duration. */
+  overdriveProgress?: number;
+  /** Live salvage multiplier earned from the current combo streak. */
+  comboMultiplier?: number;
+  /** Active evolved synergy fusions unlocked from card pairs. */
+  activeFusions?: SynergyFusionId[];
   bossHealth?: number;
   bossMaxHealth?: number;
   bossPhase?: number;

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
+import "./presentation.css";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,7 +16,7 @@ const geistMono = Geist_Mono({
 
 const title = "Deadwave — Zombie Survival Shooter";
 const description =
-  "Survive ten escalating waves in a comic-book 2.5D industrial arena, recover salvage, and upgrade your arsenal.";
+  "Survive ten escalating waves across four stylized industrial arenas, recover salvage, and upgrade your arsenal.";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -23,7 +24,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
-  themeColor: "#050d0a",
+  themeColor: "#10191f",
 };
 
 export async function generateMetadata(): Promise<Metadata> {

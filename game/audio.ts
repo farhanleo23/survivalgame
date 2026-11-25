@@ -21,6 +21,47 @@ export class GameAudio {
   private music = true;
   private gameplayPaused = false;
   private unlockListening = false;
+  private samples = new Map<string, AudioBuffer>();
+  private sampleLoads?: Promise<void>;
+  private sampleVoices = new Set<AudioBufferSourceNode>();
+  private lastSurfaceSound = new Map<string, number>();
+  private footstepIndex = 0;
+
+  private loadSamples() {
+    if (this.sampleLoads || !this.context) return;
+    const context = this.context;
+    const names = ["footstep_concrete_000", "footstep_concrete_001", "impactMetal_light_000", "impactMetal_heavy_000", "impactSoft_medium_000"];
+    this.sampleLoads = Promise.all(names.map(async name => {
+      try {
+        const response = await fetch(`/audio/${name}.ogg`);
+        if (!response.ok) return;
+        const buffer = await context.decodeAudioData(await response.arrayBuffer());
+        if (this.context === context && context.state !== "closed") this.samples.set(name, buffer);
+      } catch { /* Synthesis remains available if a sample is missing or unsupported. */ }
+    })).then(() => {});
+  }
+
+  private sample(name: string, volume: number, interval = 0.07) {
+    const context = this.context; const buffer = this.samples.get(name);
+    if (!this.sfx || this.gameplayPaused || !context || context.state !== "running" || !this.sfxBus || !buffer) return;
+    if (context.currentTime - (this.lastSurfaceSound.get(name) ?? -1) < interval || this.sampleVoices.size >= 8) return;
+    this.lastSurfaceSound.set(name, context.currentTime);
+    const voice = context.createBufferSource(); const gain = context.createGain();
+    voice.buffer = buffer; gain.gain.value = volume;
+    voice.connect(gain); gain.connect(this.sfxBus); this.sampleVoices.add(voice);
+    voice.onended = () => { voice.disconnect(); gain.disconnect(); this.sampleVoices.delete(voice); };
+    voice.start();
+  }
+
+  playFootstep(metal = false) {
+    this.footstepIndex = 1 - this.footstepIndex;
+    this.sample(metal ? "impactMetal_light_000" : `footstep_concrete_00${this.footstepIndex}`, metal ? 0.08 : 0.16, 0.18);
+  }
+
+  playSurfaceImpact(material: "metal" | "flesh" | "concrete") {
+    this.sample(material === "flesh" ? "impactSoft_medium_000" : material === "metal" ? "impactMetal_light_000" : "impactMetal_heavy_000", material === "metal" ? 0.16 : 0.12);
+  }
+
 
   configure(settings: AudioSettings) {
     this.sfx = settings.sfx;
@@ -34,6 +75,7 @@ export class GameAudio {
     if (this.context?.state === "closed") this.resetNodes();
     if (!this.context) this.createGraph();
     this.gameplayPaused = false;
+    this.loadSamples();
     this.applyLevels();
     void this.context?.resume().catch(() => undefined);
     this.bindUnlockGesture();
@@ -68,7 +110,7 @@ export class GameAudio {
       this.triggerTone(now, 380, 70, 0.16, 0.3, "sawtooth");
       // Double action pump follow-up
       setTimeout(() => {
-        if (this.context && this.context.state === "running") {
+        if (this.sfx && !this.gameplayPaused && this.context && this.context.state === "running") {
           const pumpNow = this.context.currentTime;
           this.triggerNoiseTransient(pumpNow, 0.05, 3200, 4.0, 0.15);
           this.triggerTone(pumpNow + 0.06, 450, 780, 0.04, 0.12, "triangle");
@@ -86,6 +128,7 @@ export class GameAudio {
    * Flesh impact thud with sharp bone crack on crits
    */
   playHit(isCrit = false) {
+    this.playSurfaceImpact("flesh");
     if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
     const now = this.context.currentTime;
 
@@ -154,6 +197,7 @@ export class GameAudio {
    * Mechanical weapon reload clicks
    */
   playReload() {
+    this.sample("impactMetal_light_000", 0.1, 0.1);
     if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
     const now = this.context.currentTime;
     this.triggerNoiseTransient(now, 0.04, 2800, 3.5, 0.18);
@@ -239,6 +283,135 @@ export class GameAudio {
   }
 
   /**
+   * Deadwave Overdrive Surge activation: sub-bass drop + soaring electric chord
+   */
+  playOverdriveActivate() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 140, 26, 0.48, 0.85, "sawtooth");
+    this.triggerNoiseTransient(now, 0.24, 2200, 2.2, 0.42);
+    const chord = [293.66, 440.0, 587.33, 880.0];
+    chord.forEach((freq, index) => {
+      this.triggerTone(now + index * 0.03, freq, freq * 1.12, 0.36, 0.22, "triangle");
+    });
+  }
+
+  /**
+   * Active Tactical Reload hit: crisp bolt lock + high-voltage charge chime
+   */
+  playActiveReloadSuccess() {
+    this.sample("impactMetal_light_000", 0.16, 0.05);
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.035, 3600, 4.5, 0.24);
+    this.triggerTone(now, 880, 1318.51, 0.09, 0.26, "triangle");
+    this.triggerTone(now + 0.055, 1318.51, 1760, 0.14, 0.28, "sine");
+  }
+
+  /**
+   * Active Tactical Reload miss: dull mechanical bolt clunk
+   */
+  playActiveReloadJam() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.06, 700, 2.0, 0.22);
+    this.triggerTone(now, 180, 110, 0.09, 0.22, "square");
+  }
+
+  /**
+   * Perfect Dodge ("Phantom Slip"): time-warp dive + crystalline slip chime
+   */
+  playPerfectDodge() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 320, 48, 0.24, 0.45, "sine");
+    this.triggerNoiseTransient(now, 0.18, 2600, 3.0, 0.26);
+    this.triggerTone(now + 0.02, 1046.5, 1567.98, 0.18, 0.24, "sine");
+  }
+
+  /**
+   * Tactical Frag Grenade pin-pull + throw whoosh
+   */
+  playGrenadeThrow() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.12, 1600, 2.0, 0.24);
+    this.triggerTone(now, 640, 280, 0.11, 0.16, "triangle");
+  }
+
+  /**
+   * Cyber-Blade energy slash & teleport execution chain chime
+   */
+  playBladeSlash(isExecute = false) {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.14, isExecute ? 3400 : 2400, 3.2, isExecute ? 0.42 : 0.3);
+    this.triggerTone(now, isExecute ? 1180 : 840, isExecute ? 220 : 180, 0.13, 0.28, "sawtooth");
+    if (isExecute) {
+      this.triggerBassPunch(now, 150, 32, 0.22, 0.6, "sine");
+      this.triggerTone(now + 0.04, 1318.5, 2093, 0.16, 0.28, "sine");
+    }
+  }
+
+  /**
+   * Orbital Auto-Turret / Tesla Pylon drop slam + servo online beep
+   */
+  playDeployStructure() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 110, 28, 0.28, 0.55, "triangle");
+    this.triggerNoiseTransient(now, 0.15, 1100, 1.5, 0.32);
+    this.triggerTone(now + 0.08, 660, 990, 0.09, 0.2, "square");
+    this.triggerTone(now + 0.16, 990, 1320, 0.11, 0.22, "triangle");
+  }
+
+  /**
+   * Arc Railcannon hyper-velocity discharge
+   */
+  playRailcannon() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 190, 22, 0.5, 0.9, "sawtooth");
+    this.triggerNoiseTransient(now, 0.28, 3200, 2.2, 0.55);
+    this.triggerTone(now, 2200, 180, 0.32, 0.36, "sawtooth");
+    this.triggerTone(now + 0.03, 1480, 320, 0.25, 0.24, "sine");
+  }
+
+  /**
+   * Ripper Sawblade launcher whine
+   */
+  playSawblade() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerNoiseTransient(now, 0.12, 4200, 5.0, 0.3);
+    this.triggerTone(now, 920, 1680, 0.14, 0.25, "sawtooth");
+  }
+
+  /**
+   * Orbital Supply Pod crash impact
+   */
+  playPodImpact() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    this.triggerBassPunch(now, 95, 20, 0.55, 0.95, "sawtooth");
+    this.triggerNoiseTransient(now, 0.42, 750, 1.0, 0.65);
+    this.triggerTone(now + 0.12, 523.25, 1046.5, 0.28, 0.22, "triangle");
+  }
+
+  /**
+   * Evolved Synergy Fusion unlocked fanfare
+   */
+  playFusionUnlock() {
+    if (!this.sfx || !this.context || !this.sfxBus || this.context.state !== "running") return;
+    const now = this.context.currentTime;
+    const notes = [392.0, 493.88, 587.33, 783.99, 1174.66];
+    notes.forEach((freq, index) => {
+      this.triggerTone(now + index * 0.05, freq, freq * 1.03, 0.24, 0.24, "triangle");
+      this.triggerTone(now + index * 0.05, freq * 1.5, freq * 1.52, 0.16, 0.1, "sine");
+    });
+  }
+
+  /**
    * Legacy tone method for fallback
    */
   tone(frequency: number, duration = 0.05, volume = 0.08, type: OscillatorType = "square") {
@@ -247,6 +420,8 @@ export class GameAudio {
   }
 
   stop() {
+    for (const voice of this.sampleVoices) voice.stop();
+    this.sampleVoices.clear(); this.samples.clear(); this.sampleLoads = undefined; this.lastSurfaceSound.clear();
     if (typeof window !== "undefined" && this.pulseTimer !== undefined) window.clearInterval(this.pulseTimer);
     this.pulseTimer = undefined;
     this.unbindUnlockGesture();
